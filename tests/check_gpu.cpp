@@ -986,9 +986,9 @@ int check_gpu(const char* testsDir) {
 
   // --no-occlude end to end, June 21, clear sky: a lid (a sensor mesh) 1 m over the first of the room's two squares,
   // inside the room's bounding box (the recentring stays), and a context square 1 m over the second. Listed, the lid is
-  // analysed but shades nothing: the room gets the rows it gets without the lid. Every sensor mesh listed is
-  // --no-self-occlude, bit for bit. On one scene key the set is part of the identity: another set rebuilds, going back
-  // reuses the parked scene, and a name given twice counts once
+  // analysed but shades nothing: the room gets the rows it gets without the lid, the lid the rows it gets unlisted. Every
+  // sensor mesh listed is --no-self-occlude, bit for bit. On one scene key the set is part of the identity: another set
+  // rebuilds, going back reuses the parked scene, and a name given twice counts once; under --no-self-occlude it is not
   {
     std::string e;
     Weather cs;
@@ -1010,6 +1010,7 @@ int check_gpu(const char* testsDir) {
     CHECK(shaded.values.size() == 6 && rl.values.size() == 6 && rb.values.size() == 4 && rn.values.size() == 6);
     if (shaded.values.size() == 6 && rl.values.size() == 6 && rb.values.size() == 4 && rn.values.size() == 6) {
       CHECK(std::vector<double>(rl.values.begin(), rl.values.begin() + 4) == rb.values);
+      CHECK(rl.values[4] == shaded.values[4] && rl.values[5] == shaded.values[5] && rl.values[4] > 0);   // the lid's own rows
       CHECK(shaded.values[0] < rb.values[0] && shaded.values[1] < rb.values[1]);   // not listed, the lid shades
       CHECK(r2.values == rn.values && rn.values[2] < rn.values[0]);   // the context square still shades
       std::printf("run: --no-occlude lid: the square under it gets %.3f kWh/m2, %.0f h (shaded by it %.3f, %.0f h)\n", rl.values[0], rl.values[1],
@@ -1026,6 +1027,11 @@ int check_gpu(const char* testsDir) {
     const Result k3 = go(all, k);
     CHECK(!k0.sceneReused && !k1.sceneReused && k2.sceneReused && k3.sceneReused);
     CHECK(k0.values == shaded.values && k1.values == rl.values && k2.values == shaded.values && k3.values == rl.values);
+    k.sceneKey = "no-occlude, no self-occlusion"; k.selfOcclude = false;   // every sensor mesh is out: the set keys nothing
+    const Result k4 = go(all, k);
+    k.noOcclude.clear();
+    const Result k5 = go(all, k);
+    CHECK(!k4.sceneReused && k5.sceneReused && k4.values == rn.values && k5.values == rn.values);
   }
   return failures;
 }

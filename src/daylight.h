@@ -78,9 +78,9 @@ struct Options {
   std::string dumpBitsPath, dumpSky, dumpSun;   // validation dumps; empty = off (GPU selection: CUDA_VISIBLE_DEVICES)
   // Scene identity for long-lived callers (a server). Non-empty and equal to the previous run's key: the occluder
   // triangles and the acceleration structure of that run stay resident and are reused (the caller guarantees the
-  // meshes and selfOcclude are unchanged; optics values may change; the noOcclude meshes, the set of transmitting slots
-  // and, with bounces, whether the slots' rho or glass differ are part of the identity). Empty (the CLI): rebuilt every
-  // run. The GPU context is kept either way.
+  // meshes and selfOcclude are unchanged; optics values may change; the noOcclude meshes (with selfOcclude), the set of
+  // transmitting slots and, with bounces, whether the slots' rho or glass differ are part of the identity). Empty (the
+  // CLI): rebuilt every run. The GPU context is kept either way.
   std::string sceneKey;
   int residentScenes = 1;              // keyed scenes kept in VRAM (most recent first); more than 1 lets users alternate cheaply
   const std::atomic<bool>* cancel = nullptr;   // set by another thread: run() stops at its next check and fails with "cancelled"

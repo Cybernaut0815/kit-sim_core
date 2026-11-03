@@ -139,8 +139,10 @@ bool run(const std::vector<Mesh>& meshes, const Weather* w, const Options& opt, 
   // visibility) under a key of its own, so toggling --bounces on a resident scene rebuilds it or parks a second copy;
   // read a hit's slot through its primitive index (Tris::slot on the device) instead if that matters
   const bool translucent = !lit.empty(), slotted = translucent || differs;   // per-triangle SBT offsets (gpu_build)
-  std::string openSet;   // the --no-occlude meshes: left out of the GAS, so part of its identity
-  for (size_t k = 0; k < open.size(); ++k) if (open[k]) openSet += (openSet.empty() ? "\nopen " : ",") + std::to_string(k);
+  // The --no-occlude meshes are left out of the GAS, so part of its identity; --no-self-occlude leaves every sensor mesh out
+  // anyway (the caller's key carries selfOcclude), so there the set keys nothing and another set reuses the scene
+  std::string openSet;
+  for (size_t k = 0; opt.selfOcclude && k < open.size(); ++k) if (open[k]) openSet += (openSet.empty() ? "\nopen " : ",") + std::to_string(k);
   Resident& R = resident();
   const std::string key = opt.sceneKey.empty() ? "" : opt.sceneKey + (translucent ? "\ntransmitting " + lit : slotted ? "\nslot records" : "") + openSet;
   const bool installed = !key.empty() && R.gpu && key == R.cur.key;   // same meshes + selfOcclude as the scene in the Gpu

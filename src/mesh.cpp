@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0 AND LicenseRef-Commons-Clause-1.0
 // OBJ / .dmesh readers, triangulation (earcut for n-gons), sensor derivation (ladybug / physical rules), optics slots
-// (row checks, resolution per global slot, thin solids).
+// (row checks, resolution per global slot, thin solids), --no-occlude names.
 #include "internal.h"
 #include "glass.h"
 #include <algorithm>
@@ -70,6 +70,22 @@ std::string stem(const std::string& path) {
   return path.substr(b, d == std::string::npos || d < b ? std::string::npos : d - b);
 }
 
+// What --optics / --no-occlude NAME resolve against: mesh index per Mesh::name, SIZE_MAX when several meshes share it.
+using Names = std::unordered_map<std::string, size_t>;
+Names mesh_names(const std::vector<Mesh>& meshes) {
+  Names byName;
+  for (size_t k = 0; k < meshes.size(); ++k) if (!byName.emplace(meshes[k].name, k).second) byName[meshes[k].name] = SIZE_MAX;
+  return byName;
+}
+// The index of the one mesh called name, else SIZE_MAX with err = row + why.
+size_t find_mesh(const Names& byName, const std::string& name, const std::string& row, std::string& err) {
+  const auto it = byName.find(name);
+  if (it == byName.end()) err = row + "no mesh of that name";
+  else if (it->second == SIZE_MAX) err = row + "several meshes have that name";
+  else return it->second;
+  return SIZE_MAX;
+}
+
 }  // namespace
 
 void bbox_centre(const std::vector<Mesh>& meshes, double c[3]) {
@@ -129,13 +145,12 @@ bool optics_ok(const Options& opt, std::string& err) {
 
 bool resolve_optics(const std::vector<Mesh>& meshes, const std::vector<Optics>& rows, std::vector<Slot>& out, std::string& err) {
   std::vector<size_t> base(meshes.size() + 1, 0);
-  std::unordered_map<std::string, size_t> byName;   // mesh index, SIZE_MAX when several meshes share the name
   for (size_t k = 0; k < meshes.size(); ++k) {
     const Mesh& m = meshes[k];
     if (!m.slot.empty() && m.slot.size() != m.numFaces()) { err = "mesh " + m.name + ": " + std::to_string(m.slot.size()) + " slots for " + std::to_string(m.numFaces()) + " faces"; return false; }
     base[k + 1] = base[k] + slot_count(m);
-    if (!byName.emplace(m.name, k).second) byName[m.name] = SIZE_MAX;
   }
+  const Names byName = mesh_names(meshes);
   std::vector<std::pair<std::string, int>> keys;
   for (const Optics& o : rows) keys.emplace_back(o.mesh, o.slot);
   std::sort(keys.begin(), keys.end());
@@ -151,16 +166,29 @@ bool resolve_optics(const std::vector<Mesh>& meshes, const std::vector<Optics>& 
       const std::string row = "--optics " + o.mesh + (o.slot >= 0 ? "/" + std::to_string(o.slot) : "") + ": ";
       size_t b = 0, e = out.size();
       if (rank) {
-        const auto it = byName.find(o.mesh);
-        if (it == byName.end()) { err = row + "no mesh of that name"; return false; }
-        if (it->second == SIZE_MAX) { err = row + "several meshes have that name"; return false; }
-        b = base[it->second]; e = base[it->second + 1];
+        const size_t k = find_mesh(byName, o.mesh, row, err);
+        if (k == SIZE_MAX) return false;
+        b = base[k]; e = base[k + 1];
         if (rank == 2 && size_t(o.slot) >= e - b) { err = row + "slot out of range (the mesh has slots 0.." + std::to_string(e - b - 1) + ")"; return false; }
         if (rank == 2) { b += size_t(o.slot); e = b + 1; }
       }
       const Slot s{float(o.rho), float(o.tau), o.glass ? float(tn_from_Tn(o.tau)) : 0.f, o.glass ? kSlotGlass : 0u};
       std::fill(out.begin() + std::ptrdiff_t(b), out.begin() + std::ptrdiff_t(e), s);
     }
+  return true;
+}
+
+bool resolve_no_occlude(const std::vector<Mesh>& meshes, const std::vector<std::string>& names, std::vector<char>& open, std::string& err) {
+  open.assign(meshes.size(), 0);
+  if (names.empty()) return true;
+  const Names byName = mesh_names(meshes);
+  for (const std::string& n : names) {
+    const std::string row = "--no-occlude " + n + ": ";
+    const size_t k = find_mesh(byName, n, row, err);
+    if (k == SIZE_MAX) return false;
+    if (!meshes[k].sensor) { err = row + "a context mesh (leave it out to drop its shade)"; return false; }
+    open[k] = 1;
+  }
   return true;
 }
 

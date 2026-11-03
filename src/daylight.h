@@ -59,6 +59,7 @@ struct Options {
   bool cullBackfaces = false;         // occluders one-sided (winding); default two-sided like Radiance
   bool onVertices = false;            // sensors on points instead of faces
   bool selfOcclude = true;            // sensor meshes also block rays
+  std::vector<std::string> noOcclude; // ... but not these (Mesh::name, as in --optics): analysed, invisible to rays (no shade, no reflection)
   int mf = 1;                        // sky density: 1 (145 patches), 2 (577), 4 (2305)
   int patchSamples = 1;               // physical: K = m*m stratified rays per patch
   double ground = 0.2;                // ground reflectance
@@ -77,9 +78,9 @@ struct Options {
   std::string dumpBitsPath, dumpSky, dumpSun;   // validation dumps; empty = off (GPU selection: CUDA_VISIBLE_DEVICES)
   // Scene identity for long-lived callers (a server). Non-empty and equal to the previous run's key: the occluder
   // triangles and the acceleration structure of that run stay resident and are reused (the caller guarantees the
-  // meshes and selfOcclude are unchanged; optics values may change, the set of transmitting slots, and with bounces
-  // whether the slots' rho or glass differ, are part of the identity). Empty (the CLI): rebuilt every run. The GPU
-  // context is kept either way.
+  // meshes and selfOcclude are unchanged; optics values may change; the noOcclude meshes, the set of transmitting slots
+  // and, with bounces, whether the slots' rho or glass differ are part of the identity). Empty (the CLI): rebuilt every
+  // run. The GPU context is kept either way.
   std::string sceneKey;
   int residentScenes = 1;              // keyed scenes kept in VRAM (most recent first); more than 1 lets users alternate cheaply
   const std::atomic<bool>* cancel = nullptr;   // set by another thread: run() stops at its next check and fails with "cancelled"
@@ -112,8 +113,8 @@ bool read_epw(std::istream& in, const std::string& label, Weather& out, std::str
 // (NOAA position); turbidity >= 1 (3 = clean temperate air, 5-7 = urban/humid).
 bool clear_sky_weather(double lat, double lon, double tz, double turbidity, double altitude, Weather& out, std::string& err);
 // weather may be null only when every quantity is SunHours. One call at a time per process (the GPU state is shared).
-// Fails on bad Options (ranges, mode rules) and on optics rows the meshes do not resolve (unknown / ambiguous name,
-// slot out of range, duplicate row).
+// Fails on bad Options (ranges, mode rules), on optics rows the meshes do not resolve (unknown / ambiguous name,
+// slot out of range, duplicate row) and on noOcclude names that are unknown, ambiguous or a context mesh.
 bool run(const std::vector<Mesh>& meshes, const Weather* weather, const Options& opt, Result& out, std::string& err);
 
 }  // namespace daylight

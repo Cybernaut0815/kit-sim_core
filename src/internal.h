@@ -68,6 +68,9 @@ bool optics_ok(const Options& opt, std::string& err);
 // One Slot per global slot from the rows (NAME/SLOT > NAME > * > rho 0.2 tau 0; glass: tn_from_Tn(tau), kSlotGlass).
 // Errors: unknown or ambiguous mesh name, slot out of range, duplicate row, a Mesh::slot not one per face.
 bool resolve_optics(const std::vector<Mesh>& meshes, const std::vector<Optics>& rows, std::vector<Slot>& out, std::string& err);
+// open[k] = 1 when Options::noOcclude names mesh k (a name given twice counts once). Errors: an unknown or ambiguous
+// name, a context mesh.
+bool resolve_no_occlude(const std::vector<Mesh>& meshes, const std::vector<std::string>& names, std::vector<char>& open, std::string& err);
 // Faces of slot s in m (recentred by c) as one closed thin solid: positions welded on a 1e-5 m grid, every edge used
 // as often in each direction (closed, consistently wound), 2 |V| / S < 0.1 m -> kSlotThin, | kSlotInward when the signed
 // volume is negative, | kSlotTwin instead when 2 |V| / S is below the weld grid (faces repeated with the opposite

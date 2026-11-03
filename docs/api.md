@@ -27,7 +27,10 @@ identity of its meshes + `selfOcclude`: when the key equals the previous run's, 
 acceleration structure stay resident and only sensors, directions and the trace are redone; the GPU context is kept
 for the whole process either way. `Options::residentScenes = N` keeps up to N keyed scenes in VRAM (least recently
 used freed first, and while less than 1 GB is free), so users who alternate between models do not rebuild each other's;
-`Result::sceneReused` tells whether the run reused one. Optics: `Options::optics` holds the `--optics` rows
+`Result::sceneReused` tells whether the run reused one. `Options::noOcclude` (`--no-occlude`: sensor meshes, by
+`Mesh::name`, that are analysed but left out of the acceleration structure) needs no place in the key: `run()` adds the
+set, so a scene built for another set is never reused, and fails on a name that is unknown, ambiguous or a context
+mesh. Optics: `Options::optics` holds the `--optics` rows
 (`daylight::Optics {mesh, slot, rho, tau, glass}`, mesh = `Mesh::name`, slot -1 = the whole mesh, face slots from
 `Mesh::slot`), `Options::transmission` and `Options::fresnel` the switches, `Options::bounces` (0..20) and
 `Options::bounceSamples` (64..65536) the reflected light ([cli.md](cli.md)). `run()` fails on rows or switches out of

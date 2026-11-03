@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0 AND LicenseRef-Commons-Clause-1.0
 // Checks for mesh.cpp: OBJ / .dmesh readers, triangulation, sensor rules (ladybug / physical), sides, offset, optics
-// slots (thin solids, --optics / --bounces grammar via cli::parse, resolution and its errors).
+// slots (thin solids, --optics / --bounces / --no-occlude grammar via cli::parse, resolution and its errors).
 #include "cli.h"
 #include "glass.h"
 #include "internal.h"
@@ -363,6 +363,12 @@ int check_mesh(const char* testsDir) {
     Options lbb; lbb.mode = Mode::Ladybug; lbb.bounces = 2;
     Options few; few.bounceSamples = 0;
     CHECK(!optics_ok(lbb, err) && !optics_ok(few, err));   // run() checks the same
+    // --no-occlude NAME[;NAME...]: repeatable, ';' packs names (every other character belongs to one); an empty NAME is refused
+    CHECK(parse({"m.obj", "--no-occlude", "Facade/East;/World/Roof/2", "--no-occlude", "a=b"}, a, err) == 0 &&
+          a.opt.noOcclude == std::vector<std::string>({"Facade/East", "/World/Roof/2", "a=b"}));
+    CHECK(parse({"m.obj"}, a, err) == 0 && a.opt.noOcclude.empty());
+    for (const char* token : {"", ";a", "a;", "a;;b"}) CHECK(parse({"m.obj", "--no-occlude", token}, a, err) == 1 && err.find("empty NAME") != std::string::npos);
+    CHECK(parse({"m.obj", "--no-occlude"}, a, err) == 1 && err == "missing value for --no-occlude");
   }
 
   // --- resolution: precedence NAME/SLOT > NAME > * > built-in (rho 0.2, tau 0), glass tn, and every error
@@ -398,6 +404,14 @@ int check_mesh(const char* testsDir) {
     CHECK(resolve_optics({fe, roof, twin}, {{"fe", -1, 0.2, 0, false}}, s, err) == false);   // unknown, with a repeated name elsewhere
     Mesh odd = wall; odd.slot.pop_back();                                                 // Mesh::slot not one per face
     err.clear(); CHECK(!resolve_optics({odd}, {}, s, err) && err.find("2 slots for 3 faces") != std::string::npos);
+    // --no-occlude names: a flag per mesh (a name given twice counts once); unknown, ambiguous and context names refused
+    Mesh city = roof; city.name = "city"; city.sensor = false;
+    std::vector<char> open;
+    CHECK(resolve_no_occlude({fe, wall, roof, city}, {"roof", "Facade/East", "roof"}, open, err) && open == std::vector<char>({1, 0, 1, 0}));
+    CHECK(resolve_no_occlude({fe, roof, twin, city}, {}, open, err) && open == std::vector<char>(4, 0));   // nothing named: no lookup
+    err.clear(); CHECK(!resolve_no_occlude(ms, {"wall", "Facade"}, open, err) && err == "--no-occlude Facade: no mesh of that name");
+    err.clear(); CHECK(!resolve_no_occlude({fe, roof, twin}, {"roof"}, open, err) && err == "--no-occlude roof: several meshes have that name");
+    err.clear(); CHECK(!resolve_no_occlude({fe, city}, {"city"}, open, err) && err.rfind("--no-occlude city: a context mesh", 0) == 0);
   }
   if (failures) std::printf("check_mesh: %d failure(s)\n", failures);
   return failures;

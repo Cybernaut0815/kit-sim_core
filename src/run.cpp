@@ -24,8 +24,8 @@ inline float3 neg(float3 v) { return float3{-v.x, -v.y, -v.z}; }
 // Process-lifetime GPU state. Created on first use and never destroyed: CUDA / OptiX teardown from a static
 // destructor runs after the runtime has unloaded and can crash at exit, and the OS reclaims the device anyway.
 // gpu_build / upload / grow free or reuse their previous buffers, so one Gpu serves every run of the process.
-// `key` is the Options::sceneKey (+ the transmitting slots, or that the bounce pass needs a hit record per slot) whose
-// occluder triangles / GAS are resident (empty = none).
+// `key` is the Options::sceneKey (+ the transmitting slots, or that the bounce pass needs a hit record per slot, + the
+// --no-occlude meshes) whose occluder triangles / GAS are resident (empty = none).
 // Not thread-safe: run() is one-at-a-time, as the CLI and the server (one GPU, a mutex) use it.
 // `cur` is the scene installed in the Gpu; `parked` holds up to Options::residentScenes - 1 other scenes' GAS in VRAM,
 // most recent first, so users who alternate between scenes do not rebuild each other's.
@@ -110,14 +110,16 @@ bool run(const std::vector<Mesh>& meshes, const Weather* w, const Options& opt, 
   // ---- geometry ------------------------------------------------------------------------------------------------
   // Optics per global slot. --transmission off: every slot opaque (bits, no any-hit); --fresnel off: glass passes tau
   // and never mirrors, with or without transmission (the glass flag is dropped).
-  // Only a slot with faces in the GAS transmits (not a sensor mesh's under --no-self-occlude, nor an id no face uses),
-  // and only those slots' rho and glass matter to the bounce pass (glass mirrors with --transmission off too).
+  // Only a slot with faces in the GAS transmits (not a sensor mesh's under --no-self-occlude or --no-occlude, nor an id
+  // no face uses), and only those slots' rho and glass matter to the bounce pass (glass mirrors with --transmission off too).
   std::vector<Slot> slots;
-  if (!resolve_optics(meshes, opt.optics, slots, err)) return false;
+  std::vector<char> open;   // per mesh: --no-occlude names it
+  if (!resolve_optics(meshes, opt.optics, slots, err) || !resolve_no_occlude(meshes, opt.noOcclude, open, err)) return false;
+  const auto blocks = [&](size_t k) { return !meshes[k].sensor || (opt.selfOcclude && !open[k]); };   // mesh k goes into the GAS
   std::vector<char> inGas(opt.transmission || reflect ? slots.size() : 0, 0);
   for (size_t k = 0, b = 0; !inGas.empty() && k < meshes.size(); b += slot_count(meshes[k++])) {
     const Mesh& m = meshes[k];
-    if (m.sensor && !opt.selfOcclude) continue;
+    if (!blocks(k)) continue;
     if (m.slot.empty()) inGas[b] = !m.counts.empty();
     else for (uint16_t s : m.slot) inGas[b + s] = 1;
   }
@@ -137,8 +139,10 @@ bool run(const std::vector<Mesh>& meshes, const Weather* w, const Options& opt, 
   // visibility) under a key of its own, so toggling --bounces on a resident scene rebuilds it or parks a second copy;
   // read a hit's slot through its primitive index (Tris::slot on the device) instead if that matters
   const bool translucent = !lit.empty(), slotted = translucent || differs;   // per-triangle SBT offsets (gpu_build)
+  std::string openSet;   // the --no-occlude meshes: left out of the GAS, so part of its identity
+  for (size_t k = 0; k < open.size(); ++k) if (open[k]) openSet += (openSet.empty() ? "\nopen " : ",") + std::to_string(k);
   Resident& R = resident();
-  const std::string key = opt.sceneKey.empty() || !slotted ? opt.sceneKey : opt.sceneKey + (translucent ? "\ntransmitting " + lit : "\nslot records");
+  const std::string key = opt.sceneKey.empty() ? "" : opt.sceneKey + (translucent ? "\ntransmitting " + lit : slotted ? "\nslot records" : "") + openSet;
   const bool installed = !key.empty() && R.gpu && key == R.cur.key;   // same meshes + selfOcclude as the scene in the Gpu
   const auto parkedAt = [&] { return std::find_if(R.parked.begin(), R.parked.end(), [&](const Scene& s) { return s.key == key; }); };
   const bool reuse = installed || (!key.empty() && R.gpu && parkedAt() != R.parked.end());
@@ -152,9 +156,10 @@ bool run(const std::vector<Mesh>& meshes, const Weather* w, const Options& opt, 
     bbox_centre(meshes, c);
     if (translucent) thin.assign(slots.size(), 0);
     size_t base = 0;
-    for (const Mesh& m : meshes) {
+    for (size_t k = 0; k < meshes.size(); ++k) {
+      const Mesh& m = meshes[k];
       const size_t ns = slot_count(m);
-      if (!m.sensor || opt.selfOcclude) {
+      if (blocks(k)) {
         triangulate(m, c, tris, skipped, static_cast<uint32_t>(base));
         // ponytail: one pass over the mesh per transmitting slot; bucket the faces by slot if meshes with hundreds appear
         for (size_t s = 0; translucent && s < ns; ++s)

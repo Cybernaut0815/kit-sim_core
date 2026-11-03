@@ -31,6 +31,7 @@ const char* const kUsage =
     "  --time [YYYY-]MM-DDTHH:MM | --from TS --to TS [--step MIN]   default: annual over the EPW rows\n"
     "  --hours HH:MM-HH:MM      with --from/--to: only these hours of every day (analysis period)\n"
     "  --sky-density 1|2|4  --patch-samples K  --ground RHO  --north DEG  --offset M  --no-self-occlude\n"
+    "  --no-occlude NAME[;NAME...]  these sensor meshes are analysed but cast no shade (NAME as in --optics; repeatable)\n"
     "  --optics SPEC[;SPEC...]  NAME[/SLOT]=RHO[,TAU[,glass|porous]] per mesh / face slot, * = every mesh (repeatable;\n"
     "                           default rho 0.2, tau 0)\n"
     "  --transmission off|on    light through glass / porous slots (default off: every surface opaque)\n"
@@ -112,6 +113,15 @@ int parse(int argc, char** argv, Args& a, std::string& err) {
     else if (f == "--sides") { if (!(v = need(i, "--sides"))) return 1; if (!std::strcmp(v, "front")) a.opt.sides = Sides::Front; else if (!std::strcmp(v, "back")) a.opt.sides = Sides::Back; else if (!std::strcmp(v, "both")) a.opt.sides = Sides::Both; else { err = "--sides front|back|both"; return 1; } }
     else if (f == "--cull-backfaces") a.opt.cullBackfaces = true;
     else if (f == "--no-self-occlude") a.opt.selfOcclude = false;
+    else if (f == "--no-occlude") {   // NAME[;NAME...]; the names are checked by run()
+      if (!(v = need(i, "--no-occlude"))) return 1;
+      const std::string s = v;
+      for (size_t b = 0, e; b <= s.size(); b = e + 1) {
+        e = std::min(s.find(';', b), s.size());
+        if (e == b) { err = "--no-occlude " + s + ": empty NAME"; return 1; }
+        a.opt.noOcclude.push_back(s.substr(b, e - b));
+      }
+    }
     else if (f == "--epw") { if (!(v = need(i, "--epw"))) return 1; a.epw = v; }
     else if (f == "--clear-sky") a.clearSky = true;
     else if (f == "--turbidity") { if (!(v = need(i, "--turbidity"))) return 1; a.turbidity = std::atof(v); }

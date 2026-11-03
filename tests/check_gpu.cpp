@@ -2,8 +2,8 @@
 // GPU module checks: hand-coded ground + box scene, hemisphere cull, Waechter-Binder offset, reduce / series
 // against CPU loops over the downloaded bits or transmittance bytes, adaptive sub-launches, the Radiance glass port,
 // sensors in the plane of km-sized triangles, the reflected-light pass against closed forms (bins, events, chunks), and
-// run() end to end with optics (slots, thin solids, culling, residency, the dump), bounces and own planes. Self-skips
-// without a CUDA device.
+// run() end to end with optics (slots, thin solids, culling, residency, the dump), bounces, own planes and
+// --no-occlude. Self-skips without a CUDA device.
 #include "glass.h"
 #include "internal.h"
 #include <algorithm>
@@ -824,7 +824,8 @@ int check_gpu(const char* testsDir) {
     CHECK(r.sceneReused && r.values == std::vector<double>({b255(64), b255(128), b255(64), b255(128), b255(128)}));
 
     // --dump-bits with a transmitting slot: uint8 rows [sensors x directions], here three sun steps of the two-mesh case;
-    // a transmitting slot without faces in the GAS (the sensor mesh under --no-self-occlude) keeps the uint32 bits
+    // a transmitting slot without faces in the GAS (the sensor mesh under --no-self-occlude or --no-occlude) keeps the
+    // uint32 bits
     const auto npy = [](const std::string& path, std::string& head, std::vector<uint8_t>& data) {
       std::FILE* f = std::fopen(path.c_str(), "rb");
       if (!f) return false;
@@ -844,6 +845,10 @@ int check_gpu(const char* testsDir) {
     CHECK(npy(od.dumpBitsPath, head, data) && head.find("'descr': '<u1'") != std::string::npos && head.find("'shape': (4, 3)") != std::string::npos);
     CHECK(data == std::vector<uint8_t>({255, 255, 255, 128, 128, 128, 64, 64, 64, 0, 0, 0}));
     Options ou = od; ou.selfOcclude = false; ou.optics = {{"ground", -1, 0.2, 0.5, false}};
+    r = sun(ab, ou);
+    CHECK(r.values == std::vector<double>(4, 0.0));
+    CHECK(npy(ou.dumpBitsPath, head, data) && head.find("'descr': '<u4'") != std::string::npos && head.find("'shape': (4, 1)") != std::string::npos);
+    ou.selfOcclude = true; ou.noOcclude = {"ground"}; std::remove(ou.dumpBitsPath.c_str());
     r = sun(ab, ou);
     CHECK(r.values == std::vector<double>(4, 0.0));
     CHECK(npy(ou.dumpBitsPath, head, data) && head.find("'descr': '<u4'") != std::string::npos && head.find("'shape': (4, 1)") != std::string::npos);
@@ -977,6 +982,50 @@ int check_gpu(const char* testsDir) {
       CHECK(own.values.size() == 10 && own.values == open.values);
       if (own.values.size() == 10) std::printf("run: %s and the squares in it, as unblocked: %.3f kWh/m2, %.0f h\n", scene[0].name.c_str(), own.values[2], own.values[3]);
     }
+  }
+
+  // --no-occlude end to end, June 21, clear sky: a lid (a sensor mesh) 1 m over the first of the room's two squares,
+  // inside the room's bounding box (the recentring stays), and a context square 1 m over the second. Listed, the lid is
+  // analysed but shades nothing: the room gets the rows it gets without the lid. Every sensor mesh listed is
+  // --no-self-occlude, bit for bit. On one scene key the set is part of the identity: another set rebuilds, going back
+  // reuses the parked scene, and a name given twice counts once
+  {
+    std::string e;
+    Weather cs;
+    CHECK(clear_sky_weather(42.35, -71.07, -5, 3, 0, cs, e));
+    const auto go = [&](const std::vector<Mesh>& ms, const Options& op) {
+      Result r; std::string er;
+      if (!run(ms, &cs, op, r, er)) { std::printf("run: %s\n", er.c_str()); ++failures; }
+      return r;
+    };
+    Options o;
+    o.quantities = {Quantity::Radiation, Quantity::SunHours};
+    CHECK(parse_hoy("06-21T00:00", false, o.t0, e) && parse_hoy("06-22T00:00", false, o.t1, e));
+    Mesh room = squares("room", true, 0, 0.5, {0, 100});
+    for (size_t j = 0; j < 4; ++j) room.points[14 + 3 * j] = 1;   // the second square 1 m up: the room spans z 0..1
+    const std::vector<Mesh> all{room, squares("lid", true, 1, 0.5, {0}), squares("shade", false, 2, 0.5, {100})}, bare{all[0], all[2]};
+    Options lid = o, both = o, none = o;
+    lid.noOcclude = {"lid"}; both.noOcclude = {"room", "lid"}; none.selfOcclude = false;
+    const Result shaded = go(all, o), rb = go(bare, o), rl = go(all, lid), r2 = go(all, both), rn = go(all, none);
+    CHECK(shaded.values.size() == 6 && rl.values.size() == 6 && rb.values.size() == 4 && rn.values.size() == 6);
+    if (shaded.values.size() == 6 && rl.values.size() == 6 && rb.values.size() == 4 && rn.values.size() == 6) {
+      CHECK(std::vector<double>(rl.values.begin(), rl.values.begin() + 4) == rb.values);
+      CHECK(shaded.values[0] < rb.values[0] && shaded.values[1] < rb.values[1]);   // not listed, the lid shades
+      CHECK(r2.values == rn.values && rn.values[2] < rn.values[0]);   // the context square still shades
+      std::printf("run: --no-occlude lid: the square under it gets %.3f kWh/m2, %.0f h (shaded by it %.3f, %.0f h)\n", rl.values[0], rl.values[1],
+                  shaded.values[0], shaded.values[1]);
+    }
+    Options k = o;
+    k.sceneKey = "no-occlude"; k.residentScenes = 2;
+    const Result k0 = go(all, k);
+    k.noOcclude = {"lid"};
+    const Result k1 = go(all, k);
+    k.noOcclude.clear();
+    const Result k2 = go(all, k);
+    k.noOcclude = {"lid", "lid"};
+    const Result k3 = go(all, k);
+    CHECK(!k0.sceneReused && !k1.sceneReused && k2.sceneReused && k3.sceneReused);
+    CHECK(k0.values == shaded.values && k1.values == rl.values && k2.values == shaded.values && k3.values == rl.values);
   }
   return failures;
 }

@@ -133,6 +133,7 @@ int main(int argc, char** argv) {
       if (!load(p, false, a.opt.verbose, meshes, err)) { std::fprintf(stderr, "error: %s\n", err.c_str()); return 2; }
   }
   if (std::vector<Slot> slots; !resolve_optics(meshes, a.opt.optics, slots, err)) return usage_error(err.c_str());   // names known now
+  if (std::vector<char> open; !resolve_no_occlude(meshes, a.opt.noOcclude, open, err)) return usage_error(err.c_str());
 
   const auto t0 = std::chrono::steady_clock::now();
   Result res;

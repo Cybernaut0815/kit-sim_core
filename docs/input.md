@@ -25,10 +25,10 @@ values, is an error; bytes after the last array are ignored (readers older than 
 as plain geometry). OBJ and USD input is geometry only: every face is slot 0. A slot carries the numbers that
 `--optics NAME/SLOT=...` gives it ([cli.md](cli.md)); a mesh has slots 0 to its largest face slot.
 
-Positional files are analysed (sensors) and, by default, also block rays; `--context FILE` files block only (roles
-are per file). Location and time: `--epw FILE` gives weather and location, `--clear-sky` synthesises weather for
-`--lat --lon`, `--lat --lon --tz` alone serve sun-hour runs; `--time`, `--from/--to/--step` (plus `--hours` for the
-same hours of every day) select instants, the default is annual.
+Positional files are analysed (sensors) and, by default, also block rays unless `--no-occlude` names their meshes;
+`--context FILE` files block only (roles are per file). Location and time: `--epw FILE` gives weather and location,
+`--clear-sky` synthesises weather for `--lat --lon`, `--lat --lon --tz` alone serve sun-hour runs; `--time`,
+`--from/--to/--step` (plus `--hours` for the same hours of every day) select instants, the default is annual.
 
 ## Semantics
 
@@ -45,6 +45,9 @@ same hours of every day) select instants, the default is annual.
   vertex normal where a facade meets the ground) is blocked by it; only near the recentred origin, where the nudge is
   2^-16 m, can a km-sized triangle's float error still let a few such rays through (a 45 deg vertex sensor at a
   facade's foot on a 2 km ground: up to 15 of its directions below the horizon, +0.7 % radiation).
+- **`--no-occlude NAME[;NAME...]`** leaves only the named sensor meshes out of the acceleration structure: they are
+  analysed but cast no shade and reflect nothing, e.g. a measuring grid inside a room gets the room's shade and casts
+  none.
 - **Hemisphere cull.** Per sensor, directions with a non-positive cosine against its normal are never traced and
   contribute nothing. No sensor is dropped; every element gets a row, even one looking into a wall (then 0).
 - **`--cull-backfaces`.** Occluder triangles whose front side faces away from the ray are ignored, decided per ray

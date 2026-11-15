@@ -5,7 +5,9 @@
 #include <algorithm>
 #include <cmath>
 #include <cstdio>
+#include <exception>
 #include <memory>
+#include <new>
 
 namespace daylight {
 namespace {
@@ -44,6 +46,11 @@ struct Resident {
 };
 Resident& resident() { static Resident r; return r; }
 
+// ponytail: a guess at what the driver and OptiX allocate beside our own buffers during a build or a run; measure it if
+// builds that "fit" still fail
+constexpr size_t kVramMargin = size_t(128) << 20;
+std::string gib(size_t bytes) { char s[32]; std::snprintf(s, sizeof s, "%.2f GB", bytes / 1073741824.0); return s; }
+
 }  // namespace
 
 // NumPy .npy v1.0 header (little-endian, C order). descr "<f4", "<f8" or "<u4". Data rows follow.
@@ -62,7 +69,8 @@ bool npy_write_header(std::FILE* f, size_t rows, size_t cols, const char* descr)
   return true;
 }
 
-bool run(const std::vector<Mesh>& meshes, const Weather* w, const Options& opt, Result& out, std::string& err) {
+// The run itself; `stage` names what it is doing, for the out-of-memory message of run() below.
+static bool run_views(const std::vector<MeshView>& meshes, const Weather* w, const Options& opt, Result& out, std::string& err, const char*& stage) {
   const auto cancelled = [&] { if (opt.cancel && opt.cancel->load()) { err = "cancelled"; return true; } return false; };
   // ---- validation --------------------------------------------------------------------------------------------
   if (!optics_ok(opt, err)) return false;
@@ -117,8 +125,8 @@ bool run(const std::vector<Mesh>& meshes, const Weather* w, const Options& opt, 
   if (!resolve_optics(meshes, opt.optics, slots, err) || !resolve_no_occlude(meshes, opt.noOcclude, open, err)) return false;
   const auto blocks = [&](size_t k) { return !meshes[k].sensor || (opt.selfOcclude && !open[k]); };   // mesh k goes into the GAS
   std::vector<char> inGas(opt.transmission || reflect ? slots.size() : 0, 0);
-  for (size_t k = 0, b = 0; !inGas.empty() && k < meshes.size(); b += slot_count(meshes[k++])) {
-    const Mesh& m = meshes[k];
+  for (size_t k = 0, b = 0; !inGas.empty() && k < meshes.size(); b += slot_count(*meshes[k++].mesh)) {
+    const Mesh& m = *meshes[k].mesh;
     if (!blocks(k)) continue;
     if (m.slot.empty()) inGas[b] = !m.counts.empty();
     else for (uint16_t s : m.slot) inGas[b + s] = 1;
@@ -149,55 +157,22 @@ bool run(const std::vector<Mesh>& meshes, const Weather* w, const Options& opt, 
   const auto parkedAt = [&] { return std::find_if(R.parked.begin(), R.parked.end(), [&](const Scene& s) { return s.key == key; }); };
   const bool reuse = installed || (!key.empty() && R.gpu && parkedAt() != R.parked.end());
   out.sceneReused = reuse;
-  double c[3];
-  Tris tris;
+  double c[3] = {0, 0, 0};
   int skipped = 0;
   std::vector<unsigned> thin;
-  if (reuse) { const Scene& s = installed ? R.cur : *parkedAt(); std::copy(s.c, s.c + 3, c); skipped = s.skipped; thin = s.thin; }
-  else {
-    bbox_centre(meshes, c);
-    if (translucent) thin.assign(slots.size(), 0);
-    size_t base = 0;
-    for (size_t k = 0; k < meshes.size(); ++k) {
-      const Mesh& m = meshes[k];
-      const size_t ns = slot_count(m);
-      if (blocks(k)) {
-        triangulate(m, c, tris, skipped, static_cast<uint32_t>(base));
-        // ponytail: one pass over the mesh per transmitting slot; bucket the faces by slot if meshes with hundreds appear
-        for (size_t s = 0; translucent && s < ns; ++s)
-          if (slots[base + s].tau > 0) thin[base + s] = thin_solid(m, static_cast<unsigned>(s), c);
-      }
-      base += ns;
-    }
-  }
-  // A thin solid's exit face passes everything. With --cull-backfaces a closed solid is crossed through one front face
-  // anyway (the other is culled): tau once without the rule, whichever way it is wound.
-  for (size_t s = 0; !opt.cullBackfaces && s < slots.size() && s < thin.size(); ++s) slots[s].flags |= thin[s];
-  Sensors sens;
-  std::string warn;
-  out.ranges.clear();
-  for (const Mesh& m : meshes) {
-    if (!m.sensor) continue;
-    std::string wmsg;
-    size_t n = make_sensors(m, opt, c, sens, wmsg);
-    if (wmsg.rfind("error:", 0) == 0) { err = wmsg; return false; }
-    if (!wmsg.empty()) warn += (warn.empty() ? "" : "; ") + wmsg;
-    out.ranges.emplace_back(m.name, n);
-  }
+  size_t nTris = 0;
+  if (reuse) { const Scene& s = installed ? R.cur : *parkedAt(); std::copy(s.c, s.c + 3, c); skipped = s.skipped; thin = s.thin; nTris = s.nTris; }
+  // The sensor elements follow from the counts (one per face, or per point), so the result's size is known before any
+  // geometry is built; the occluder triangles and the sensors are made later, one after the other (see the GPU block).
   const int nS = opt.sides == Sides::Both ? 2 : 1;
-  const size_t nSens = sens.p.size();
+  size_t nElem = 0;
+  for (const MeshView& v : meshes) if (v.sensor) nElem += opt.onVertices ? v.mesh->numPoints() : v.mesh->numFaces();
+  const size_t nSens = nElem * static_cast<size_t>(nS);
   if (nSens == 0) { err = "no sensor elements (no sensor meshes, or all faces degenerate)"; return false; }
-  if (opt.verbose) {
-    std::fprintf(stderr, "info: %zu sensors, %zu triangles%s, %zu steps (%.1f h)\n", nSens, reuse ? (installed ? R.cur : *parkedAt()).nTris : tris.i.size(),
-                 reuse ? " (scene reused)" : "", T, durationHours);
-    if (skipped) std::fprintf(stderr, "warn: %d degenerate faces skipped in occluders\n", skipped);
-    if (!warn.empty()) std::fprintf(stderr, "warn: %s\n", warn.c_str());
-    if (translucent) {
-      size_t nLit = 0, nThin = 0;
-      for (const Slot& s : slots) { nLit += s.tau > 0; nThin += (s.flags & kSlotThin) != 0; }
-      std::fprintf(stderr, "info: %zu of %zu optics slots transmit (%zu thin solids)\n", nLit, slots.size(), nThin);
-    }
-  }
+  if (ladybug)   // RadiationStudy's rule (make_sensors says the same), checked before the scene is built
+    for (const MeshView& v : meshes)
+      for (size_t f = 0; v.sensor && f < v.mesh->counts.size(); ++f)
+        if (v.mesh->counts[f] > 4) { err = "error: ladybug mode supports tri/quad faces only (mesh " + v.name + ", face " + std::to_string(f) + ")"; return false; }
 
   // ---- sun positions per step (NOAA, ladybug semantics) ----------------------------------------------------------
   std::vector<Sun> suns(T);
@@ -405,11 +380,18 @@ bool run(const std::vector<Mesh>& meshes, const Weather* w, const Options& opt, 
     for (size_t p = 0; p < Pz; ++p) Wdc[qi][p + 1] = static_cast<float>(vis ? skyVis[p] + sunBinVis[p] : skyRad[p] + sunBinRad[p]);
   }
 
-  // ---- GPU -----------------------------------------------------------------------------------------------------
-  std::vector<double> acc(nSens * nQ, 0.0);
+  // ---- GPU: the scene (resident or built), then the sensors, then the result ---------------------------------------
+  // Each big host array lives only as long as it is needed: the occluder triangles until the GAS is built, the sensors
+  // until they are on the device, and the result is written chunk by chunk. They never coexist.
   std::vector<uint32_t> bitsBuf, bitRows;
   std::vector<uint8_t> byteBuf, byteRows;
   const size_t nWords = (nDir + 31) / 32;
+  // Per-sensor bytes of the largest per-chunk device buffer: visibility (bits, or transmittance bytes), the series tile,
+  // the reflected-light rows. Options::chunkBytes (256 MiB) caps each; it is halved when the GPU is short.
+  // ponytail: the rows follow --sky-density (P + 1 bins): at MF 4 they cut chunks to ~29k sensors, which slowed both
+  // passes on --bench (not on a city-like scene); bin reflected light coarser if that matters
+  const size_t perSensor = std::max<size_t>(1, std::max({translucent ? nDir : 4 * nWords, series ? 4 * size_t(Tup) : size_t(0), reflect ? 4 * (Pz + 1) : size_t(0)}));
+  size_t chunkBytes = opt.chunkBytes;
   // series .npy [nSens x Tup] f4; bits .npy [nSens x nWords] u4, or with a transmitting slot transmittance [nSens x nDir] u1
   File sf(nullptr, std::fclose), bf(nullptr, std::fclose);
   std::vector<double> seriesHoys;
@@ -422,10 +404,11 @@ bool run(const std::vector<Mesh>& meshes, const Weather* w, const Options& opt, 
     bf.reset(std::fopen(opt.dumpBitsPath.c_str(), "wb"));
     if (!bf || !npy_write_header(bf.get(), nSens, translucent ? nDir : nWords, translucent ? "<u1" : "<u4")) { err = "cannot write " + opt.dumpBitsPath; return false; }
   }
+  Gpu* g = nullptr;   // none without directions: no rays, the values stay 0
   if (nDir > 0) {
     if (cancelled()) return false;
     if (!R.gpu && !(R.gpu = gpu_init(err))) return false;
-    Gpu* g = R.gpu;
+    g = R.gpu;
     if (!installed) {
       // park the installed keyed scene when more than one may stay resident; an unparked GAS is freed by attach / build
       if (!R.cur.key.empty() && opt.residentScenes > 1) { Scene s = R.cur; s.gas = gpu_detach(*g); R.parked.insert(R.parked.begin(), s); }
@@ -437,29 +420,133 @@ bool run(const std::vector<Mesh>& meshes, const Weather* w, const Options& opt, 
         s.gas = GasSlot{};
         R.cur = s;
       } else {
+        stage = "triangulating the scene";
+        bbox_centre(meshes, c);
+        size_t nPts = 0, nTri = 0;   // exact sizes up front: growing would hold the old and the new array at once
+        for (size_t k = 0; k < meshes.size(); ++k) {
+          if (!blocks(k)) continue;
+          nPts += meshes[k].mesh->numPoints();
+          for (int n : meshes[k].mesh->counts) nTri += n >= 3 ? size_t(n - 2) : 0;   // earcut gives at most n - 2
+        }
+        // the build's peak must fit: the per-run buffers go, then parked scenes (oldest first) until OptiX's estimate does;
+        // a scene too big for the free GPU memory fails here, at once and with its numbers, not in a cudaMalloc later
+        stage = "making room on the GPU";
+        gpu_trim(*g, true);
+        const size_t need = gpu_build_bytes(*g, nPts, nTri, slotted, err) + kVramMargin;
+        if (need < kVramMargin) return false;   // SIZE_MAX + margin wrapped: OptiX could not estimate (err says why)
+        while (!R.parked.empty() && gpu_free_bytes() < need) { gpu_free(R.parked.back().gas); R.parked.pop_back(); }
+        if (const size_t free = gpu_free_bytes(); free < need) {
+          err = "out of memory: building the scene (" + std::to_string(nTri) + " triangles) needs " + gib(need) + " of GPU memory, " + gib(free) +
+                " free (close other programs that use the GPU, or run fewer meshes)";
+          return false;
+        }
+        Tris tris;
+        tris.v.reserve(nPts);
+        tris.i.reserve(nTri);
+        if (slotted) tris.slot.reserve(nTri);   // only per-slot records read a triangle's slot
+        if (translucent) thin.assign(slots.size(), 0);
+        size_t base = 0;
+        for (size_t k = 0; k < meshes.size(); ++k) {
+          const Mesh& m = *meshes[k].mesh;
+          const size_t ns = slot_count(m);
+          if (blocks(k)) {
+            triangulate(m, c, tris, skipped, static_cast<uint32_t>(base), slotted);
+            // ponytail: one pass over the mesh per transmitting slot; bucket the faces by slot if meshes with hundreds appear
+            for (size_t s = 0; translucent && s < ns; ++s)
+              if (slots[base + s].tau > 0) thin[base + s] = thin_solid(m, static_cast<unsigned>(s), c);
+          }
+          base += ns;
+        }
+        stage = "building the scene";
         if (!gpu_build(*g, tris, slots, err, slotted)) return false;
-        R.cur.key = key; std::copy(c, c + 3, R.cur.c); R.cur.nTris = tris.i.size(); R.cur.skipped = skipped; R.cur.thin = thin;
-      }
-      // ponytail: 1 GB VRAM floor for parked scenes (a chunk may hold 3 x 256 MiB: visibility, series tile, bounce rows);
-      // derive it from the run's own needs if large scenes start to fail
-      while (!R.parked.empty() && (R.parked.size() + 1 > size_t(std::max(1, opt.residentScenes)) || gpu_free_bytes() < (size_t(1) << 30))) {
-        gpu_free(R.parked.back().gas);
-        R.parked.pop_back();
-      }
+        nTris = tris.i.size();
+        R.cur.key = key; std::copy(c, c + 3, R.cur.c); R.cur.nTris = nTris; R.cur.skipped = skipped; R.cur.thin = thin;
+      }   // the triangles go here, before the sensors are made
     }
+    // Beside the scene, this run needs its sensors and one chunk's buffers (visibility, and the reflected-light rows and
+    // the series tile when asked for). The last run's go first; then parked scenes beyond --gpu-scenes or in the way;
+    // then chunks shrink down to 32 MiB (the numbers do not depend on the chunking); else the run fails with its numbers.
+    gpu_trim(*g, true);
+    const size_t buffers = 1 + (reflect ? 1 : 0) + (series ? 1 : 0);
+    const auto runNeed = [&] {
+      const size_t nc = std::min(nSens, std::max<size_t>(1, chunkBytes / perSensor));
+      return nSens * 2 * sizeof(float3) + buffers * nc * perSensor + nc * sizeof(double) + kVramMargin;
+    };
+    while (!R.parked.empty() && (R.parked.size() + 1 > size_t(std::max(1, opt.residentScenes)) || gpu_free_bytes() < runNeed())) {
+      gpu_free(R.parked.back().gas);
+      R.parked.pop_back();
+    }
+    while (gpu_free_bytes() < runNeed() && chunkBytes > (size_t(32) << 20)) chunkBytes /= 2;
+    if (const size_t free = gpu_free_bytes(); free < runNeed()) {
+      err = "out of memory: the run's " + std::to_string(nSens) + " sensors need " + gib(runNeed()) + " of GPU memory beside the scene, " +
+            gib(free) + " free (close other programs that use the GPU, or use fewer receivers)";
+      return false;
+    }
+  }
+  // A thin solid's exit face passes everything. With --cull-backfaces a closed solid is crossed through one front face
+  // anyway (the other is culled): tau once without the rule, whichever way it is wound.
+  for (size_t s = 0; !opt.cullBackfaces && s < slots.size() && s < thin.size(); ++s) slots[s].flags |= thin[s];
+
+  stage = "making the sensors";
+  Sensors sens;
+  sens.p.reserve(nSens);
+  sens.n.reserve(nSens);
+  std::string warn;
+  out.ranges.clear();
+  for (const MeshView& v : meshes) {
+    if (!v.sensor) continue;
+    std::string wmsg;
+    const size_t n = make_sensors(*v.mesh, opt, c, sens, wmsg);
+    if (wmsg.rfind("error:", 0) == 0) { err = wmsg; return false; }
+    if (!wmsg.empty()) warn += (warn.empty() ? "" : "; ") + wmsg;
+    out.ranges.emplace_back(v.name, n);
+  }
+  if (sens.p.size() != nSens) { err = "internal: " + std::to_string(sens.p.size()) + " sensors made for " + std::to_string(nSens); return false; }
+  if (opt.verbose) {
+    std::fprintf(stderr, "info: %zu sensors, %zu triangles%s, %zu steps (%.1f h)\n", nSens, nTris, reuse ? " (scene reused)" : "", T, durationHours);
+    if (skipped) std::fprintf(stderr, "warn: %d degenerate faces skipped in occluders\n", skipped);
+    if (!warn.empty()) std::fprintf(stderr, "warn: %s\n", warn.c_str());
+    if (translucent) {
+      size_t nLit = 0, nThin = 0;
+      for (const Slot& s : slots) { nLit += s.tau > 0; nThin += (s.flags & kSlotThin) != 0; }
+      std::fprintf(stderr, "info: %zu of %zu optics slots transmit (%zu thin solids)\n", nLit, slots.size(), nThin);
+    }
+  }
+  if (g) {
     // a GAS without per-slot records has one, every slot's (ids may run to 65535 per mesh): opaque, of their one rho / glass
     const std::vector<Slot> one{first == SIZE_MAX ? Slot{} : slots[first]};
     if (!gpu_set_scene(*g, sens, D, err) || !gpu_set_slots(*g, slotted ? slots : one, err)) return false;
-    // ponytail: 256 MiB cap on each per-chunk buffer, visibility (bits, or transmittance bytes), the series tile and the
-    // bounce rows; make it a device-memory fraction if it ever thrashes. The rows follow --sky-density (P + 1 bins): at
-    // MF 4 they cut chunks to ~29k sensors, which slowed both passes on --bench (not on a city-like scene); bin
-    // reflected light coarser if that matters
-    const size_t perSensor = std::max({translucent ? nDir : 4 * nWords, series ? 4 * size_t(Tup) : size_t(0), reflect ? 4 * (Pz + 1) : size_t(0)});
-    const size_t ncMax = std::max<size_t>(1, (size_t(256) << 20) / std::max<size_t>(1, perSensor));
+  }
+  sens = Sensors{};   // on the device now
+
+  // ---- the result: N elements x (quantities x sides), quantity-major, written chunk by chunk ------------------------
+  stage = "allocating the result";
+  const size_t C = nQ * static_cast<size_t>(nS);
+  out.columns.clear();
+  for (size_t qi = 0; qi < nQ; ++qi)
+    for (int s = 0; s < nS; ++s)
+      out.columns.push_back(std::string(kQuantityNames[static_cast<size_t>(opt.quantities[qi])]) + ((opt.sides == Sides::Back || (opt.sides == Sides::Both && s == 1)) ? "_back" : "_front"));
+  out.values.clear();
+  out.f32.clear();
+  if (opt.f32Columns) out.f32.assign(C * nElem, 0.f);
+  else out.values.assign(nElem * C, 0.0);
+  // quantity qi of sensor si (element si / nS, side si % nS): the summed weights, as rates where the quantity is one
+  const auto store = [&](size_t si, size_t qi, double v) {
+    const Quantity q = opt.quantities[qi];
+    if (q == Quantity::Irradiance) v = durationHours > 0 ? v * 1000.0 / durationHours : 0.0;
+    else if (q == Quantity::Illuminance) v = durationHours > 0 ? v / durationHours : 0.0;
+    const size_t e = si / static_cast<size_t>(nS), col = qi * static_cast<size_t>(nS) + si % static_cast<size_t>(nS);
+    if (opt.f32Columns) out.f32[col * nElem + e] = static_cast<float>(v);
+    else out.values[e * C + col] = v;
+  };
+
+  if (g) {
+    stage = "tracing";
+    const size_t ncMax = std::max<size_t>(1, chunkBytes / perSensor);
     const unsigned flags = gpu_ray_flags(opt.cullBackfaces, translucent);
     Bounce bounce;
     bounce.N = unsigned(opt.bounces); bounce.M = unsigned(opt.bounceSamples); bounce.mf = opt.mf; bounce.north = opt.north; bounce.cancel = opt.cancel;
-    std::vector<double> tmp;
+    std::vector<double> tmp, tmp2;
     std::vector<float> G, E;
     std::vector<float3> sunVec(nSun);
     std::vector<float> sunW(nSun, 0.f);
@@ -476,16 +563,15 @@ bool run(const std::vector<Mesh>& meshes, const Weather* w, const Options& opt, 
       if (cancelled()) return false;
       const size_t nc = std::min(ncMax, nSens - i0);
       if (!gpu_trace(*g, i0, nc, flags, err)) return false;
+      // the reflected light first: it writes only its own rows (dDc), so the reduces see the trace's visibility as before
+      if (reflect && !gpu_bounce(*g, i0, nc, gpu_bounce_flags(opt.cullBackfaces), bounce, err)) return false;
       tmp.assign(nc, 0.0);
+      tmp2.assign(nc, 0.0);
       for (size_t qi = 0; qi < nQ; ++qi) {
         if (!gpu_reduce(*g, nc, Wq[qi].data(), opt.quantities[qi] != Quantity::SunHours, tmp.data(), err)) return false;
-        for (size_t i = 0; i < nc; ++i) acc[(i0 + i) * nQ + qi] = tmp[i];
-      }
-      if (reflect && !gpu_bounce(*g, i0, nc, gpu_bounce_flags(opt.cullBackfaces), bounce, err)) return false;
-      for (size_t qi = 0; qi < nQ; ++qi) {
-        if (Wdc[qi].empty()) continue;
-        if (!gpu_reduce_dc(*g, nc, Wdc[qi].data(), tmp.data(), err)) return false;
-        for (size_t i = 0; i < nc; ++i) acc[(i0 + i) * nQ + qi] += tmp[i];
+        const bool dc = !Wdc[qi].empty();
+        if (dc && !gpu_reduce_dc(*g, nc, Wdc[qi].data(), tmp2.data(), err)) return false;
+        for (size_t i = 0; i < nc; ++i) store(i0 + i, qi, dc ? tmp[i] + tmp2[i] : tmp[i]);   // the same double sum as before
       }
       if (bf && translucent) {   // direction-major bytes on the device -> row-major [nc x nDir] rows
         if (!gpu_download_bytes(*g, nc, byteBuf, err)) return false;
@@ -522,6 +608,9 @@ bool run(const std::vector<Mesh>& meshes, const Weather* w, const Options& opt, 
       std::fprintf(stderr, "info: GAS %.1f MB build %.0f ms, %zu launches, %.3g rays in %.0f ms (%.2f GRays/s)\n",
                    st.gasBytes / 1048576.0, st.buildMs, st.launches, static_cast<double>(st.rays), st.traceMs,
                    st.traceMs > 0 ? static_cast<double>(st.rays) / st.traceMs / 1e6 : 0.0);
+      if (st.buildOutputBytes)
+        std::fprintf(stderr, "info: GAS build temp %.1f MB, uncompacted %.1f MB, chunk cap %.0f MB\n", st.buildTempBytes / 1048576.0,
+                     st.buildOutputBytes / 1048576.0, chunkBytes / 1048576.0);
       if (reflect)
         std::fprintf(stderr, "info: reflected light: %d bounces, %d samples per sensor, %.3g paths in %.0f ms (%zu launches)%s\n", opt.bounces,
                      opt.bounceSamples, static_cast<double>(st.paths), st.bounceMs, st.bounceLaunches, differs ? ", a hit record per slot" : "");
@@ -531,24 +620,6 @@ bool run(const std::vector<Mesh>& meshes, const Weather* w, const Options& opt, 
     File hf(std::fopen((opt.seriesPath + ".hoys.txt").c_str(), "w"), std::fclose);
     if (hf) for (double h : seriesHoys) std::fprintf(hf.get(), "%.4f\n", h);
   }
-
-  // ---- values: N elements x (quantities x sides), quantity-major ----------------------------------------------------
-  const size_t nElem = nSens / static_cast<size_t>(nS);
-  const size_t C = nQ * static_cast<size_t>(nS);
-  out.values.assign(nElem * C, 0.0);
-  out.columns.clear();
-  for (size_t qi = 0; qi < nQ; ++qi)
-    for (int s = 0; s < nS; ++s)
-      out.columns.push_back(std::string(kQuantityNames[static_cast<size_t>(opt.quantities[qi])]) + ((opt.sides == Sides::Back || (opt.sides == Sides::Both && s == 1)) ? "_back" : "_front"));
-  for (size_t e = 0; e < nElem; ++e)
-    for (size_t qi = 0; qi < nQ; ++qi)
-      for (int s = 0; s < nS; ++s) {
-        double v = acc[(e * static_cast<size_t>(nS) + static_cast<size_t>(s)) * nQ + qi];
-        const Quantity q = opt.quantities[qi];
-        if (q == Quantity::Irradiance) v = durationHours > 0 ? v * 1000.0 / durationHours : 0.0;
-        else if (q == Quantity::Illuminance) v = durationHours > 0 ? v / durationHours : 0.0;
-        out.values[e * C + qi * static_cast<size_t>(nS) + static_cast<size_t>(s)] = v;
-      }
 
   // ---- dumps -----------------------------------------------------------------------------------------------------
   if (!opt.dumpSun.empty()) {   // columns 7-9: Radiance sun.c at the exact location, for the gendaymtx -D comparison
@@ -575,6 +646,26 @@ bool run(const std::vector<Mesh>& meshes, const Weather* w, const Options& opt, 
     }
   }
   return true;
+}
+
+bool run(const std::vector<MeshView>& meshes, const Weather* w, const Options& opt, Result& out, std::string& err) {
+  // A model too big for this machine's memory fails the run, never the caller: everything the run allocated on the host
+  // is freed by the unwinding, the GPU state keeps whatever scene it had installed (a build that failed installed none).
+  const char* stage = "preparing the run";
+  try {
+    return run_views(meshes, w, opt, out, err, stage);
+  } catch (const std::bad_alloc&) {
+    out = Result{};
+    err = std::string("out of memory: host memory ran out while ") + stage;
+  } catch (const std::exception& e) {
+    out = Result{};
+    err = std::string("internal error while ") + stage + ": " + e.what();
+  }
+  return false;
+}
+
+bool run(const std::vector<Mesh>& meshes, const Weather* w, const Options& opt, Result& out, std::string& err) {
+  return run(views_of(meshes), w, opt, out, err);
 }
 
 }  // namespace daylight

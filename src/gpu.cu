@@ -229,14 +229,54 @@ void gpu_destroy(Gpu* g) {
 }
 
 // ------------------------------------------------------------------ scene
+// Device bytes a build of nTris triangles over nVerts vertices peaks at (the inputs, OptiX's temp and uncompacted output
+// at once; then the output and its compacted copy), from OptiX's own estimate of the counts: no buffer is touched.
+size_t gpu_build_bytes(Gpu& g, size_t nVerts, size_t nTris, bool slotted, std::string& err) {
+  if (!nTris) return 0;
+  unsigned flag = OPTIX_GEOMETRY_FLAG_DISABLE_ANYHIT;   // flags do not change the sizes
+  OptixBuildInput bi = {};
+  bi.type = OPTIX_BUILD_INPUT_TYPE_TRIANGLES;
+  bi.triangleArray.vertexFormat = OPTIX_VERTEX_FORMAT_FLOAT3;
+  bi.triangleArray.vertexStrideInBytes = sizeof(float3);
+  bi.triangleArray.numVertices = static_cast<unsigned>(nVerts);
+  bi.triangleArray.indexFormat = OPTIX_INDICES_FORMAT_UNSIGNED_INT3;
+  bi.triangleArray.indexStrideInBytes = sizeof(uint3);
+  bi.triangleArray.numIndexTriplets = static_cast<unsigned>(nTris);
+  bi.triangleArray.flags = &flag;
+  bi.triangleArray.numSbtRecords = 1;
+  OptixAccelBuildOptions bo = {};
+  bo.buildFlags = OPTIX_BUILD_FLAG_PREFER_FAST_TRACE | OPTIX_BUILD_FLAG_ALLOW_COMPACTION;
+  bo.operation = OPTIX_BUILD_OPERATION_BUILD;
+  OptixAccelBufferSizes sz = {};
+  const OptixResult r = optixAccelComputeMemoryUsage(g.ctx, &bo, &bi, 1, &sz);
+  if (r != OPTIX_SUCCESS) { err = std::string("optixAccelComputeMemoryUsage: ") + optixGetErrorString(r); return SIZE_MAX; }
+  const size_t inputs = nVerts * sizeof(float3) + nTris * (sizeof(uint3) + (slotted ? sizeof(uint32_t) : 0));
+  return std::max(inputs + sz.tempSizeInBytes + sz.outputSizeInBytes, 2 * sz.outputSizeInBytes);
+}
+
+// Frees the per-run device buffers: the chunk buffers (visibility, reflected-light rows, reduce scratch and outputs) and,
+// with sensors, the sensor points and normals. They grow back on the next run.
+void gpu_trim(Gpu& g, bool sensors) {
+  cudaFree(g.dVis); g.dVis = nullptr; g.visCap = 0;
+  cudaFree(g.dDc); g.dDc = nullptr; g.dcCap = 0;
+  cudaFree(g.dScratch); g.dScratch = nullptr; g.scratchCap = 0;
+  cudaFree(g.dOut); g.dOut = nullptr; g.outCap = 0;
+  if (sensors) {
+    cudaFree(g.dP); cudaFree(g.dN);
+    g.dP = g.dN = nullptr;
+    g.nSensors = 0;
+  }
+}
+
 // tmp[0..4] = verts, indices, build temp, uncompacted output, slot per triangle; the caller frees whatever is left.
 // Per-triangle SBT offsets only when a slot transmits or perSlot: they grow the GAS ~18 % and cost ~6 % GRays/s
 // (--bench), and with every slot opaque (and, for the bounce pass, of one rho) one record behaves the same.
 static bool build(Gpu& g, const Tris& t, const std::vector<Slot>& slots, bool perSlot, void** tmp, std::string& err) {
-  if (t.slot.size() != t.i.size() || std::any_of(t.slot.begin(), t.slot.end(), [&](uint32_t s) { return s >= slots.size(); })) {
+  if (!t.slot.empty() && (t.slot.size() != t.i.size() || std::any_of(t.slot.begin(), t.slot.end(), [&](uint32_t s) { return s >= slots.size(); }))) {
     err = "gpu_build: a triangle's slot has no Slot"; return false;
   }
   const bool slotted = perSlot || std::any_of(slots.begin(), slots.end(), [](const Slot& s) { return s.tau > 0; });
+  if (slotted && t.slot.size() != t.i.size()) { err = "gpu_build: per-slot records need a slot per triangle"; return false; }
   if (slotted && slots.size() > g.maxSbt) { err = std::to_string(slots.size()) + " optics slots exceed the GPU's " + std::to_string(g.maxSbt) + " per scene"; return false; }
   if (!upload(&tmp[0], t.v.data(), t.v.size() * sizeof(float3), err) || !upload(&tmp[1], t.i.data(), t.i.size() * sizeof(uint3), err) ||
       (slotted && !upload(&tmp[4], t.slot.data(), t.slot.size() * sizeof(uint32_t), err))) return false;
@@ -266,6 +306,8 @@ static bool build(Gpu& g, const Tris& t, const std::vector<Slot>& slots, bool pe
   bo.operation = OPTIX_BUILD_OPERATION_BUILD;
   OptixAccelBufferSizes sz = {};
   OX(optixAccelComputeMemoryUsage(g.ctx, &bo, &bi, 1, &sz));
+  g.stats.buildTempBytes = sz.tempSizeInBytes;
+  g.stats.buildOutputBytes = sz.outputSizeInBytes;
   const size_t outBytes = (sz.outputSizeInBytes + 7) & ~size_t(7);
   CU(cudaMalloc(&tmp[2], sz.tempSizeInBytes));
   CU(cudaMalloc(&tmp[3], outBytes + sizeof(size_t)));

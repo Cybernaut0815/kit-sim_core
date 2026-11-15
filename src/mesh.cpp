@@ -72,7 +72,7 @@ std::string stem(const std::string& path) {
 
 // What --optics / --no-occlude NAME resolve against: mesh index per Mesh::name, SIZE_MAX when several meshes share it.
 using Names = std::unordered_map<std::string, size_t>;
-Names mesh_names(const std::vector<Mesh>& meshes) {
+Names mesh_names(const std::vector<MeshView>& meshes) {
   Names byName;
   for (size_t k = 0; k < meshes.size(); ++k) if (!byName.emplace(meshes[k].name, k).second) byName[meshes[k].name] = SIZE_MAX;
   return byName;
@@ -88,21 +88,24 @@ size_t find_mesh(const Names& byName, const std::string& name, const std::string
 
 }  // namespace
 
-void bbox_centre(const std::vector<Mesh>& meshes, double c[3]) {
+void bbox_centre(const std::vector<MeshView>& meshes, double c[3]) {
   double lo[3] = {INFINITY, INFINITY, INFINITY}, hi[3] = {-INFINITY, -INFINITY, -INFINITY};
-  for (const Mesh& m : meshes)
-    for (size_t i = 0; i < m.points.size(); ++i) {
-      lo[i % 3] = std::fmin(lo[i % 3], m.points[i]); hi[i % 3] = std::fmax(hi[i % 3], m.points[i]);
+  for (const MeshView& v : meshes)
+    for (size_t i = 0; i < v.mesh->points.size(); ++i) {
+      lo[i % 3] = std::fmin(lo[i % 3], v.mesh->points[i]); hi[i % 3] = std::fmax(hi[i % 3], v.mesh->points[i]);
     }
   for (int k = 0; k < 3; ++k) c[k] = lo[k] <= hi[k] ? (lo[k] + hi[k]) / 2 : 0;
 }
 
-void triangulate(const Mesh& m, const double c[3], Tris& out, int& skipped, uint32_t slotBase) {
+void triangulate(const Mesh& m, const double c[3], Tris& out, int& skipped, uint32_t slotBase, bool withSlots) {
   unsigned base = (unsigned)out.v.size();
   V C{c[0], c[1], c[2]};
   for (size_t i = 0; i < m.numPoints(); ++i) out.v.push_back(f3(pt(m, (int)i) - C));
   uint32_t slot = slotBase;
-  auto emit = [&](int a, int b, int d) { out.i.push_back(uint3{base + (unsigned)a, base + (unsigned)b, base + (unsigned)d}); out.slot.push_back(slot); };
+  auto emit = [&](int a, int b, int d) {
+    out.i.push_back(uint3{base + (unsigned)a, base + (unsigned)b, base + (unsigned)d});
+    if (withSlots) out.slot.push_back(slot);
+  };
   size_t off = 0;
   for (size_t f = 0; f < m.counts.size(); ++f) {
     const int n = m.counts[f], *idx = m.indices.data() + off;
@@ -143,11 +146,11 @@ bool optics_ok(const Options& opt, std::string& err) {
   return true;
 }
 
-bool resolve_optics(const std::vector<Mesh>& meshes, const std::vector<Optics>& rows, std::vector<Slot>& out, std::string& err) {
+bool resolve_optics(const std::vector<MeshView>& meshes, const std::vector<Optics>& rows, std::vector<Slot>& out, std::string& err) {
   std::vector<size_t> base(meshes.size() + 1, 0);
   for (size_t k = 0; k < meshes.size(); ++k) {
-    const Mesh& m = meshes[k];
-    if (!m.slot.empty() && m.slot.size() != m.numFaces()) { err = "mesh " + m.name + ": " + std::to_string(m.slot.size()) + " slots for " + std::to_string(m.numFaces()) + " faces"; return false; }
+    const Mesh& m = *meshes[k].mesh;
+    if (!m.slot.empty() && m.slot.size() != m.numFaces()) { err = "mesh " + meshes[k].name + ": " + std::to_string(m.slot.size()) + " slots for " + std::to_string(m.numFaces()) + " faces"; return false; }
     base[k + 1] = base[k] + slot_count(m);
   }
   const Names byName = mesh_names(meshes);
@@ -178,7 +181,7 @@ bool resolve_optics(const std::vector<Mesh>& meshes, const std::vector<Optics>& 
   return true;
 }
 
-bool resolve_no_occlude(const std::vector<Mesh>& meshes, const std::vector<std::string>& names, std::vector<char>& open, std::string& err) {
+bool resolve_no_occlude(const std::vector<MeshView>& meshes, const std::vector<std::string>& names, std::vector<char>& open, std::string& err) {
   open.assign(meshes.size(), 0);
   if (names.empty()) return true;
   const Names byName = mesh_names(meshes);

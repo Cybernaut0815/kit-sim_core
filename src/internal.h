@@ -53,12 +53,21 @@ double extraterrestrial_irradiance(int doy);   // Spencer 1971, W/m2 (pvlib get_
 void ineichen(double apparentZenithDeg, double turbidity, double altitudeM, double dniExtra, double& ghi, double& dni, double& dhi);
 
 // ------------------------------------------------------------------ mesh.cpp
-struct Tris { std::vector<float3> v; std::vector<uint3> i; std::vector<uint32_t> slot; };   // slot: global slot per triangle
+struct Tris { std::vector<float3> v; std::vector<uint3> i; std::vector<uint32_t> slot; };   // slot: global slot per triangle (empty: not needed)
 struct Sensors { std::vector<float3> p, n; };              // recentred, offset applied; sides already expanded
-void bbox_centre(const std::vector<Mesh>& meshes, double c[3]);
-// Append the triangulated faces of m (recentred by c) to out, each triangle's global slot = slotBase + its face slot;
-// skipped counts degenerate / < 3-vertex faces.
-void triangulate(const Mesh& m, const double c[3], Tris& out, int& skipped, uint32_t slotBase = 0);
+// Views of meshes for the helpers below (names and roles from the Mesh itself), so run() and the tests share them.
+inline std::vector<MeshView> views_of(const std::vector<Mesh>& meshes) {
+  std::vector<MeshView> v;
+  v.reserve(meshes.size());
+  for (const Mesh& m : meshes) v.push_back({&m, m.name, m.sensor});
+  return v;
+}
+void bbox_centre(const std::vector<MeshView>& meshes, double c[3]);
+inline void bbox_centre(const std::vector<Mesh>& meshes, double c[3]) { bbox_centre(views_of(meshes), c); }
+// Append the triangulated faces of m (recentred by c) to out, each triangle's global slot = slotBase + its face slot
+// (none appended when withSlots is false: the GAS needs them only with per-slot records); skipped counts degenerate /
+// < 3-vertex faces.
+void triangulate(const Mesh& m, const double c[3], Tris& out, int& skipped, uint32_t slotBase = 0, bool withSlots = true);
 // Global slots: every mesh in input order takes slot_count(m) = max face slot + 1 (1 without slots); mesh base = the sum
 // over the meshes before it.
 size_t slot_count(const Mesh& m);
@@ -67,10 +76,16 @@ size_t slot_count(const Mesh& m);
 bool optics_ok(const Options& opt, std::string& err);
 // One Slot per global slot from the rows (NAME/SLOT > NAME > * > rho 0.2 tau 0; glass: tn_from_Tn(tau), kSlotGlass).
 // Errors: unknown or ambiguous mesh name, slot out of range, duplicate row, a Mesh::slot not one per face.
-bool resolve_optics(const std::vector<Mesh>& meshes, const std::vector<Optics>& rows, std::vector<Slot>& out, std::string& err);
+bool resolve_optics(const std::vector<MeshView>& meshes, const std::vector<Optics>& rows, std::vector<Slot>& out, std::string& err);
+inline bool resolve_optics(const std::vector<Mesh>& meshes, const std::vector<Optics>& rows, std::vector<Slot>& out, std::string& err) {
+  return resolve_optics(views_of(meshes), rows, out, err);
+}
 // open[k] = 1 when Options::noOcclude names mesh k (a name given twice counts once). Errors: an unknown or ambiguous
 // name, a context mesh.
-bool resolve_no_occlude(const std::vector<Mesh>& meshes, const std::vector<std::string>& names, std::vector<char>& open, std::string& err);
+bool resolve_no_occlude(const std::vector<MeshView>& meshes, const std::vector<std::string>& names, std::vector<char>& open, std::string& err);
+inline bool resolve_no_occlude(const std::vector<Mesh>& meshes, const std::vector<std::string>& names, std::vector<char>& open, std::string& err) {
+  return resolve_no_occlude(views_of(meshes), names, open, err);
+}
 // Faces of slot s in m (recentred by c) as one closed thin solid: positions welded on a 1e-5 m grid, every edge used
 // as often in each direction (closed, consistently wound), 2 |V| / S < 0.1 m -> kSlotThin, | kSlotInward when the signed
 // volume is negative, | kSlotTwin instead when 2 |V| / S is below the weld grid (faces repeated with the opposite
@@ -94,6 +109,11 @@ void gpu_destroy(Gpu* g);
 // transmitting ones; else one record, the layout of an all-opaque scene. Geometry flags are fixed at build: a slot that
 // starts or stops transmitting rebuilds.
 bool gpu_build(Gpu& g, const Tris& t, const std::vector<Slot>& slots, std::string& err, bool perSlot = false);
+// Device bytes gpu_build of nTris triangles over nVerts vertices peaks at (OptiX's estimate from the counts alone);
+// SIZE_MAX with err when OptiX cannot say.
+size_t gpu_build_bytes(Gpu& g, size_t nVerts, size_t nTris, bool slotted, std::string& err);
+// Frees the per-run device buffers (chunk buffers; with sensors, the sensor points and normals) before a big allocation.
+void gpu_trim(Gpu& g, bool sensors);
 bool gpu_set_slots(Gpu& g, const std::vector<Slot>& slots, std::string& err);   // hit records (every run; same count as the build)
 // A built acceleration structure moved out of the Gpu, kept in VRAM for a later run of the same scene.
 struct GasSlot { void* dGas = nullptr; unsigned long long gas = 0; size_t bytes = 0; };
@@ -139,7 +159,11 @@ bool gpu_reduce_dc(Gpu& g, size_t nc, const float* W, double* out, std::string& 
 bool gpu_download_dc(Gpu& g, size_t nc, std::vector<float>& out, std::string& err);    // [(P+1) x nc] as on device
 bool gpu_download_bits(Gpu& g, size_t nc, std::vector<uint32_t>& out, std::string& err);   // [nWords x nc] as on device
 bool gpu_download_bytes(Gpu& g, size_t nc, std::vector<uint8_t>& out, std::string& err);   // byte mode: [nDir x nc]
-struct GpuStats { double buildMs = 0, traceMs = 0, bounceMs = 0; size_t rays = 0, gasBytes = 0, launches = 0, paths = 0, bounceLaunches = 0; };
+struct GpuStats {
+  double buildMs = 0, traceMs = 0, bounceMs = 0;
+  size_t rays = 0, gasBytes = 0, launches = 0, paths = 0, bounceLaunches = 0;
+  size_t buildTempBytes = 0, buildOutputBytes = 0;   // the last build's OptiX temp and uncompacted output
+};
 GpuStats gpu_stats(const Gpu& g);
 // TERMINATE_ON_FIRST_HIT [| CULL_BACK_FACING_TRIANGLES], | DISABLE_ANYHIT unless a slot transmits (translucent)
 unsigned gpu_ray_flags(bool cullBackfaces, bool translucent);

@@ -24,6 +24,11 @@ struct Mesh {
   size_t numPoints() const { return points.size() / 3; }
 };
 
+// A mesh as one run sees it, without a copy: the caller's geometry (alive for the call), this run's name (what --optics
+// and --no-occlude refer to, and the manifest's) and role. A long-lived caller (the server) shares one cached Mesh
+// between runs that name it differently or give it another role.
+struct MeshView { const Mesh* mesh = nullptr; std::string name; bool sensor = true; };
+
 // Hourly weather (EPW). dni/dhi: one value per row (8760 or 8784), W/m2 averaged over the hour ending at the row, in
 // the file's own clock (tz). Timestamps of a run (--time / --from / --to, in --tz) are converted into this clock.
 struct Weather {
@@ -85,10 +90,15 @@ struct Options {
   int residentScenes = 1;              // keyed scenes kept in VRAM (most recent first); more than 1 lets users alternate cheaply
   const std::atomic<bool>* cancel = nullptr;   // set by another thread: run() stops at its next check and fails with "cancelled"
   bool verbose = false;
+  // Cap on each per-chunk device buffer (visibility bits or bytes, the series tile, the reflected-light rows): sensors
+  // are traced in chunks that fit it. Any value gives the same numbers (tests use a tiny one to force many chunks).
+  size_t chunkBytes = size_t(256) << 20;
+  bool f32Columns = false;            // Result::f32 (float32, column-major) instead of Result::values: half the memory
 };
 
 struct Result {
   std::vector<double> values;                            // N x C row-major; N elements in input order, C = columns
+  std::vector<float> f32;                                // Options::f32Columns: C x N column-major, float(value); values stays empty
   std::vector<std::string> columns;                      // e.g. "radiation_front", "sunhours_front"
   std::vector<std::pair<std::string, size_t>> ranges;    // (mesh name, element count) in input order
   double durationHours = 0;
@@ -116,5 +126,8 @@ bool clear_sky_weather(double lat, double lon, double tz, double turbidity, doub
 // Fails on bad Options (ranges, mode rules), on optics rows the meshes do not resolve (unknown / ambiguous name,
 // slot out of range, duplicate row) and on noOcclude names that are unknown, ambiguous or a context mesh.
 bool run(const std::vector<Mesh>& meshes, const Weather* weather, const Options& opt, Result& out, std::string& err);
+// The same over views (Mesh::name and Mesh::sensor are ignored: the view's count). Running out of host memory fails
+// the run with "out of memory: ..." naming the stage, never the process.
+bool run(const std::vector<MeshView>& meshes, const Weather* weather, const Options& opt, Result& out, std::string& err);
 
 }  // namespace daylight

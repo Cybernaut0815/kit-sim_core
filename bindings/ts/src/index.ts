@@ -309,7 +309,7 @@ const uploaded = new Map<string, Set<string>>();
  * this process has not seen on that server are checked with one `POST /meshes/missing` (a 404 there, from an older
  * server: all missing), and the missing ones go up 6 at a time via `PUT <url>/mesh/<id>?name=<stem>`, each body built
  * just before its PUT (`onUpload(done, total)` from 0 to total); so a re-run, or a reload of the same model, sends no
- * geometry. An unnamed mesh's core name is its id (a repeat: id_2, ...; dmeshStems of the ids). When the job answers 404
+ * geometry. A mesh's core name is its name, or its id when unnamed, made unique per job (dmeshStems of those: id_2, ...). When the job answers 404
  * `{missing}` anyway (restarted, or it evicted the mesh) those go up again before one retry. The job is then long-polled (`GET /jobs/<id>?wait=25`); `onStatus` sees every
  * queued / running state. Aborting `signal` cancels the job on the server (`DELETE /jobs/<id>`), also one aborted
  * while the server was making it (the POST itself is not aborted, so its id is always known). `epw` is a Blob
@@ -331,21 +331,25 @@ export async function runRemote(
   const base = url.replace(/\/$/, '');
   const headers: Record<string, string> = input.clientId ? { 'X-Client-Id': input.clientId } : {};
   const req = (path: string, init: RequestInit = {}) => f(`${base}${path}`, { ...init, headers, signal: input.signal });
-  const meshes = [...input.sensors, ...(input.context ?? [])], ids = await meshIds(input);
-  const stems = dmeshStems(meshes.map((m, k) => m.name || ids[k])), first = new Map<string, number>();
+  const meshes = [...input.sensors, ...(input.context ?? [])], ids = await meshIds(input), first = new Map<string, number>();
   ids.forEach((id, k) => { if (!first.has(id)) first.set(id, k); });
   const sent = uploaded.get(base) ?? uploaded.set(base, new Set()).get(base)!;
   const put = async (todo: readonly string[]) => {
     const list = [...new Set(todo)];
-    let done = 0;
+    let done = 0, failed = false;
     if (list.length) input.onUpload?.(0, list.length);
     await pool(6, list, async (id) => {
       const k = first.get(id);
       if (k === undefined) throw new Error(`${base}/jobs asked for an unknown mesh id ${id}`);
-      const res = await req(`/mesh/${encodeURIComponent(id)}?name=${encodeURIComponent(stems[k])}`, { method: 'PUT', body: bytesOf(meshes[k]) });
-      if (!res.ok) throw new Error(`PUT ${base}/mesh/${id} failed (${res.status}): ${(await res.text()).trim()}`);
-      sent.add(id);
-      input.onUpload?.(++done, list.length);
+      // its own name (the id when unnamed), never a job's _2: the server keeps it for the id, every later job included,
+      // and makes names unique per job itself (as dmeshStems)
+      const name = dmeshStems([meshes[k].name || id])[0];
+      try {
+        const res = await req(`/mesh/${encodeURIComponent(id)}?name=${encodeURIComponent(name)}`, { method: 'PUT', body: bytesOf(meshes[k]) });
+        if (!res.ok) throw new Error(`PUT ${base}/mesh/${id} failed (${res.status}): ${(await res.text()).trim()}`);
+        sent.add(id);
+        if (!failed) input.onUpload?.(++done, list.length); // no progress after the upload failed
+      } catch (e) { failed = true; throw e; }
     });
   };
   const body = () => {

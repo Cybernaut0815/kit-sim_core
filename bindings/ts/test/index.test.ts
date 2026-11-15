@@ -339,6 +339,29 @@ describe('runRemote', () => {
     await runRemote('http://o', { sensors: [m, { ...m }], fetch: old });
     expect(calls).toEqual(['POST http://o/meshes/missing', 'PUT http://o/mesh/id-old?name=box', 'POST http://o/jobs', 'GET http://o/jobs/j8/values']);
   });
+  it("named meshes go up under their own names, never a job's _2 (the server keeps one per id); no progress after a failed PUT", async () => {
+    const named = (k: number, name: string) => ({ name, dmesh: () => toDmesh({ positions: [k, 0, 0, k + 1, 0, 0, k, 1, 0], indices: [0, 1, 2] }) });
+    const puts: string[] = [], progress: number[] = [];
+    let fail = '';
+    const server = (async (url: string, init?: RequestInit) => {
+      if (url.endsWith('/meshes/missing')) return json({ missing: JSON.parse(init!.body as string).ids });
+      if (init?.method === 'PUT') {
+        puts.push(new URL(url).searchParams.get('name')!);
+        if (fail && url.includes(fail)) return new Response('error: mesh has no faces\n', { status: 400 });
+        await new Promise((r) => setTimeout(r, 5));
+        return new Response(null, { status: 204 });
+      }
+      if (init?.method === 'POST') return json({ id: 'j5', state: 'done', ...one }, 202);
+      return stream(new Uint8Array(4));
+    }) as unknown as typeof fetch;
+    await runRemote('http://n1', { sensors: [named(1, 'wall'), named(2, 'wall'), named(3, 'a b')], fetch: server });
+    expect(puts).toEqual(['wall', 'wall', 'a_b']);
+    const ids = await meshIds({ sensors: Array.from({ length: 8 }, (_, k) => named(10 + k, `m${k}`)) });
+    fail = ids[0]; // the first of 8 fails while the next 5 are on their way
+    await expect(runRemote('http://n2', { sensors: Array.from({ length: 8 }, (_, k) => named(10 + k, `m${k}`)), fetch: server, onUpload: (d) => progress.push(d) })).rejects.toThrow(/mesh has no faces/);
+    await new Promise((r) => setTimeout(r, 30)); // the 5 still on their way finish
+    expect(progress).toEqual([0]);
+  });
   it('twins: equal bytes go up once, a shade equal to a receiver under its salted id', async () => {
     const d = hex(tri(9).dmesh()), S = hex(`${d}\0ctx`), calls: string[] = [];
     let form: FormData | null = null;

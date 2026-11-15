@@ -23,13 +23,14 @@ const context = await fromGLB(await fs.readFile('city.glb'));
 const { data } = await run('daylight.exe', { sensors, context, args: ['--epw', 'x.epw', '--quantity', 'radiation'] });
 ```
 
-Browser (or Node) against a `daylight_server` (the GPU box runs the core in-process; meshes are uploaded once and
-referenced by `id` afterwards, so a re-run with other flags sends no geometry):
+Browser (or Node) against a `daylight_server` (the GPU box runs the core in-process; meshes go up once under their
+content's SHA-256 and are referenced by it afterwards, so a re-run with other flags, or a reload of the same model,
+sends no geometry):
 
 ```ts
 import { fromThree, runRemote } from 'daylight-mesh';
 
-const sensors = fromThree([scene]);                                   // give each ObjMesh a stable `id` to reuse the server cache
+const sensors = fromThree([scene]);                                   // ids: the bytes' SHA-256 (or set a stable `id`)
 const { data, columns, cache } = await runRemote('http://gpu-box:8080', { sensors, epw: epwFile, args: ['--quantity', 'radiation,sunhours'] });
 // data[c][element]: one Float32Array per column, as run() returns them (there in float64)
 ```
@@ -62,8 +63,13 @@ await applyToThree(mesh, data[col].subarray(first, first + count)); // one value
   reverses winding when `det(matrixWorld) < 0`. Triangle `BufferGeometry` only (indexed or not); no strips, fans or lines.
 - `fromGLB(data, { scale })`: via `@gltf-transform/core`; `TRIANGLES` primitives of every node with a mesh,
   name `node/mesh`. Same frame conversion and winding rule.
-- `toDmesh(mesh)`: one mesh -> `Uint8Array` in the `.dmesh` layout below (flags 1 + the slot block when `mesh.slots`
-  is set, else flags 0); throws on bad indices or a `slots` length other than the triangle count.
+- `toDmesh(mesh, { matrix?, scale? })`: one mesh -> `Uint8Array` in the `.dmesh` layout below (flags 1 + the slot block
+  when `mesh.slots` is set, else flags 0); throws on bad indices or a `slots` length other than the triangle count.
+  With `matrix` (column-major 4x4) the positions are local three.js ones and take fromThree's conversion: the same bytes
+  as `toDmesh(fromThree(...)[0])` without the Float64 copy; `indices` may be absent (a triangle soup).
+- `meshIds({ sensors, context?, signal? })`: a job's mesh ids, sensors then context: a mesh's `id` if set, else the
+  SHA-256 hex of its `.dmesh` bytes (8 bodies at a time; a named mesh's name folded in, since the server keeps one name
+  per id); a context id equal to a sensor's is salted (`sha256(id \0 ctx)`: the server refuses a mesh in both roles).
 - `toObj(meshes)`: one `o` group per mesh, 1-based global indices; throws on bad indices (interop with other OBJ tools).
 - `run(exe, { sensors, context?, args })`: temp dir, `exe <sensors...> [--context <file>]... ...args --out out.npy`,
   returns `{ data: Float64Array[] (one per column: data[c][element] for columns[c]), columns, manifest }`; rejects
@@ -71,9 +77,13 @@ await applyToThree(mesh, data[col].subarray(first, first + count)); // one value
   `sensors`/`context` accept `ObjMesh[]` (written as one `<name>.dmesh` per mesh, name sanitised to `[A-Za-z0-9._-]`
   and made unique; the manifest's mesh names are the file stems) or OBJ text (written as one `.obj`).
   Needs Node >= 20 and the GPU build of the core.
-- `runRemote(url, { sensors, context?, epw?, args?, signal?, clientId?, onStatus? })`: submits a job
-  (`POST url/jobs`) with the meshes' `id`s (minted as UUIDs when absent), `PUT url/mesh/<id>?name=<stem>` once for
-  every id the server reports missing, then one retry; long-polls `GET url/jobs/<id>?wait=25` (`onStatus` sees each
+- `runRemote(url, { sensors, context?, epw?, args?, signal?, clientId?, onStatus?, onUpload? })`: `sensors`/`context`
+  are `ObjMesh`es or `{ id?, name?, dmesh: () => bytes }` (bodies built on demand). Submits a job (`POST url/jobs`)
+  with their ids (meshIds; nothing written back): one `POST url/meshes/missing` for the ids this process has not seen
+  on that server (404 there: all missing), `PUT url/mesh/<id>?name=<stem>` 6 at a time for the missing ones (each
+  body built just before its PUT; `onUpload(done, total)`); an unnamed mesh's core name is its id (repeats `id_2`, ...:
+  `dmeshStems(ids)`, which `--optics` / `--no-occlude` rows must use); a 404 from the job (the server lost some) puts
+  those again before one retry; long-polls `GET url/jobs/<id>?wait=25` (`onStatus` sees each
   queued / running state, with the queue position); aborting `signal` cancels the job on the server; `clientId` is
   sent as `X-Client-Id` for the per-client job limit; `epw` is a `Blob` (uploaded) or `{ url }` (fetched by the server
   through its allowlisted proxy cache); once the job is done, reads `GET url/jobs/<id>/values` (float32
@@ -89,7 +99,7 @@ await applyToThree(mesh, data[col].subarray(first, first + count)); // one value
   (`Float64Array` each).
 - `parseValues(text)`: parses a core `--out FILE` text file into columns the same way.
 
-Browser bundles use `toDmesh`, `toObj`, `fromThree`, `fromGLB`, `colormap`, `applyToThree`, `runRemote`; `run` imports Node builtins lazily and must stay on Node.
+Browser bundles use `toDmesh`, `toObj`, `fromThree`, `fromGLB`, `colormap`, `applyToThree`, `meshIds`, `runRemote` (`meshIds` needs `crypto.subtle`: a secure context such as localhost or https); `run` imports Node builtins lazily and must stay on Node.
 
 ## Performance (2M triangles, RTX 2060)
 

@@ -9,7 +9,7 @@ export interface ObjMesh {
   positions: ArrayLike<number>; // xyz interleaved, world metres, Z-up
   indices: ArrayLike<number>; // triangle indices, 0-based
   slots?: Uint16Array; // optics slot per triangle (core Mesh::slot; toDmesh writes it, toObj does not); absent = all slot 0
-  id?: string; // stable identity for runRemote(): the server caches the mesh under it, so a re-run sends no bytes
+  id?: string; // runRemote(): the server caches the mesh under it; absent: meshIds() derives it from the bytes
 }
 
 /**
@@ -49,12 +49,15 @@ export function toObj(meshes: ObjMesh[]): string {
 /**
  * One mesh -> `.dmesh` bytes (little-endian): "DLM1", uint32 flags, uint64 nPoints/nFaces/nIndices,
  * float64 xyz[3*nPoints], int32 counts[nFaces] (all 3), int32 indices[nIndices], then with `slots` (flags 1, else 0)
- * uint16 slot[nFaces]. Mesh name = file stem.
+ * uint16 slot[nFaces]. Mesh name = file stem. With `matrix` the positions are local (three.js, Y-up) and take fromThree's
+ * conversion (world by the column-major matrix, times `scale`, Z-up, mirrored winding reversed): the same bytes as
+ * toDmesh(fromThree(...)), without the Float64 copy. `indices` absent: a triangle soup.
  */
-export function toDmesh(mesh: ObjMesh): Uint8Array<ArrayBuffer> {
-  const N = mesh.positions.length / 3, F = mesh.indices.length / 3, M = mesh.indices.length, S = mesh.slots;
-  if (!Number.isInteger(N) || !Number.isInteger(F)) throw new Error(`${mesh.name}: positions must be xyz triples, indices triangle triples`);
-  if (S && S.length !== F) throw new Error(`${mesh.name}: slots must hold one value per triangle (${F}), not ${S.length}`);
+export function toDmesh(mesh: { name?: string; positions: ArrayLike<number>; indices?: ArrayLike<number> | null; slots?: Uint16Array },
+  opts: { matrix?: ArrayLike<number>; scale?: number } = {}): Uint8Array<ArrayBuffer> {
+  const P = mesh.positions, I = mesh.indices, N = P.length / 3, M = I ? I.length : N, F = M / 3, S = mesh.slots, name = mesh.name ?? 'mesh';
+  if (!Number.isInteger(N) || !Number.isInteger(F)) throw new Error(`${name}: positions must be xyz triples, indices triangle triples`);
+  if (S && S.length !== F) throw new Error(`${name}: slots must hold one value per triangle (${F}), not ${S.length}`);
   const buf = new ArrayBuffer(32 + 24 * N + 4 * F + 4 * M + (S ? 2 * F : 0));
   const dv = new DataView(buf);
   new Uint8Array(buf, 0, 4).set([0x44, 0x4c, 0x4d, 0x31]); // "DLM1"
@@ -62,34 +65,40 @@ export function toDmesh(mesh: ObjMesh): Uint8Array<ArrayBuffer> {
   dv.setBigUint64(8, BigInt(N), true);
   dv.setBigUint64(16, BigInt(F), true);
   dv.setBigUint64(24, BigInt(M), true);
-  new Float64Array(buf, 32, 3 * N).set(mesh.positions);
+  const xyz = new Float64Array(buf, 32, 3 * N);
+  if (opts.matrix) place(P, opts.matrix, opts.scale ?? 1, xyz);
+  else xyz.set(P);
   new Int32Array(buf, 32 + 24 * N, F).fill(3);
   const idx = new Int32Array(buf, 32 + 24 * N + 4 * F, M);
   for (let i = 0; i < M; i++) {
-    const v = mesh.indices[i];
-    if (!(Number.isInteger(v) && v >= 0 && v < N)) throw new Error(`${mesh.name}: index out of range in face ${Math.floor(i / 3)}`);
+    const v = I ? I[i] : i;
+    if (!(Number.isInteger(v) && v >= 0 && v < N)) throw new Error(`${name}: index out of range in face ${Math.floor(i / 3)}`);
     idx[i] = v;
   }
+  if (opts.matrix && mirrored(opts.matrix)) for (let i = 0; i < M; i += 3) { const t = idx[i + 1]; idx[i + 1] = idx[i + 2]; idx[i + 2] = t; }
   if (S) new Uint16Array(buf, 32 + 24 * N + 4 * F + 4 * M, F).set(S);
   return new Uint8Array(buf);
 }
 
 // Column-major 4x4 affine `m` (three.js and glTF agree) -> world, * scale, Y-up -> Z-up as (x, -z, y);
 // winding reversed when det(m) < 0 (mirrored transform) so the OBJ stays right-handed.
-function toMesh(name: string, pos: ArrayLike<number>, idx: ArrayLike<number> | null, m: ArrayLike<number>, scale: number): ObjMesh {
-  const positions = new Float64Array(pos.length);
+function place(pos: ArrayLike<number>, m: ArrayLike<number>, scale: number, out: Float64Array): void {
   for (let i = 0; i < pos.length; i += 3) {
     const x = pos[i], y = pos[i + 1], z = pos[i + 2];
     const wx = m[0] * x + m[4] * y + m[8] * z + m[12];
     const wy = m[1] * x + m[5] * y + m[9] * z + m[13];
     const wz = m[2] * x + m[6] * y + m[10] * z + m[14];
-    positions[i] = wx * scale;
-    positions[i + 1] = -wz * scale;
-    positions[i + 2] = wy * scale;
+    out[i] = wx * scale;
+    out[i + 1] = -wz * scale;
+    out[i + 2] = wy * scale;
   }
+}
+const mirrored = (m: ArrayLike<number>) => m[0] * (m[5] * m[10] - m[9] * m[6]) - m[4] * (m[1] * m[10] - m[9] * m[2]) + m[8] * (m[1] * m[6] - m[5] * m[2]) < 0;
+function toMesh(name: string, pos: ArrayLike<number>, idx: ArrayLike<number> | null, m: ArrayLike<number>, scale: number): ObjMesh {
+  const positions = new Float64Array(pos.length);
+  place(pos, m, scale, positions);
   const indices = idx ? Uint32Array.from(idx) : Uint32Array.from({ length: pos.length / 3 }, (_, i) => i);
-  const det = m[0] * (m[5] * m[10] - m[9] * m[6]) - m[4] * (m[1] * m[10] - m[9] * m[2]) + m[8] * (m[1] * m[6] - m[5] * m[2]);
-  if (det < 0) for (let i = 0; i < indices.length; i += 3) { const t = indices[i + 1]; indices[i + 1] = indices[i + 2]; indices[i + 2] = t; }
+  if (mirrored(m)) for (let i = 0; i < indices.length; i += 3) { const t = indices[i + 1]; indices[i + 1] = indices[i + 2]; indices[i + 2] = t; }
   return { name, positions, indices };
 }
 
@@ -255,15 +264,53 @@ export interface RemoteJob {
   eta_s?: number;    // state running, when the server reports it: the seconds still to go
 }
 
-/** Mesh ids this process has put on each server: a job names them by id alone; any other is put first. */
+/** A mesh for runRemote(): an ObjMesh, or one whose .dmesh bytes are built on demand (each body dropped once hashed or sent). */
+export type RemoteMesh = ObjMesh | { id?: string; name?: string; dmesh: () => Uint8Array<ArrayBuffer> };
+const bytesOf = (m: RemoteMesh) => ('dmesh' in m ? m.dmesh() : toDmesh(m));
+const sha256 = async (b: Uint8Array<ArrayBuffer>) => Array.from(new Uint8Array(await crypto.subtle.digest('SHA-256', b)), (x) => x.toString(16).padStart(2, '0')).join('');
+const salt = (id: string, tag: string) => sha256(new TextEncoder().encode(`${id}\0${tag}`));
+/** fn over items, n at a time; the first error stops the rest (the ones running finish) and rejects. */
+async function pool<T>(n: number, items: readonly T[], fn: (x: T, k: number) => Promise<void>): Promise<void> {
+  let next = 0;
+  await Promise.all(Array.from({ length: Math.min(n, items.length) }, async () => {
+    while (next < items.length) {
+      const k = next++;
+      try { await fn(items[k], k); } catch (e) { next = items.length; throw e; }
+    }
+  }));
+}
+
+/**
+ * A job's mesh ids, sensors then context: a mesh's own `id` if it has one, else the SHA-256 hex of its .dmesh bytes
+ * (8 bodies hashed at a time, each dropped once hashed), with a named mesh's name folded in (sha256(hex \0 name \0
+ * name)): the server keeps one name per id. A context id equal to a sensor's is salted (sha256(id \0 ctx), again while
+ * it still matches one): the server refuses a mesh in both roles. Nothing is written back; ids given are kept as they
+ * are, so passing the result back salts only.
+ */
+export async function meshIds(input: { sensors: readonly RemoteMesh[]; context?: readonly RemoteMesh[]; signal?: AbortSignal }): Promise<string[]> {
+  const all = [...input.sensors, ...(input.context ?? [])], ids = all.map((m) => m.id ?? '');
+  await pool(8, all, async (m, k) => {
+    if (ids[k]) return;
+    input.signal?.throwIfAborted();
+    const d = await sha256(bytesOf(m));
+    ids[k] = m.name ? await salt(d, `name\0${m.name}`) : d;
+  });
+  const sensors = new Set(ids.slice(0, input.sensors.length));
+  for (let k = input.sensors.length; k < ids.length; k++) while (sensors.has(ids[k])) ids[k] = await salt(ids[k], 'ctx');
+  return ids;
+}
+
+/** Mesh ids this process has put on, or found on, each server: those skip POST /meshes/missing. */
 const uploaded = new Map<string, Set<string>>();
 
 /**
  * Browser or Node: runs the core on a `daylight_server` as a queued job, so several users share the GPU. Meshes travel
- * by id (`ObjMesh.id`; a UUID is minted here when absent): `POST <url>/jobs` names them. A mesh this process has not
- * sent to that server yet goes up first, once, via `PUT <url>/mesh/<id>?name=<stem>`, so a re-run with other settings
- * sends no geometry; when the server answers 404 `{missing}` anyway (restarted, or it evicted the mesh) those go up
- * again before one retry. The job is then long-polled (`GET /jobs/<id>?wait=25`); `onStatus` sees every
+ * by id (`RemoteMesh.id`, else meshIds(): their bytes' SHA-256, nothing written back): `POST <url>/jobs` names them. Ids
+ * this process has not seen on that server are checked with one `POST /meshes/missing` (a 404 there, from an older
+ * server: all missing), and the missing ones go up 6 at a time via `PUT <url>/mesh/<id>?name=<stem>`, each body built
+ * just before its PUT (`onUpload(done, total)` from 0 to total); so a re-run, or a reload of the same model, sends no
+ * geometry. An unnamed mesh's core name is its id (a repeat: id_2, ...; dmeshStems of the ids). When the job answers 404
+ * `{missing}` anyway (restarted, or it evicted the mesh) those go up again before one retry. The job is then long-polled (`GET /jobs/<id>?wait=25`); `onStatus` sees every
  * queued / running state. Aborting `signal` cancels the job on the server (`DELETE /jobs/<id>`), also one aborted
  * while the server was making it (the POST itself is not aborted, so its id is always known). `epw` is a Blob
  * (uploaded) or `{ url }` (the server fetches it through its allowlisted proxy cache). `args` are CLI flags verbatim
@@ -275,35 +322,47 @@ const uploaded = new Map<string, Set<string>>();
 export async function runRemote(
   url: string,
   input: {
-    sensors: ObjMesh[]; context?: ObjMesh[]; epw?: Blob | { url: string }; args?: string[];
-    signal?: AbortSignal; clientId?: string; onStatus?: (job: RemoteJob) => void; fetch?: typeof globalThis.fetch;
+    sensors: RemoteMesh[]; context?: RemoteMesh[]; epw?: Blob | { url: string }; args?: string[];
+    signal?: AbortSignal; clientId?: string; onStatus?: (job: RemoteJob) => void; onUpload?: (done: number, total: number) => void;
+    fetch?: typeof globalThis.fetch;
   },
 ): Promise<{ data: Float32Array<ArrayBuffer>[]; columns: string[]; manifest: RemoteManifest; cache?: Record<string, string> }> {
   const f = input.fetch ?? globalThis.fetch;
   const base = url.replace(/\/$/, '');
   const headers: Record<string, string> = input.clientId ? { 'X-Client-Id': input.clientId } : {};
   const req = (path: string, init: RequestInit = {}) => f(`${base}${path}`, { ...init, headers, signal: input.signal });
-  const meshes = [...input.sensors, ...(input.context ?? [])];
-  for (const m of meshes) m.id ??= crypto.randomUUID();
-  const stems = dmeshStems(meshes.map((m) => m.name));
+  const meshes = [...input.sensors, ...(input.context ?? [])], ids = await meshIds(input);
+  const stems = dmeshStems(meshes.map((m, k) => m.name || ids[k])), first = new Map<string, number>();
+  ids.forEach((id, k) => { if (!first.has(id)) first.set(id, k); });
   const sent = uploaded.get(base) ?? uploaded.set(base, new Set()).get(base)!;
-  const put = (ids: string[]) => Promise.all([...new Set(ids)].map(async (id) => {
-    const k = meshes.findIndex((m) => m.id === id);
-    if (k < 0) throw new Error(`${base}/jobs asked for an unknown mesh id ${id}`);
-    const res = await req(`/mesh/${encodeURIComponent(id)}?name=${encodeURIComponent(stems[k])}`, { method: 'PUT', body: toDmesh(meshes[k]) });
-    if (!res.ok) throw new Error(`PUT ${base}/mesh/${id} failed (${res.status}): ${(await res.text()).trim()}`);
-    sent.add(id);
-  }));
+  const put = async (todo: readonly string[]) => {
+    const list = [...new Set(todo)];
+    let done = 0;
+    if (list.length) input.onUpload?.(0, list.length);
+    await pool(6, list, async (id) => {
+      const k = first.get(id);
+      if (k === undefined) throw new Error(`${base}/jobs asked for an unknown mesh id ${id}`);
+      const res = await req(`/mesh/${encodeURIComponent(id)}?name=${encodeURIComponent(stems[k])}`, { method: 'PUT', body: bytesOf(meshes[k]) });
+      if (!res.ok) throw new Error(`PUT ${base}/mesh/${id} failed (${res.status}): ${(await res.text()).trim()}`);
+      sent.add(id);
+      input.onUpload?.(++done, list.length);
+    });
+  };
   const body = () => {
     const fd = new FormData();
-    for (const m of input.sensors) fd.append('sensors', m.id!);
-    for (const m of input.context ?? []) fd.append('context', m.id!);
+    ids.forEach((id, k) => fd.append(k < input.sensors.length ? 'sensors' : 'context', id));
     if (input.epw instanceof Blob) fd.append('epw', input.epw, 'weather.epw');
     else if (input.epw) fd.append('epw_url', input.epw.url);
     for (const a of input.args ?? []) fd.append('args', a);
     return fd;
   };
-  await put(meshes.map((m) => m.id!).filter((id) => !sent.has(id))); // new meshes first: no 404 round trip
+  const fresh = [...first.keys()].filter((id) => !sent.has(id)); // new to this server as far as this process knows
+  if (fresh.length) {
+    const r = await req('/meshes/missing', { method: 'POST', body: JSON.stringify({ ids: fresh }) });
+    if (!r.ok && r.status !== 404) throw new Error(`${base}/meshes/missing failed (${r.status}): ${(await r.text()).trim()}`);
+    await put(r.ok ? ((await r.json()) as { missing: string[] }).missing : fresh); // 404: a server without the route
+    for (const id of fresh) sent.add(id);
+  }
   // Not aborted: once the server has made the job its id is known, so an abort meanwhile still deletes it below.
   const post = () => f(`${base}/jobs`, { method: 'POST', body: body(), headers });
   let res = await post();

@@ -4,6 +4,7 @@
 #include "daylight.h"
 #include "params.h"         // Slot
 #include <cstdio>
+#include <functional>
 #include <vector_types.h>   // float3, uint3 (CUDA toolkit, header-only)
 
 namespace daylight {
@@ -62,12 +63,20 @@ inline std::vector<MeshView> views_of(const std::vector<Mesh>& meshes) {
   for (const Mesh& m : meshes) v.push_back({&m, m.name, m.sensor});
   return v;
 }
+// f(k) for k in [0, n) on the host's cores (std::execution::par); the first exception any call throws is rethrown here
+// after all of them ran. Callers write disjoint output ranges, so the results equal a serial loop's.
+void par_for(size_t n, const std::function<void(size_t)>& f);
 void bbox_centre(const std::vector<MeshView>& meshes, double c[3]);
 inline void bbox_centre(const std::vector<Mesh>& meshes, double c[3]) { bbox_centre(views_of(meshes), c); }
+// Triangles m can give at most: sum of (n - 2) over its faces of 3 or more corners (earcut gives no more).
+size_t tri_cap(const Mesh& m);
 // Append the triangulated faces of m (recentred by c) to out, each triangle's global slot = slotBase + its face slot
 // (none appended when withSlots is false: the GAS needs them only with per-slot records); skipped counts degenerate /
 // < 3-vertex faces.
 void triangulate(const Mesh& m, const double c[3], Tris& out, int& skipped, uint32_t slotBase = 0, bool withSlots = true);
+// The same into caller ranges: m's points (recentred) at v, at most tri_cap(m) triangles at tri (vertex indices + base)
+// and their slots (when slots is not null). Returns the triangles written.
+size_t triangulate_into(const Mesh& m, const double c[3], float3* v, uint3* tri, uint32_t* slots, unsigned base, uint32_t slotBase, int& skipped);
 // Global slots: every mesh in input order takes slot_count(m) = max face slot + 1 (1 without slots); mesh base = the sum
 // over the meshes before it.
 size_t slot_count(const Mesh& m);
@@ -96,6 +105,8 @@ unsigned thin_solid(const Mesh& m, unsigned s, const double c[3]);
 // Sensor points/normals per face or per point per opt (mode rules, offset, sides). Appends to out: one entry per
 // element, or two consecutive entries (front, back) when sides == Both. Returns the element count (faces or points).
 size_t make_sensors(const Mesh& m, const Options& opt, const double c[3], Sensors& out, std::string& warn);
+// The same into caller ranges p / n of elements x sides entries (0 and the ladybug error in warn: nothing written).
+size_t make_sensors_into(const Mesh& m, const Options& opt, const double c[3], float3* p, float3* n, std::string& warn);
 
 // ------------------------------------------------------------------ run.cpp
 bool npy_write_header(std::FILE* f, size_t rows, size_t cols, const char* descr);   // .npy v1.0 [rows x cols] C order, descr "<f8" / "<f4" / "<u4" / "<u1"

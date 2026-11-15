@@ -795,6 +795,17 @@ int check_gpu(const char* testsDir) {
     for (size_t e = 0; same && e < rows; ++e)
       for (size_t k = 0; k < cols; ++k) same = same && f.f32[k * rows + e] == static_cast<float>(whole.values[e * cols + k]);
     CHECK(same);
+
+    // per-run stats and progress: GPU time and rays of this run only, progress at 1 once every chunk is traced
+    std::atomic<double> progress{0};
+    Options op = os;   // the tiny chunks: many progress steps
+    op.progress = &progress;
+    Result st;
+    CHECK(run(meshes, &cs, op, st, e2));
+    const size_t sensorsDone = st.values.size() / st.columns.size() * 2, directions = st.nSky * 2 + st.nSun;   // both sides
+    CHECK(st.stats.traceMs > 0 && st.stats.bounceMs > 0 && st.stats.launches > 0 && st.stats.gasBytes > 0);
+    CHECK(st.stats.rays == sensorsDone * directions);
+    CHECK(progress.load() == 1.0);
     if (!e2.empty()) std::printf("run: %s\n", e2.c_str());
   }
 

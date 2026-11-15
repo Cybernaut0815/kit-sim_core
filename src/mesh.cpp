@@ -9,6 +9,11 @@
 #include <cstdio>
 #include <charconv>
 #include <cstring>
+#include <exception>
+#include <execution>   // parallel host loops (kept out of headers: nvcc parses internal.h)
+#include <functional>
+#include <mutex>
+#include <numeric>
 #include <unordered_map>
 #include <mapbox/earcut.hpp>
 
@@ -88,23 +93,56 @@ size_t find_mesh(const Names& byName, const std::string& name, const std::string
 
 }  // namespace
 
+void par_for(size_t n, const std::function<void(size_t)>& f) {
+  std::vector<size_t> ks(n);
+  std::iota(ks.begin(), ks.end(), size_t(0));
+  std::exception_ptr first;   // std::execution::par would std::terminate on an escaping exception: carry it out
+  std::mutex mu;
+  std::for_each(std::execution::par, ks.begin(), ks.end(), [&](size_t k) {
+    try { f(k); } catch (...) { std::lock_guard<std::mutex> lock(mu); if (!first) first = std::current_exception(); }
+  });
+  if (first) std::rethrow_exception(first);
+}
+
 void bbox_centre(const std::vector<MeshView>& meshes, double c[3]) {
+  std::vector<std::array<double, 6>> box(meshes.size());   // per mesh lo xyz, hi xyz; combined in order (min/max: exact)
+  par_for(meshes.size(), [&](size_t k) {
+    std::array<double, 6> b = {INFINITY, INFINITY, INFINITY, -INFINITY, -INFINITY, -INFINITY};
+    const std::vector<double>& p = meshes[k].mesh->points;
+    for (size_t i = 0; i < p.size(); ++i) { b[i % 3] = std::fmin(b[i % 3], p[i]); b[3 + i % 3] = std::fmax(b[3 + i % 3], p[i]); }
+    box[k] = b;
+  });
   double lo[3] = {INFINITY, INFINITY, INFINITY}, hi[3] = {-INFINITY, -INFINITY, -INFINITY};
-  for (const MeshView& v : meshes)
-    for (size_t i = 0; i < v.mesh->points.size(); ++i) {
-      lo[i % 3] = std::fmin(lo[i % 3], v.mesh->points[i]); hi[i % 3] = std::fmax(hi[i % 3], v.mesh->points[i]);
-    }
+  for (const auto& b : box) for (int a = 0; a < 3; ++a) { lo[a] = std::fmin(lo[a], b[a]); hi[a] = std::fmax(hi[a], b[3 + a]); }
   for (int k = 0; k < 3; ++k) c[k] = lo[k] <= hi[k] ? (lo[k] + hi[k]) / 2 : 0;
 }
 
+size_t tri_cap(const Mesh& m) {
+  size_t n = 0;
+  for (int k : m.counts) n += k >= 3 ? size_t(k - 2) : 0;
+  return n;
+}
+
 void triangulate(const Mesh& m, const double c[3], Tris& out, int& skipped, uint32_t slotBase, bool withSlots) {
-  unsigned base = (unsigned)out.v.size();
+  const size_t v0 = out.v.size(), t0 = out.i.size(), cap = tri_cap(m);
+  out.v.resize(v0 + m.numPoints());
+  out.i.resize(t0 + cap);
+  if (withSlots) out.slot.resize(t0 + cap);
+  const size_t n = triangulate_into(m, c, out.v.data() + v0, out.i.data() + t0, withSlots ? out.slot.data() + t0 : nullptr,
+                                    static_cast<unsigned>(v0), slotBase, skipped);
+  out.i.resize(t0 + n);
+  if (withSlots) out.slot.resize(t0 + n);
+}
+
+size_t triangulate_into(const Mesh& m, const double c[3], float3* vOut, uint3* tri, uint32_t* slots, unsigned base, uint32_t slotBase, int& skipped) {
   V C{c[0], c[1], c[2]};
-  for (size_t i = 0; i < m.numPoints(); ++i) out.v.push_back(f3(pt(m, (int)i) - C));
+  for (size_t i = 0; i < m.numPoints(); ++i) vOut[i] = f3(pt(m, (int)i) - C);
   uint32_t slot = slotBase;
+  size_t made = 0;
   auto emit = [&](int a, int b, int d) {
-    out.i.push_back(uint3{base + (unsigned)a, base + (unsigned)b, base + (unsigned)d});
-    if (withSlots) out.slot.push_back(slot);
+    tri[made] = uint3{base + (unsigned)a, base + (unsigned)b, base + (unsigned)d};
+    if (slots) slots[made] = slot;
+    ++made;
   };
   size_t off = 0;
   for (size_t f = 0; f < m.counts.size(); ++f) {
@@ -123,9 +161,10 @@ void triangulate(const Mesh& m, const double c[3], Tris& out, int& skipped, uint
       for (int k = 0; k < n; ++k) { V p = pt(m, idx[k]); poly[0].push_back({dot(p, u), dot(p, v)}); }
       std::vector<unsigned> t = mapbox::earcut<unsigned>(poly);
       if (t.empty()) { ++skipped; continue; }
-      for (size_t k = 0; k + 2 < t.size(); k += 3) emit(idx[t[k]], idx[t[k + 1]], idx[t[k + 2]]);
+      for (size_t k = 0; k + 2 < t.size() && k / 3 < size_t(n - 2); k += 3) emit(idx[t[k]], idx[t[k + 1]], idx[t[k + 2]]);   // n - 2 at most (tri_cap)
     } else ++skipped;
   }
+  return made;
 }
 
 size_t slot_count(const Mesh& m) { return m.slot.empty() ? 1 : size_t(*std::max_element(m.slot.begin(), m.slot.end())) + 1; }
@@ -227,14 +266,24 @@ unsigned thin_solid(const Mesh& m, unsigned s, const double c[3]) {
 }
 
 size_t make_sensors(const Mesh& m, const Options& opt, const double c[3], Sensors& out, std::string& warn) {
+  const size_t at = out.p.size(), n = (opt.onVertices ? m.numPoints() : m.numFaces()) * (opt.sides == Sides::Both ? 2 : 1);
+  out.p.resize(at + n);
+  out.n.resize(at + n);
+  const size_t made = make_sensors_into(m, opt, c, out.p.data() + at, out.n.data() + at, warn);
+  if (!made) { out.p.resize(at); out.n.resize(at); }   // the ladybug error: nothing made
+  return made;
+}
+
+size_t make_sensors_into(const Mesh& m, const Options& opt, const double c[3], float3* pOut, float3* nOut, std::string& warn) {
   const bool ladybug = opt.mode == Mode::Ladybug;
   const V C{c[0], c[1], c[2]};
   int degenerate = 0, zeroVn = 0;
   std::vector<V> vn;
   if (opt.onVertices) vn.assign(m.numPoints(), V{0, 0, 0});
-  auto push = [&](V p, V n) {
-    if (opt.sides != Sides::Back) { out.p.push_back(f3(p + n * opt.offset - C)); out.n.push_back(f3(n)); }
-    if (opt.sides != Sides::Front) { out.p.push_back(f3(p - n * opt.offset - C)); out.n.push_back(f3(n * -1)); }
+  size_t j = 0;   // the next entry: front then back per element, as Sides says
+  auto push = [&](V q, V nr) {
+    if (opt.sides != Sides::Back) { pOut[j] = f3(q + nr * opt.offset - C); nOut[j] = f3(nr); ++j; }
+    if (opt.sides != Sides::Front) { pOut[j] = f3(q - nr * opt.offset - C); nOut[j] = f3(nr * -1); ++j; }
   };
   if (ladybug)
     for (size_t f = 0; f < m.counts.size(); ++f)

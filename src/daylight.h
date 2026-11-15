@@ -94,6 +94,15 @@ struct Options {
   // are traced in chunks that fit it. Any value gives the same numbers (tests use a tiny one to force many chunks).
   size_t chunkBytes = size_t(256) << 20;
   bool f32Columns = false;            // Result::f32 (float32, column-major) instead of Result::values: half the memory
+  std::atomic<double>* progress = nullptr;   // set by run() after each trace chunk: the share of sensors done, 0..1
+};
+
+// Where one run's time went (milliseconds) and what the GPU did. Host wall time for prep (triangles, sensors), sky
+// (sun, sky model, weights), build (upload + GAS build) and reduce (summing per quantity, downloads included); GPU event
+// time for trace and bounce. rays: sensor x direction slots traced (hemisphere-culled ones included).
+struct RunStats {
+  double prepMs = 0, skyMs = 0, buildMs = 0, traceMs = 0, reduceMs = 0, bounceMs = 0;
+  size_t rays = 0, launches = 0, gasBytes = 0;
 };
 
 struct Result {
@@ -104,6 +113,7 @@ struct Result {
   double durationHours = 0;
   size_t nSky = 0, nSun = 0;                             // directions: [sky nSky | ground nSky (mirrored) | sun nSun]
   bool sceneReused = false;                              // a resident scene (Options::sceneKey) served the run, no rebuild
+  RunStats stats;
 };
 
 // OBJ contract: world metres, Z-up, right-handed winding; one o/g group per mesh; 1-based global indices (v, f only).

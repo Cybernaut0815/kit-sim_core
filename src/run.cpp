@@ -3,8 +3,10 @@
 #include "internal.h"
 
 #include <algorithm>
+#include <chrono>
 #include <cmath>
 #include <cstdio>
+#include <cstring>
 #include <exception>
 #include <memory>
 #include <new>
@@ -72,6 +74,9 @@ bool npy_write_header(std::FILE* f, size_t rows, size_t cols, const char* descr)
 // The run itself; `stage` names what it is doing, for the out-of-memory message of run() below.
 static bool run_views(const std::vector<MeshView>& meshes, const Weather* w, const Options& opt, Result& out, std::string& err, const char*& stage) {
   const auto cancelled = [&] { if (opt.cancel && opt.cancel->load()) { err = "cancelled"; return true; } return false; };
+  using Clk = std::chrono::steady_clock;
+  const auto ms = [](Clk::time_point t0) { return std::chrono::duration<double, std::milli>(Clk::now() - t0).count(); };
+  out.stats = RunStats{};
   // ---- validation --------------------------------------------------------------------------------------------
   if (!optics_ok(opt, err)) return false;
   const bool ladybug = opt.mode == Mode::Ladybug;
@@ -175,6 +180,7 @@ static bool run_views(const std::vector<MeshView>& meshes, const Weather* w, con
         if (v.mesh->counts[f] > 4) { err = "error: ladybug mode supports tri/quad faces only (mesh " + v.name + ", face " + std::to_string(f) + ")"; return false; }
 
   // ---- sun positions per step (NOAA, ladybug semantics) ----------------------------------------------------------
+  const auto tSky = Clk::now();
   std::vector<Sun> suns(T);
   for (size_t t = 0; t < T; ++t) {
     suns[t] = sun_noaa(lat, lon, tz, steps[t].month, steps[t].day, steps[t].hour, leap);
@@ -380,6 +386,8 @@ static bool run_views(const std::vector<MeshView>& meshes, const Weather* w, con
     for (size_t p = 0; p < Pz; ++p) Wdc[qi][p + 1] = static_cast<float>(vis ? skyVis[p] + sunBinVis[p] : skyRad[p] + sunBinRad[p]);
   }
 
+  out.stats.skyMs = ms(tSky);
+
   // ---- GPU: the scene (resident or built), then the sensors, then the result ---------------------------------------
   // Each big host array lives only as long as it is needed: the occluder triangles until the GAS is built, the sensors
   // until they are on the device, and the result is written chunk by chunk. They never coexist.
@@ -405,10 +413,12 @@ static bool run_views(const std::vector<MeshView>& meshes, const Weather* w, con
     if (!bf || !npy_write_header(bf.get(), nSens, translucent ? nDir : nWords, translucent ? "<u1" : "<u4")) { err = "cannot write " + opt.dumpBitsPath; return false; }
   }
   Gpu* g = nullptr;   // none without directions: no rays, the values stay 0
+  GpuStats st0;       // the GPU's counters before this run (they add up over the process)
   if (nDir > 0) {
     if (cancelled()) return false;
     if (!R.gpu && !(R.gpu = gpu_init(err))) return false;
     g = R.gpu;
+    st0 = gpu_stats(*g);
     if (!installed) {
       // park the installed keyed scene when more than one may stay resident; an unparked GAS is freed by attach / build
       if (!R.cur.key.empty() && opt.residentScenes > 1) { Scene s = R.cur; s.gas = gpu_detach(*g); R.parked.insert(R.parked.begin(), s); }
@@ -421,13 +431,17 @@ static bool run_views(const std::vector<MeshView>& meshes, const Weather* w, con
         R.cur = s;
       } else {
         stage = "triangulating the scene";
+        const auto tPrep = Clk::now();
         bbox_centre(meshes, c);
-        size_t nPts = 0, nTri = 0;   // exact sizes up front: growing would hold the old and the new array at once
+        // Each blocking mesh gets its own ranges (exact sizes up front: growing would hold the old and the new array at
+        // once): its points at vBase[k], at most tri_cap triangles at tBase[k], its slots from sBase[k].
+        std::vector<size_t> vBase(meshes.size() + 1, 0), tBase(meshes.size() + 1, 0), sBase(meshes.size() + 1, 0);
         for (size_t k = 0; k < meshes.size(); ++k) {
-          if (!blocks(k)) continue;
-          nPts += meshes[k].mesh->numPoints();
-          for (int n : meshes[k].mesh->counts) nTri += n >= 3 ? size_t(n - 2) : 0;   // earcut gives at most n - 2
+          vBase[k + 1] = vBase[k] + (blocks(k) ? meshes[k].mesh->numPoints() : 0);
+          tBase[k + 1] = tBase[k] + (blocks(k) ? tri_cap(*meshes[k].mesh) : 0);
+          sBase[k + 1] = sBase[k] + slot_count(*meshes[k].mesh);
         }
+        const size_t nPts = vBase.back(), nTri = tBase.back();
         // the build's peak must fit: the per-run buffers go, then parked scenes (oldest first) until OptiX's estimate does;
         // a scene too big for the free GPU memory fails here, at once and with its numbers, not in a cudaMalloc later
         stage = "making room on the GPU";
@@ -440,25 +454,41 @@ static bool run_views(const std::vector<MeshView>& meshes, const Weather* w, con
                 " free (close other programs that use the GPU, or run fewer meshes)";
           return false;
         }
+        stage = "triangulating the scene";
         Tris tris;
-        tris.v.reserve(nPts);
-        tris.i.reserve(nTri);
-        if (slotted) tris.slot.reserve(nTri);   // only per-slot records read a triangle's slot
+        tris.v.resize(nPts);
+        tris.i.resize(nTri);
+        if (slotted) tris.slot.resize(nTri);   // only per-slot records read a triangle's slot
         if (translucent) thin.assign(slots.size(), 0);
-        size_t base = 0;
-        for (size_t k = 0; k < meshes.size(); ++k) {
+        std::vector<size_t> made(meshes.size(), 0);
+        std::vector<int> skip(meshes.size(), 0);
+        // ponytail: one mesh per task, so a single giant mesh runs on one core; split its faces into blocks if
+        // one-mesh models matter
+        par_for(meshes.size(), [&](size_t k) {
+          if (!blocks(k)) return;
           const Mesh& m = *meshes[k].mesh;
-          const size_t ns = slot_count(m);
-          if (blocks(k)) {
-            triangulate(m, c, tris, skipped, static_cast<uint32_t>(base), slotted);
-            // ponytail: one pass over the mesh per transmitting slot; bucket the faces by slot if meshes with hundreds appear
-            for (size_t s = 0; translucent && s < ns; ++s)
-              if (slots[base + s].tau > 0) thin[base + s] = thin_solid(m, static_cast<unsigned>(s), c);
+          made[k] = triangulate_into(m, c, tris.v.data() + vBase[k], tris.i.data() + tBase[k], slotted ? tris.slot.data() + tBase[k] : nullptr,
+                                     static_cast<unsigned>(vBase[k]), static_cast<uint32_t>(sBase[k]), skip[k]);
+          // ponytail: one pass over the mesh per transmitting slot; bucket the faces by slot if meshes with hundreds appear
+          for (size_t s = 0; translucent && s < slot_count(m); ++s)
+            if (slots[sBase[k] + s].tau > 0) thin[sBase[k] + s] = thin_solid(m, static_cast<unsigned>(s), c);
+        });
+        size_t at = 0;   // close the gaps faces left that drew fewer than n - 2 triangles (none in all-triangle meshes)
+        for (size_t k = 0; k < meshes.size(); ++k) {
+          if (at != tBase[k] && made[k]) {
+            std::memmove(tris.i.data() + at, tris.i.data() + tBase[k], made[k] * sizeof(uint3));
+            if (slotted) std::memmove(tris.slot.data() + at, tris.slot.data() + tBase[k], made[k] * sizeof(uint32_t));
           }
-          base += ns;
+          at += made[k];
+          skipped += skip[k];
         }
+        tris.i.resize(at);
+        if (slotted) tris.slot.resize(at);
+        out.stats.prepMs += ms(tPrep);
         stage = "building the scene";
+        const auto tBuild = Clk::now();
         if (!gpu_build(*g, tris, slots, err, slotted)) return false;
+        out.stats.buildMs += ms(tBuild);
         nTris = tris.i.size();
         R.cur.key = key; std::copy(c, c + 3, R.cur.c); R.cur.nTris = nTris; R.cur.skipped = skipped; R.cur.thin = thin;
       }   // the triangles go here, before the sensors are made
@@ -488,20 +518,27 @@ static bool run_views(const std::vector<MeshView>& meshes, const Weather* w, con
   for (size_t s = 0; !opt.cullBackfaces && s < slots.size() && s < thin.size(); ++s) slots[s].flags |= thin[s];
 
   stage = "making the sensors";
+  const auto tSens = Clk::now();
   Sensors sens;
-  sens.p.reserve(nSens);
-  sens.n.reserve(nSens);
+  sens.p.resize(nSens);
+  sens.n.resize(nSens);
+  std::vector<size_t> sAt(meshes.size() + 1, 0), elems(meshes.size(), 0);   // each sensor mesh's entries start at sAt[k]
+  for (size_t k = 0; k < meshes.size(); ++k)
+    sAt[k + 1] = sAt[k] + (meshes[k].sensor ? (opt.onVertices ? meshes[k].mesh->numPoints() : meshes[k].mesh->numFaces()) * size_t(nS) : 0);
+  std::vector<std::string> warns(meshes.size());
+  par_for(meshes.size(), [&](size_t k) {
+    if (meshes[k].sensor) elems[k] = make_sensors_into(*meshes[k].mesh, opt, c, sens.p.data() + sAt[k], sens.n.data() + sAt[k], warns[k]);
+  });
   std::string warn;
   out.ranges.clear();
-  for (const MeshView& v : meshes) {
-    if (!v.sensor) continue;
-    std::string wmsg;
-    const size_t n = make_sensors(*v.mesh, opt, c, sens, wmsg);
-    if (wmsg.rfind("error:", 0) == 0) { err = wmsg; return false; }
-    if (!wmsg.empty()) warn += (warn.empty() ? "" : "; ") + wmsg;
-    out.ranges.emplace_back(v.name, n);
+  for (size_t k = 0; k < meshes.size(); ++k) {
+    if (!meshes[k].sensor) continue;
+    if (warns[k].rfind("error:", 0) == 0) { err = warns[k]; return false; }
+    if (!warns[k].empty()) warn += (warn.empty() ? "" : "; ") + warns[k];
+    out.ranges.emplace_back(meshes[k].name, elems[k]);
   }
-  if (sens.p.size() != nSens) { err = "internal: " + std::to_string(sens.p.size()) + " sensors made for " + std::to_string(nSens); return false; }
+  if (sAt.back() != nSens) { err = "internal: " + std::to_string(sAt.back()) + " sensors made for " + std::to_string(nSens); return false; }
+  out.stats.prepMs += ms(tSens);
   if (opt.verbose) {
     std::fprintf(stderr, "info: %zu sensors, %zu triangles%s, %zu steps (%.1f h)\n", nSens, nTris, reuse ? " (scene reused)" : "", T, durationHours);
     if (skipped) std::fprintf(stderr, "warn: %d degenerate faces skipped in occluders\n", skipped);
@@ -567,12 +604,15 @@ static bool run_views(const std::vector<MeshView>& meshes, const Weather* w, con
       if (reflect && !gpu_bounce(*g, i0, nc, gpu_bounce_flags(opt.cullBackfaces), bounce, err)) return false;
       tmp.assign(nc, 0.0);
       tmp2.assign(nc, 0.0);
+      const auto tRed = Clk::now();
       for (size_t qi = 0; qi < nQ; ++qi) {
         if (!gpu_reduce(*g, nc, Wq[qi].data(), opt.quantities[qi] != Quantity::SunHours, tmp.data(), err)) return false;
         const bool dc = !Wdc[qi].empty();
         if (dc && !gpu_reduce_dc(*g, nc, Wdc[qi].data(), tmp2.data(), err)) return false;
         for (size_t i = 0; i < nc; ++i) store(i0 + i, qi, dc ? tmp[i] + tmp2[i] : tmp[i]);   // the same double sum as before
       }
+      out.stats.reduceMs += ms(tRed);
+      if (opt.progress) opt.progress->store(double(i0 + nc) / double(nSens));
       if (bf && translucent) {   // direction-major bytes on the device -> row-major [nc x nDir] rows
         if (!gpu_download_bytes(*g, nc, byteBuf, err)) return false;
         byteRows.resize(nc * nDir);
@@ -603,6 +643,12 @@ static bool run_views(const std::vector<MeshView>& meshes, const Weather* w, con
         if (std::fwrite(E.data(), sizeof(float), E.size(), sf.get()) != E.size()) { err = "write failed: " + opt.seriesPath; return false; }
       }
     }
+    const GpuStats st1 = gpu_stats(*g);
+    out.stats.traceMs = st1.traceMs - st0.traceMs;
+    out.stats.bounceMs = st1.bounceMs - st0.bounceMs;
+    out.stats.rays = st1.rays - st0.rays;
+    out.stats.launches = st1.launches - st0.launches;
+    out.stats.gasBytes = st1.gasBytes;
     if (opt.verbose) {
       GpuStats st = gpu_stats(*g);
       std::fprintf(stderr, "info: GAS %.1f MB build %.0f ms, %zu launches, %.3g rays in %.0f ms (%.2f GRays/s)\n",

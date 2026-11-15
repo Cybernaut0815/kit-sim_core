@@ -20,6 +20,7 @@ uv run compare.py bits --exe ... --scene box --epw USA_MA_Boston-City.WSO_TMY
 uv run compare.py transmit --exe ...     # layer 8 alone (~3 s)
 uv run compare.py reflect --exe ...      # layer 9 alone (~30 s)
 uv run python -I ingest.py --exe ../build/RelWithDebInfo/daylight.exe       # 1M-quad ingest benchmark -> _out/ingest/, markdown table
+uv run python -I big.py run --exe EXE --mesh bhs --tag T --root R          # large-model bench (convert / hills / run / table / selftest, usage in big.py) -> R/results.jsonl, markdown
 uv run python -I golden.py record        # once, on main: byte goldens of ~30 CLI cases -> _out/golden/<case>/ (~20 s)
 uv run python -I golden.py check         # rerun them into a temp dir, list every differing file, exit 1 on any
 ```

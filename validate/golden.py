@@ -7,8 +7,9 @@ series.npy + series.npy.hoys.txt and --dump-bits bits.npy; `check` must reproduc
 
 Cases: the fixture scenes (fixtures.py runs first when its output is missing; usd_xform is converted by the Python
 binding as in compare.py layer 6) in physical mode with all six quantities and in ladybug mode with what it accepts
-(flags as compare.py uses them), a default run, a --from/--to range with --hours, a --time instant, the flag variants
-and a plain .dmesh input. VARIANTS must give the bytes of their base case; one runs when `daylight --help` lists the
+(flags as compare.py uses them), a default run, a --from/--to range with --hours, a --time instant, the flag variants,
+a plain .dmesh input and a generated 1.28M-triangle heightfield (hills) that spans 3 GPU chunks, annual and with
+--bounces 1. VARIANTS must give the bytes of their base case; one runs when `daylight --help` lists the
 flags it needs, else it is reported as skipped. The slot-block .dmesh (header word 1, uint16 face % 3 after the
 indices) needs no flag: older readers ignore the word and the trailing bytes."""
 import argparse
@@ -22,6 +23,7 @@ import time
 from pathlib import Path
 
 import numpy as np
+from daylight import to_dmesh
 
 HERE = Path(__file__).resolve().parent
 FIX, GOLD = HERE / '_out' / 'fixtures', HERE / '_out' / 'golden'
@@ -39,8 +41,9 @@ def ladybug(scene):
         + ([] if scene == 'overhang' else ['--no-self-occlude'])
 
 
-# name -> (scene, mesh format obj | usd | dmesh | slots, flags)
-# ponytail: every case fits one GPU chunk (<= 480 sensors); add a case past the 256 MiB chunk cap if chunking changes
+# name -> (scene, mesh format obj | usd | dmesh | slots | hills, flags)
+# hills_*: 1.28M sensors span 3 GPU chunks at the 256 MiB cap (annual: 148 visibility words = 592 B per sensor; bounces:
+# 146 bins x 4 B = 584 B); every other case fits one chunk (<= 480 sensors)
 CASES = {**{f'{s}_phys': (s, f, PHYS + (DUMPS if s == 'box' else [])) for s, f in SCENES.items()},
          **{f'{s}_lb': (s, f, ladybug(s) + (DUMPS if s == 'walls' else [])) for s, f in SCENES.items()},
          'box_default': ('box', 'obj', EPW),
@@ -60,7 +63,10 @@ CASES = {**{f'{s}_phys': (s, f, PHYS + (DUMPS if s == 'box' else [])) for s, f i
          'box_lb_sky_density2': ('box', 'obj', ladybug('box') + ['--sky-density', '2']),
          'box_lb_north30': ('box', 'obj', ladybug('box') + ['--north', '30']),
          'box_lb_vertices': ('box', 'obj', ladybug('box') + ['--on', 'vertices']),
-         'box_dmesh': ('box', 'dmesh', PHYS + DUMPS)}
+         'box_dmesh': ('box', 'dmesh', PHYS + DUMPS),
+         'hills_annual': ('hills', 'hills', PHYS),
+         'hills_bounces': ('hills', 'hills', EPW + ['--quantity', 'radiation,diffuse', '--from', '06-21T08:00', '--to',
+                                                   '06-21T18:00', '--step', '30', '--bounces', '1', '--bounce-samples', '64'])}
 # (name, base case, mesh format (None = the base's), extra flags, flags `daylight --help` must list)
 VARIANTS = [('box_dmesh_slots', 'box_dmesh', 'slots', [], []),
             ('box_dmesh_optics_opaque', 'box_dmesh', 'slots', ['--optics', '*=0.2;flat/1=0.3;box_a=0.25;box_b/2=0.1'],
@@ -84,9 +90,24 @@ def write_dmesh(path, m, slots):
                      + i.tobytes() + tail)
 
 
+def hills(n):
+    """big.py's heightfield (python -I cannot import it): n x n 1 m quads as two up-facing triangles each,
+    z = 8 sin(x/19) cos(y/23), points rounded to float32 -> (points, indices)."""
+    x, y = np.meshgrid(np.arange(n + 1.0), np.arange(n + 1.0))
+    P = np.stack([x, y, 8 * np.sin(x / 19) * np.cos(y / 23)], -1).reshape(-1, 3).astype(np.float32)
+    v = (np.arange(n, dtype=np.int32)[:, None] * (n + 1) + np.arange(n, dtype=np.int32)).ravel()
+    return P, np.stack([v, v + 1, v + n + 2, v, v + n + 2, v + n + 1], 1).ravel()
+
+
 def mesh_args(scene, fmt, tmp):
     """Mesh arguments of a case; converted / written inputs go to tmp/<fmt>/<scene>/."""
     d, out = FIX / scene, tmp / fmt / scene
+    if fmt == 'hills':                     # 800 x 800: 641,601 points, 1.28M triangles, written once per golden.py run
+        if not (out / 'hills.dmesh').exists():
+            out.mkdir(parents=True)
+            P, I = hills(800)
+            to_dmesh(P, np.full(len(I) // 3, 3, np.int32), I, out / 'hills.dmesh')   # write_dmesh's face loop is too slow
+        return [str(out / 'hills.dmesh')]
     if fmt == 'obj':
         return [str(d / 'sensors.obj')] + (['--context', str(d / 'context.obj')] if (d / 'context.obj').exists() else [])
     if fmt == 'usd':

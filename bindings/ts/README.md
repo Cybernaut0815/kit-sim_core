@@ -8,8 +8,8 @@ Node (three.js scene -> values):
 import { fromThree, run } from 'daylight-mesh';
 
 const sensors = fromThree([scene]);                 // every descendant Mesh, world metres, Y-up -> Z-up
-const { values, columns } = await run('daylight.exe', { sensors, args: ['--epw', 'x.epw'] });
-console.log(columns, values[0]);                    // one Float64Array per sensor element
+const { data, columns } = await run('daylight.exe', { sensors, args: ['--epw', 'x.epw'] });
+console.log(columns[0], data[0]);                   // one Float64Array per column, a value per sensor element
 ```
 
 glb:
@@ -20,7 +20,7 @@ import fs from 'node:fs/promises';
 
 const sensors = await fromGLB(await fs.readFile('a.glb'));            // { scale } multiplies metres
 const context = await fromGLB(await fs.readFile('city.glb'));
-const { values } = await run('daylight.exe', { sensors, context, args: ['--epw', 'x.epw', '--quantity', 'radiation'] });
+const { data } = await run('daylight.exe', { sensors, context, args: ['--epw', 'x.epw', '--quantity', 'radiation'] });
 ```
 
 Browser (or Node) against a `daylight_server` (the GPU box runs the core in-process; meshes are uploaded once and
@@ -30,7 +30,8 @@ referenced by `id` afterwards, so a re-run with other flags sends no geometry):
 import { fromThree, runRemote } from 'daylight-mesh';
 
 const sensors = fromThree([scene]);                                   // give each ObjMesh a stable `id` to reuse the server cache
-const { values, columns, cache } = await runRemote('http://gpu-box:8080', { sensors, epw: epwFile, args: ['--quantity', 'radiation,sunhours'] });
+const { data, columns, cache } = await runRemote('http://gpu-box:8080', { sensors, epw: epwFile, args: ['--quantity', 'radiation,sunhours'] });
+// data[c][element]: one Float32Array per column, as run() returns them (there in float64)
 ```
 
 Colour a three.js mesh by its results (`applyToThree`):
@@ -38,10 +39,10 @@ Colour a three.js mesh by its results (`applyToThree`):
 ```ts
 import { applyToThree, fromThree, run } from 'daylight-mesh';
 
-const { values, columns, manifest } = await run('daylight.exe', { sensors: fromThree([mesh]), args: ['--epw', 'x.epw'] });
+const { data, columns, manifest } = await run('daylight.exe', { sensors: fromThree([mesh]), args: ['--epw', 'x.epw'] });
 const { first, count } = (manifest as { meshes: { name: string; first: number; count: number }[] }).meshes[0]; // rows of this mesh
 const col = columns.indexOf('radiation_front'); // columns are <quantity>_<side>
-await applyToThree(mesh, values.slice(first, first + count).map((r) => r[col])); // one value per triangle -> flat face colours
+await applyToThree(mesh, data[col].subarray(first, first + count)); // one value per triangle -> flat face colours
 ```
 
 ## API
@@ -65,7 +66,8 @@ await applyToThree(mesh, values.slice(first, first + count).map((r) => r[col]));
   is set, else flags 0); throws on bad indices or a `slots` length other than the triangle count.
 - `toObj(meshes)`: one `o` group per mesh, 1-based global indices; throws on bad indices (interop with other OBJ tools).
 - `run(exe, { sensors, context?, args })`: temp dir, `exe <sensors...> [--context <file>]... ...args --out out.npy`,
-  returns `{ values: Float64Array[] (one per element), columns, manifest }`; rejects with the core's stderr.
+  returns `{ data: Float64Array[] (one per column: data[c][element] for columns[c]), columns, manifest }`; rejects
+  with the core's stderr.
   `sensors`/`context` accept `ObjMesh[]` (written as one `<name>.dmesh` per mesh, name sanitised to `[A-Za-z0-9._-]`
   and made unique; the manifest's mesh names are the file stems) or OBJ text (written as one `.obj`).
   Needs Node >= 20 and the GPU build of the core.
@@ -74,12 +76,18 @@ await applyToThree(mesh, values.slice(first, first + count).map((r) => r[col]));
   every id the server reports missing, then one retry; long-polls `GET url/jobs/<id>?wait=25` (`onStatus` sees each
   queued / running state, with the queue position); aborting `signal` cancels the job on the server; `clientId` is
   sent as `X-Client-Id` for the per-client job limit; `epw` is a `Blob` (uploaded) or `{ url }` (fetched by the server
-  through its allowlisted proxy cache); returns `{ values, columns, manifest, cache }` (`values_b64` decoded).
-  Browser-safe. The full API is self-documented by the server at `/docs` and `/openapi.json`.
+  through its allowlisted proxy cache); once the job is done, reads `GET url/jobs/<id>/values` (float32
+  little-endian, column-major) into one buffer of `4 x rows x columns` bytes (rejects with `values: X of Y bytes` on
+  any other length) and returns `{ data: Float32Array[] (one view of it per column, as run()'s data), columns,
+  manifest, cache }`; `manifest` is the job's JSON (`values_b64` dropped, never decoded). While the job runs,
+  `onStatus` also sees `progress` (0..1) and `eta_s` when the server reports them; a failed job's `status` is 400
+  usage, 500 runtime or 507 out of memory (409: cancelled). Browser-safe. The full API is self-documented by the
+  server at `/docs` and `/openapi.json`.
 - `dmeshStems(names, fallback?)`: the stem / mesh-name sanitiser both runners use (`[^A-Za-z0-9._-]` -> `_`, unique
   case-insensitively).
-- `parseNpy(bytes, cols)`: parses a core `--out FILE.npy` (NumPy v1.0 `<f8`, C order) into rows of `cols`.
-- `parseValues(text)`: parses a core `--out FILE` text file.
+- `parseNpy(bytes, cols)`: parses a core `--out FILE.npy` (NumPy v1.0 `<f8`, C order) into `cols` columns
+  (`Float64Array` each).
+- `parseValues(text)`: parses a core `--out FILE` text file into columns the same way.
 
 Browser bundles use `toDmesh`, `toObj`, `fromThree`, `fromGLB`, `colormap`, `applyToThree`, `runRemote`; `run` imports Node builtins lazily and must stay on Node.
 
@@ -94,8 +102,9 @@ Browser bundles use `toDmesh`, `toObj`, `fromThree`, `fromGLB`, `colormap`, `app
 | `fs.writeFileSync(.dmesh)` (56 MB) | 181 |
 | `run()` end to end (write, core sunhours one timestep, read `.npy`) | 1724 |
 
-`run()` reads the values back from `--out out.npy` (one `Float64Array` over the raw bytes) instead of text:
-`parseValues` on a 1M-row text file takes ~0.9 s, the `.npy` read is I/O bound. `toObj` (text, ~1.5 s) stays interop only.
+`run()` reads the values back from `--out out.npy` (straight from the raw bytes into one `Float64Array` per column)
+instead of text: `parseValues` on a 1M-row text file takes ~0.9 s, the `.npy` read is I/O bound. `toObj` (text, ~1.5 s)
+stays interop only.
 
 ## The `.dmesh` format
 

@@ -81,19 +81,20 @@ describe('fromGLB', () => {
   });
 });
 
-it('parseValues', () => {
-  expect(parseValues('1 2.5\n\n 3 4 \n').map((r) => Array.from(r))).toEqual([[1, 2.5], [3, 4]]);
+it('parseValues: one column per quantity', () => {
+  expect(parseValues('1 2.5\n\n 3 4 \n').map((c) => Array.from(c))).toEqual([[1, 3], [2.5, 4]]);
+  expect(parseValues('\n')).toEqual([]);
 });
 
-it('parseNpy', () => {
+it('parseNpy: C-order rows in, one column per quantity out', () => {
   const header = "{'descr': '<f8', 'fortran_order': False, 'shape': (2, 2), }".padEnd(117) + '\n'; // 10 + 118 = 128 bytes (64-aligned like NumPy)
   const buf = new Uint8Array(128 + 32), dv = new DataView(buf.buffer);
   buf.set([0x93, 0x4e, 0x55, 0x4d, 0x50, 0x59, 1, 0, 118, 0]); // \x93NUMPY v1.0, header length 118 LE
   buf.set(Array.from(header, (c) => c.charCodeAt(0)), 10);
-  [1, 2.5, 3, 4].forEach((v, i) => dv.setFloat64(128 + 8 * i, v, true));
-  expect(parseNpy(buf, 2).map((r) => Array.from(r))).toEqual([[1, 2.5], [3, 4]]);
-  expect(parseNpy(Buffer.concat([Buffer.alloc(8), Buffer.from(buf)]).subarray(8), 2).map((r) => Array.from(r))).toEqual([[1, 2.5], [3, 4]]); // Buffer view with byteOffset (fs.readFile pool)
-  expect(parseNpy(buf.subarray(0, 128 + 24), 2).length).toBe(1); // partial trailing row dropped
+  [1, 2.5, 3, 4].forEach((v, i) => dv.setFloat64(128 + 8 * i, v, true)); // rows [1, 2.5] and [3, 4]
+  expect(parseNpy(buf, 2).map((c) => Array.from(c))).toEqual([[1, 3], [2.5, 4]]);
+  expect(parseNpy(Buffer.concat([Buffer.alloc(9), Buffer.from(buf)]).subarray(9), 2).map((c) => Array.from(c))).toEqual([[1, 3], [2.5, 4]]); // Buffer view at an odd byteOffset (fs.readFile pool)
+  expect(parseNpy(buf.subarray(0, 128 + 24), 2).map((c) => Array.from(c))).toEqual([[1], [2.5]]); // partial trailing row dropped
   expect(() => parseNpy(new Uint8Array(16), 2)).toThrow(/NumPy/);
   expect(() => parseNpy(buf, 0)).toThrow(/cols/);
 });
@@ -148,9 +149,10 @@ it('dmeshStems', () => {
 
 describe('runRemote', () => {
   const manifest = { columns: ['sunhours_front', 'radiation_front'], duration_h: 1, dirs: { sky: 145, ground: 145, sun: 1 }, meshes: [{ name: 'box', first: 0, count: 2 }], run_s: 0.1, cache: { response: 'miss' } };
-  const values_b64 = Buffer.from(new Float64Array([1, 2.5, 3, 4]).buffer).toString('base64');
+  const f32 = new Uint8Array(Float32Array.of(1, 3, 2.5, 4).buffer); // GET /jobs/{id}/values: column-major, sunhours rows 0, 1, then radiation rows 0, 1
   const json = (body: unknown, status = 200) => new Response(JSON.stringify(body), { status });
-  it('submits a job by mesh ids, uploads a new mesh first (no 404 round trip), follows the queue, decodes values_b64', async () => {
+  const stream = (...chunks: Uint8Array[]) => new Response(new ReadableStream({ start(c) { for (const b of chunks) c.enqueue(b); c.close(); } }));
+  it('submits a job by mesh ids, uploads a new mesh first (no 404 round trip), follows the queue, streams the values into columns', async () => {
     const m = fromThree([box()])[0];
     m.id = 'id-1';
     const calls: { url: string; method?: string; body?: unknown; headers?: HeadersInit }[] = [];
@@ -159,23 +161,27 @@ describe('runRemote', () => {
       calls.push({ url, method: init?.method, body: init?.body, headers: init?.headers });
       if (init?.method === 'PUT') return new Response(null, { status: 204 });
       if (init?.method === 'POST') return json({ id: 'j1', state: 'queued', position: 1 }, 202);
-      return ++polls === 1 ? json({ id: 'j1', state: 'running', position: 0 }) : json({ id: 'j1', state: 'done', ...manifest, values_b64 });
+      if (url.endsWith('/values')) return stream(f32.subarray(0, 5), f32.subarray(5)); // two chunks, split inside a float
+      return ++polls === 1 ? json({ id: 'j1', state: 'running', position: 0 })
+        : json({ id: 'j1', state: 'done', ...manifest, values: { url: '/jobs/j1/values', dtype: '<f4', order: 'column-major', shape: [2, 2], bytes: 16 }, values_b64: 'not base64' });
     }) as unknown as typeof fetch;
     const seen: string[] = [];
     const r = await runRemote('http://h/', { sensors: [m], args: ['--quantity', 'sunhours'], clientId: 'tab-1', onStatus: (j) => seen.push(`${j.state}:${j.position}`), fetch: fetchMock });
     expect(calls.map((c) => `${c.method ?? 'GET'} ${c.url}`)).toEqual([
-      'PUT http://h/mesh/id-1?name=box', 'POST http://h/jobs', 'GET http://h/jobs/j1?wait=25', 'GET http://h/jobs/j1?wait=25',
+      'PUT http://h/mesh/id-1?name=box', 'POST http://h/jobs', 'GET http://h/jobs/j1?wait=25', 'GET http://h/jobs/j1?wait=25', 'GET http://h/jobs/j1/values',
     ]);
     expect(seen).toEqual(['queued:1', 'running:0']);
-    expect(calls[0].headers).toEqual({ 'X-Client-Id': 'tab-1' });
+    expect([calls[0].headers, calls[4].headers]).toEqual([{ 'X-Client-Id': 'tab-1' }, { 'X-Client-Id': 'tab-1' }]);
     expect(String.fromCharCode(...(calls[0].body as Uint8Array).subarray(0, 4))).toBe('DLM1');
     const fd = calls[1].body as FormData;
     expect(fd.getAll('sensors')).toEqual(['id-1']);
     expect(fd.getAll('args')).toEqual(['--quantity', 'sunhours']);
     expect(fd.has('epw')).toBe(false);
     expect(r.columns).toEqual(manifest.columns);
-    expect(r.values.map((v) => Array.from(v))).toEqual([[1, 2.5], [3, 4]]);
+    expect(r.data.map((c) => Array.from(c))).toEqual([[1, 3], [2.5, 4]]);
+    expect(r.data[1].buffer).toBe(r.data[0].buffer); // views of one buffer
     expect(r.manifest.meshes[0].count).toBe(2);
+    expect('values_b64' in r.manifest).toBe(false); // an inline copy is dropped, never decoded
     expect(r.cache).toEqual({ response: 'miss' });
   });
   it('a mesh sent before goes by id alone; one the server lost (404) is put again before one retry', async () => {
@@ -186,17 +192,25 @@ describe('runRemote', () => {
     const fetchMock = (async (url: string, init?: RequestInit) => {
       calls.push(`${init?.method ?? 'GET'} ${url}`);
       if (init?.method === 'PUT') return new Response(null, { status: 204 });
-      if (init?.method === 'POST') return ++posts === 2 ? json({ missing: ['id-2'] }, 404) : json({ id: 'j9', state: 'done', ...manifest, values_b64 }, 202);
-      return json({});
+      if (init?.method === 'POST') return ++posts === 2 ? json({ missing: ['id-2'] }, 404) : json({ id: 'j9', state: 'done', ...manifest }, 202); // done at once, as a cache hit
+      return stream(f32); // no values.url in the job: the default route
     }) as unknown as typeof fetch;
     await runRemote('http://k', { sensors: [m], fetch: fetchMock }); // first run: put, then the job
     await runRemote('http://k', { sensors: [m], fetch: fetchMock }); // the server restarted: 404, put again, retry
     await runRemote('http://k', { sensors: [m], fetch: fetchMock }); // by id alone
     expect(calls).toEqual([
-      'PUT http://k/mesh/id-2?name=box', 'POST http://k/jobs',
-      'POST http://k/jobs', 'PUT http://k/mesh/id-2?name=box', 'POST http://k/jobs',
-      'POST http://k/jobs',
+      'PUT http://k/mesh/id-2?name=box', 'POST http://k/jobs', 'GET http://k/jobs/j9/values',
+      'POST http://k/jobs', 'PUT http://k/mesh/id-2?name=box', 'POST http://k/jobs', 'GET http://k/jobs/j9/values',
+      'POST http://k/jobs', 'GET http://k/jobs/j9/values',
     ]);
+  });
+  it('the values must be exactly rows x columns float32: a short or long body or a failed GET rejects', async () => {
+    const answer = (values: Response) => (async (_u: string, init?: RequestInit) => init?.method === 'PUT' ? new Response(null, { status: 204 })
+      : init?.method === 'POST' ? json({ id: 'j5', state: 'done', ...manifest }, 202) : values) as unknown as typeof fetch;
+    const go = (values: Response) => runRemote('http://h', { sensors: fromThree([box()]), fetch: answer(values) });
+    await expect(go(new Response(f32.subarray(1)))).rejects.toThrow(/values: 15 of 16 bytes/);
+    await expect(go(stream(f32, f32.subarray(0, 1)))).rejects.toThrow(/values: 17 of 16 bytes/);
+    await expect(go(new Response('error: expired\n', { status: 404 }))).rejects.toThrow(/jobs\/j5\/values failed \(404\): error: expired/);
   });
   it('mints ids, sends epw_url or an epw blob, rejects with the server text', async () => {
     const seen: FormData[] = [];
@@ -251,9 +265,9 @@ it.skipIf(!liveUrl)('runRemote() against a live daylight_server (set DAYLIGHT_UR
   const sensors = fromThree([box()]);
   const args = ['--lat', '42.35', '--lon', '-71.07', '--tz', '-5', '--quantity', 'sunhours', '--time', '06-21T12:00'];
   const r = await runRemote(liveUrl, { sensors, args });
-  expect(r.values.length).toBe(12);
   expect(r.columns).toEqual(['sunhours_front']);
-  for (const row of r.values) for (const v of row) expect(v).toBeGreaterThanOrEqual(0), expect(v).toBeLessThanOrEqual(1);
+  expect(r.data.map((c) => c.length)).toEqual([12]);
+  for (const col of r.data) for (const v of col) expect(v).toBeGreaterThanOrEqual(0), expect(v).toBeLessThanOrEqual(1);
   const again = await runRemote(liveUrl, { sensors, args }); // same ids and args: the server answers from its response cache
   expect(again.cache?.response).toBe('hit');
 });
@@ -262,10 +276,9 @@ const exe = process.env.DAYLIGHT_EXE && existsSync(process.env.DAYLIGHT_EXE) ? p
 it.skipIf(!exe)('run() on a box through the core via .dmesh in, .npy out (set DAYLIGHT_EXE to enable)', async () => {
   const args = ['--lat', '42.35', '--lon', '-71.07', '--tz', '-5', '--quantity', 'sunhours', '--time', '06-21T12:00'];
   const r = await run(exe, { sensors: fromThree([box()]), args });
-  expect(r.values.length).toBe(12);
   expect(r.columns).toEqual(['sunhours_front']); // <quantity>_<side>, as the README snippet relies on
-  expect(r.values[0].length).toBe(r.columns.length);
-  for (const row of r.values) for (const v of row) expect(v).toBeGreaterThanOrEqual(0), expect(v).toBeLessThanOrEqual(1);
+  expect(r.data.map((c) => c.length)).toEqual([12]); // one column, a value per triangle
+  for (const col of r.data) for (const v of col) expect(v).toBeGreaterThanOrEqual(0), expect(v).toBeLessThanOrEqual(1);
   const slotted = fromThree([box()]).map((m) => ({ ...m, slots: Uint16Array.from({ length: m.indices.length / 3 }, (_, i) => i % 3) }));
-  expect((await run(exe, { sensors: slotted, args })).values).toEqual(r.values); // the core reads the slot block; same values
+  expect((await run(exe, { sensors: slotted, args })).data).toEqual(r.data); // the core reads the slot block; same values
 });

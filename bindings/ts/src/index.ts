@@ -128,21 +128,22 @@ export async function fromGLB(data: ArrayBuffer | Uint8Array, opts: { scale?: nu
   return out;
 }
 
-/** Core `--out FILE` text file -> one Float64Array of columns per element (blank lines skipped). */
+/** Core `--out FILE` text file -> one Float64Array per column, `data[c][element]` (blank lines skipped). */
 export function parseValues(text: string): Float64Array[] {
-  return text.split('\n').filter((l) => l.trim()).map((l) => Float64Array.from(l.trim().split(/\s+/), Number));
+  const rows = text.split('\n').filter((l) => l.trim()).map((l) => l.trim().split(/\s+/));
+  return (rows[0] ?? []).map((_, c) => Float64Array.from(rows, (r) => Number(r[c])));
 }
 
-/** Core `--out FILE.npy` (NumPy v1.0, `<f8`, C order [N x cols]) -> one Float64Array per row. */
+/** Core `--out FILE.npy` (NumPy v1.0, `<f8`, C order [N x cols]) -> one Float64Array per column, `data[c][element]`. */
 export function parseNpy(bytes: Uint8Array, cols: number): Float64Array[] {
   const dv = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
   if (dv.getUint8(0) !== 0x93 || dv.getUint8(6) !== 1) throw new Error('not a NumPy v1.0 .npy file');
   if (!(cols >= 1)) throw new RangeError('cols must be >= 1');
-  const start = 10 + dv.getUint16(8, true);
-  const data = new Float64Array(Uint8Array.prototype.slice.call(bytes, start).buffer); // real copy (Buffer.slice is a view): 8-byte aligned, own buffer
-  const rows: Float64Array[] = [];
-  for (let i = 0; i + cols <= data.length; i += cols) rows.push(data.subarray(i, i + cols));
-  return rows;
+  const start = 10 + dv.getUint16(8, true), rows = Math.floor((bytes.byteLength - start) / (8 * cols)); // a partial last row is dropped
+  const data = Array.from({ length: cols }, () => new Float64Array(rows));
+  // Transposed while read: DataView takes any byteOffset (an fs.readFile Buffer is a view into a pool), so no aligned copy of the file.
+  for (let i = 0, at = start; i < rows; i++) for (let c = 0; c < cols; c++, at += 8) data[c][i] = dv.getFloat64(at, true);
+  return data;
 }
 
 // viridis at t = 0, 0.125, ..., 1 (matplotlib); shared with bindings/python.
@@ -196,10 +197,11 @@ export async function applyToThree(mesh: Mesh, values: ArrayLike<number>, opts: 
 
 /**
  * Node only: writes the inputs into a temp dir, runs `exe <sensor files> [--context <file>]... ...args --out out.npy`,
- * returns the values and the `out.npy.json` manifest. A string input is OBJ text (one .obj); an ObjMesh[] becomes
+ * returns the values as columns, `data[c][element]` for `columns[c]` (the core's doubles; runRemote has the same shape
+ * in float32), and the `out.npy.json` manifest. A string input is OBJ text (one .obj); an ObjMesh[] becomes
  * one `<name>.dmesh` per mesh via toDmesh() (name sanitised to [A-Za-z0-9._-], made unique).
  */
-export async function run(exe: string, input: { sensors: string | ObjMesh[]; context?: string | ObjMesh[]; args?: string[] }): Promise<{ values: Float64Array[]; columns: string[]; manifest: unknown }> {
+export async function run(exe: string, input: { sensors: string | ObjMesh[]; context?: string | ObjMesh[]; args?: string[] }): Promise<{ data: Float64Array[]; columns: string[]; manifest: unknown }> {
   const fs = await import('node:fs/promises'); // dynamic so the browser-safe functions above bundle without node builtins
   const { tmpdir } = await import('node:os');
   const { join } = await import('node:path');
@@ -224,7 +226,7 @@ export async function run(exe: string, input: { sensors: string | ObjMesh[]; con
     args.push(...(input.args ?? []), '--out', out);
     await new Promise<void>((res, rej) => execFile(exe, args, { maxBuffer: 1 << 26 }, (e, _o, stderr) => (e ? rej(new Error(`${exe} failed: ${stderr.trim() || e.message}`)) : res())));
     const manifest = JSON.parse(await fs.readFile(out + '.json', 'utf8')) as { columns: string[] };
-    return { values: parseNpy(await fs.readFile(out), manifest.columns.length), columns: manifest.columns, manifest };
+    return { data: parseNpy(await fs.readFile(out), manifest.columns.length), columns: manifest.columns, manifest };
   } finally {
     await fs.rm(dir, { recursive: true, force: true });
   }
@@ -238,6 +240,8 @@ export interface RemoteManifest {
   meshes: { name: string; first: number; count: number }[];
   run_s?: number;
   cache?: Record<string, string>;
+  // where GET reads the values (runRemote does): float32 LE, column 0's rows, then column 1's, ...
+  values?: { url: string; dtype: '<f4'; order: 'column-major'; shape: [cols: number, rows: number]; bytes: number };
 }
 
 /** A job on `daylight_server` (`/jobs/{id}`): position counts the jobs ahead of a queued one. */
@@ -246,7 +250,9 @@ export interface RemoteJob {
   state: 'queued' | 'running' | 'done' | 'error' | 'cancelled';
   position?: number;
   error?: string;  // state error / cancelled: the server's message
-  status?: number; // state error: the HTTP status POST /run would have answered (400 usage, 500 runtime)
+  status?: number; // state error / cancelled: the HTTP status POST /run would have answered (400 usage, 500 runtime, 507 out of memory, 409 cancelled)
+  progress?: number; // state running, when the server reports it: the share done, 0..1
+  eta_s?: number;    // state running, when the server reports it: the seconds still to go
 }
 
 /** Mesh ids this process has put on each server: a job names them by id alone; any other is put first. */
@@ -262,7 +268,9 @@ const uploaded = new Map<string, Set<string>>();
  * while the server was making it (the POST itself is not aborted, so its id is always known). `epw` is a Blob
  * (uploaded) or `{ url }` (the server fetches it through its allowlisted proxy cache). `args` are CLI flags verbatim
  * (no files). `clientId` (header `X-Client-Id`) identifies this client for the per-client job limit. Rejects with the
- * server's text on 4xx / 5xx or a failed job. One Float64Array per element.
+ * server's text on 4xx / 5xx or a failed job. Resolves with the values as columns, `data[c][row]` for `columns[c]`
+ * (rows of mesh k from `manifest.meshes[k].first`): float32, read from `GET <url>/jobs/<id>/values` as one buffer that
+ * every column is a view of; `manifest` is the finished job's JSON.
  */
 export async function runRemote(
   url: string,
@@ -270,7 +278,7 @@ export async function runRemote(
     sensors: ObjMesh[]; context?: ObjMesh[]; epw?: Blob | { url: string }; args?: string[];
     signal?: AbortSignal; clientId?: string; onStatus?: (job: RemoteJob) => void; fetch?: typeof globalThis.fetch;
   },
-): Promise<{ values: Float64Array[]; columns: string[]; manifest: RemoteManifest; cache?: Record<string, string> }> {
+): Promise<{ data: Float32Array<ArrayBuffer>[]; columns: string[]; manifest: RemoteManifest; cache?: Record<string, string> }> {
   const f = input.fetch ?? globalThis.fetch;
   const base = url.replace(/\/$/, '');
   const headers: Record<string, string> = input.clientId ? { 'X-Client-Id': input.clientId } : {};
@@ -320,10 +328,21 @@ export async function runRemote(
     throw e;
   }
   if (job.state !== 'done') throw new Error(`${base} job ${job.id} ${job.state}${job.status ? ` (${job.status})` : ''}: ${(job.error ?? '').trim()}`);
-  const m = job as RemoteJob & RemoteManifest & { values_b64: string };
-  const bin = atob(m.values_b64), bytes = new Uint8Array(bin.length);
-  for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
-  const data = new Float64Array(bytes.buffer), cols = m.columns.length, values: Float64Array[] = [];
-  for (let i = 0; cols && i + cols <= data.length; i += cols) values.push(data.subarray(i, i + cols));
-  return { values, columns: m.columns, manifest: m, cache: m.cache };
+  // The job JSON carries no values (values_b64 only on ?inline=1, and never decoded here: at large sizes that string
+  // passes a browser's length limit). They come as raw float32 LE, column-major, streamed into one buffer of the size
+  // the manifest implies: a result of up to 0.5 GB is never held twice, and each column is a view of it.
+  const { values_b64: _inline, ...manifest } = job as RemoteJob & RemoteManifest & { values_b64?: string };
+  const rows = manifest.meshes.reduce((n, g) => n + g.count, 0), size = 4 * rows * manifest.columns.length, buf = new Uint8Array(size);
+  const path = manifest.values?.url ?? `/jobs/${encodeURIComponent(job.id)}/values`, got = await req(path);
+  if (!got.ok) throw new Error(`${base}${path} failed (${got.status}): ${(await got.text()).trim()}`); // 404: expired (the server's result cap)
+  const reader = got.body!.getReader();
+  let n = 0;
+  for (let r = await reader.read(); !r.done; r = await reader.read()) {
+    if (n + r.value.length > size) { n += r.value.length; reader.cancel().catch(() => undefined); break; } // too long: stop reading
+    buf.set(r.value, n);
+    n += r.value.length;
+  }
+  if (n !== size) throw new Error(`${base}${path}: ${n} of ${size} bytes`);
+  // Float32Array reads host byte order: little-endian on every target (x86, ARM).
+  return { data: manifest.columns.map((_, c) => new Float32Array(buf.buffer, 4 * c * rows, rows)), columns: manifest.columns, manifest, cache: manifest.cache };
 }

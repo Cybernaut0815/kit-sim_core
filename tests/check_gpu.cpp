@@ -113,6 +113,10 @@ int check_gpu(const char* testsDir) {
   CHECK(t.i.size() == 14);
   CHECK(gpu_build(*g, t, {Slot{}}, err));
   CHECK(gpu_stats(*g).gasBytes > 0);
+  // OptiX's estimate of a build's peak, from the counts alone, covers what the build made (the VRAM admission rests on it)
+  const size_t est = gpu_build_bytes(*g, t.v.size(), t.i.size(), false, err);
+  CHECK(est != SIZE_MAX && est >= gpu_stats(*g).gasBytes && est >= gpu_stats(*g).buildOutputBytes);
+  CHECK(gpu_build_bytes(*g, 0, 0, false, err) == 0);
 
   // sensors: s0 under the box, s1 open, s2 facing down on the ground, s3 above the box looking down, s4 inside the box
   Sensors s;
@@ -749,6 +753,60 @@ int check_gpu(const char* testsDir) {
     for (size_t i = 0; i < far.values.size() && i < near13.values.size(); ++i)
       worst = std::max(worst, std::fabs(far.values[i] - near13.values[i]) / std::max(1.0, std::fabs(near13.values[i])));
     CHECK(far.values.size() == near13.values.size() && worst < 2e-3);   // the sun differs only by one hour of declination
+
+    // run() over views (a cached mesh named and given a role per run, no copy) equals run() over copies carrying the
+    // same names and roles, bit for bit; an --optics row resolves the view's name
+    Options ov;
+    ov.quantities = {Quantity::Radiation, Quantity::SunHours};
+    ov.lat = 42.35; ov.lon = -71.07; ov.tz = -5; ov.stepMin = 30;
+    CHECK(parse_hoy("06-21T08:00", false, ov.t0, e2) && parse_hoy("06-21T18:00", false, ov.t1, e2));
+    std::vector<Mesh> copies = meshes;
+    std::vector<MeshView> views;
+    for (size_t k = 0; k < meshes.size(); ++k) {
+      copies[k].name = "renamed-" + std::to_string(k);
+      copies[k].sensor = k == 1;   // the box measures, the ground only shades
+      views.push_back({&meshes[k], copies[k].name, copies[k].sensor});
+    }
+    Result rv, rc;
+    CHECK(run(views, &cs, ov, rv, e2) && run(copies, &cs, ov, rc, e2));
+    CHECK(!rv.values.empty() && rv.values == rc.values);
+    CHECK(rv.ranges.size() == 1 && rv.ranges[0].first == "renamed-1");
+    Options oo = ov;
+    oo.optics = {{"renamed-1", -1, 0.5, 0, false}};
+    CHECK(run(views, &cs, oo, rv, e2));
+
+    // the result does not depend on the chunking: one sensor per chunk (Options::chunkBytes tiny) equals the default,
+    // with both sides, reflected light and four quantities (rates included); and f32Columns is float() of it, transposed
+    Options ob = ov;
+    ob.quantities = {Quantity::Radiation, Quantity::Irradiance, Quantity::Illuminance, Quantity::SunHours};
+    ob.sides = Sides::Both; ob.bounces = 1; ob.bounceSamples = 64;
+    Result whole, tiny, f;
+    CHECK(run(meshes, &cs, ob, whole, e2));
+    Options os = ob;
+    os.chunkBytes = 64;
+    CHECK(run(meshes, &cs, os, tiny, e2));
+    CHECK(!whole.values.empty() && whole.values == tiny.values);
+    Options of = ob;
+    of.f32Columns = true;
+    CHECK(run(meshes, &cs, of, f, e2));
+    const size_t cols = whole.columns.size(), rows = cols ? whole.values.size() / cols : 0;
+    CHECK(cols == 8 && f.values.empty() && f.f32.size() == whole.values.size());
+    bool same = f.f32.size() == rows * cols;
+    for (size_t e = 0; same && e < rows; ++e)
+      for (size_t k = 0; k < cols; ++k) same = same && f.f32[k * rows + e] == static_cast<float>(whole.values[e * cols + k]);
+    CHECK(same);
+
+    // per-run stats and progress: GPU time and rays of this run only, progress at 1 once every chunk is traced
+    std::atomic<double> progress{0};
+    Options op = os;   // the tiny chunks: many progress steps
+    op.progress = &progress;
+    Result st;
+    CHECK(run(meshes, &cs, op, st, e2));
+    const size_t sensorsDone = st.values.size() / st.columns.size() * 2, directions = st.nSky * 2 + st.nSun;   // both sides
+    CHECK(st.stats.traceMs > 0 && st.stats.bounceMs > 0 && st.stats.launches > 0 && st.stats.gasBytes > 0);
+    CHECK(st.stats.rays == sensorsDone * directions);
+    CHECK(progress.load() == 1.0);
+    if (!e2.empty()) std::printf("run: %s\n", e2.c_str());
   }
 
   // run() with optics, end to end: sun hours at 06-21T12:00 Boston (the sun ~71 deg up, just west of south: a ray leaves

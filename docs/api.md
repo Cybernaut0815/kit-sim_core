@@ -82,16 +82,20 @@ python -m daylight scene.usd --sensors /World/Bldg -o out --write-usd out/daylig
 
 `fromThree` / `fromGLB` produce meshes in the core frame (Y-up to Z-up, mirrored transforms
 unflipped); `run` (Node) writes `.dmesh` files, runs the CLI and reads its `.npy`; `applyToThree` colours the mesh.
+Both runners return the values as columns, `data[c][element]` for `columns[c]`: `run` the core's doubles
+(`Float64Array`), `runRemote` float32 (`Float32Array` views of one buffer, read from the server's
+`GET /jobs/<id>/values`, float32 little-endian, column-major).
 
 ```ts
-import { fromThree, fromGLB, run, applyToThree, toDmesh } from 'daylight-mesh';
+import { fromThree, fromGLB, run, runRemote, applyToThree, toDmesh } from 'daylight-mesh';
 import fs from 'node:fs/promises';
 const sensors = fromThree([scene]);                                  // every descendant three.js Mesh
 const context = await fromGLB(await fs.readFile('city.glb'));
-const { values, columns, manifest } = await run('build/RelWithDebInfo/daylight.exe', { sensors, context, args: ['--epw', 'site.epw'] });
-console.log(columns, values[0]);                                     // one Float64Array per sensor triangle
-await applyToThree(roofMesh, values.slice(0, roofTriangles).map((v) => v[0]));   // vertex colours (viridis) on the mesh
+const { data, columns, manifest } = await run('build/RelWithDebInfo/daylight.exe', { sensors, context, args: ['--epw', 'site.epw'] });
+console.log(columns[0], data[0]);                                    // one Float64Array per column, a value per sensor triangle
+await applyToThree(roofMesh, data[0].subarray(0, roofTriangles));    // vertex colours (viridis) on the mesh
 const remote = await runRemote('http://gpu-box:8080', { sensors, context, epw: epwFile, args: ['--quantity', 'radiation'] }); // browser: daylight_server, meshes cached by id
+console.log(remote.columns[0], remote.data[0]);                      // the same columns in float32
 ```
 
 ## Bindings overview

@@ -153,12 +153,13 @@ bool scene_acquire(const std::vector<MeshView>& meshes, const std::function<bool
   return true;   // the triangles go here, before the sensors are made
 }
 
-bool run_admission(Gpu& g, size_t nSens, size_t perSensor, size_t chunkSensor, int residentScenes, size_t& chunkBytes, std::string& err) {
+bool run_admission(Gpu& g, size_t nSens, size_t perSensor, size_t chunkSensor, size_t fixedBytes, int residentScenes, size_t& chunkBytes,
+                   std::string& err) {
   Resident& R = resident();
   gpu_trim(g, true);
   const auto runNeed = [&] {
     const size_t nc = std::min(nSens, std::max<size_t>(1, chunkBytes / perSensor));
-    return nSens * 2 * sizeof(float3) + nc * chunkSensor + kVramMargin;
+    return nSens * 2 * sizeof(float3) + nc * chunkSensor + fixedBytes + kVramMargin;
   };
   while (!R.parked.empty() && (R.parked.size() + 1 > size_t(std::max(1, residentScenes)) || gpu_free_bytes() < runNeed())) {
     gpu_free(R.parked.back().gas);
@@ -170,6 +171,42 @@ bool run_admission(Gpu& g, size_t nSens, size_t perSensor, size_t chunkSensor, i
           gib(free) + " free (close other programs that use the GPU, or use fewer receivers)";
     return false;
   }
+  return true;
+}
+
+std::string open_key(const std::vector<char>& open, bool selfOcclude) {
+  std::string s;
+  for (size_t k = 0; selfOcclude && k < open.size(); ++k) if (open[k]) s += (s.empty() ? "\nopen " : ",") + std::to_string(k);
+  return s;
+}
+
+void scene_forget(const std::string& key) {
+  Resident& R = resident();
+  if (R.cur.key == key) R.cur.key.clear();
+  for (auto it = R.parked.begin(); it != R.parked.end();)
+    if (it->key == key) { gpu_free(it->gas); it = R.parked.erase(it); } else ++it;
+}
+
+bool sensors_of(const std::vector<MeshView>& meshes, const RunOptions& opt, bool ladybug, const double c[3], size_t nSens, Sensors& s,
+                Result& out, std::string& warn, std::string& err) {
+  const size_t nS = opt.sides == Sides::Both ? 2 : 1;
+  s.p.resize(nSens);
+  s.n.resize(nSens);
+  std::vector<size_t> sAt(meshes.size() + 1, 0), elems(meshes.size(), 0);   // each sensor mesh's entries start at sAt[k]
+  for (size_t k = 0; k < meshes.size(); ++k)
+    sAt[k + 1] = sAt[k] + (meshes[k].sensor ? (opt.onVertices ? meshes[k].mesh->numPoints() : meshes[k].mesh->numFaces()) * nS : 0);
+  std::vector<std::string> warns(meshes.size());
+  par_for(meshes.size(), [&](size_t k) {
+    if (meshes[k].sensor) elems[k] = make_sensors_into(*meshes[k].mesh, opt, ladybug, c, s.p.data() + sAt[k], s.n.data() + sAt[k], warns[k]);
+  });
+  out.ranges.clear();
+  for (size_t k = 0; k < meshes.size(); ++k) {
+    if (!meshes[k].sensor) continue;
+    if (warns[k].rfind("error:", 0) == 0) { err = warns[k]; return false; }
+    if (!warns[k].empty()) warn += (warn.empty() ? "" : "; ") + warns[k];
+    out.ranges.emplace_back(meshes[k].name, elems[k]);
+  }
+  if (sAt.back() != nSens) { err = "internal: " + std::to_string(sAt.back()) + " sensors made for " + std::to_string(nSens); return false; }
   return true;
 }
 
@@ -252,11 +289,9 @@ static bool run_daylight(const std::vector<MeshView>& meshes, const Weather* w, 
   // visibility) under a key of its own, so toggling --bounces on a resident scene rebuilds it or parks a second copy;
   // read a hit's slot through its primitive index (Tris::slot on the device) instead if that matters
   const bool translucent = !lit.empty(), slotted = translucent || differs;   // per-triangle SBT offsets (gpu_build)
-  // The --no-occlude meshes are left out of the GAS, so part of its identity; --no-self-occlude leaves every sensor mesh out
-  // anyway (the caller's key carries selfOcclude), so there the set keys nothing and another set reuses the scene
-  std::string openSet;
-  for (size_t k = 0; opt.selfOcclude && k < open.size(); ++k) if (open[k]) openSet += (openSet.empty() ? "\nopen " : ",") + std::to_string(k);
-  const std::string key = opt.sceneKey.empty() ? "" : opt.sceneKey + (translucent ? "\ntransmitting " + lit : slotted ? "\nslot records" : "") + openSet;
+  // The --no-occlude meshes are left out of the GAS, so part of its identity (an opaque scene's key is views' too)
+  const std::string key = opt.sceneKey.empty() ? "" : opt.sceneKey + (translucent ? "\ntransmitting " + lit : slotted ? "\nslot records" : "") +
+                                                   open_key(open, opt.selfOcclude);
   // The sensor elements follow from the counts (one per face, or per point), so the result's size is known before any
   // geometry is built; the occluder triangles and the sensors are made later, one after the other (see the GPU block).
   const int nS = opt.sides == Sides::Both ? 2 : 1;
@@ -533,7 +568,7 @@ static bool run_daylight(const std::vector<MeshView>& meshes, const Weather* w, 
     // the series tile when asked for). The last run's go first; then parked scenes beyond --gpu-scenes or in the way;
     // then chunks shrink down to 32 MiB (the numbers do not depend on the chunking); else the run fails with its numbers.
     const size_t buffers = 1 + (reflect ? 1 : 0) + (series ? 1 : 0);
-    if (!run_admission(*g, nSens, perSensor, buffers * perSensor + sizeof(double), opt.residentScenes, chunkBytes, err)) return false;
+    if (!run_admission(*g, nSens, perSensor, buffers * perSensor + sizeof(double), 0, opt.residentScenes, chunkBytes, err)) return false;
   }
   // A thin solid's exit face passes everything. With --cull-backfaces a closed solid is crossed through one front face
   // anyway (the other is culled): tau once without the rule, whichever way it is wound.
@@ -542,24 +577,8 @@ static bool run_daylight(const std::vector<MeshView>& meshes, const Weather* w, 
   stage = "making the sensors";
   const auto tSens = Clk::now();
   Sensors sens;
-  sens.p.resize(nSens);
-  sens.n.resize(nSens);
-  std::vector<size_t> sAt(meshes.size() + 1, 0), elems(meshes.size(), 0);   // each sensor mesh's entries start at sAt[k]
-  for (size_t k = 0; k < meshes.size(); ++k)
-    sAt[k + 1] = sAt[k] + (meshes[k].sensor ? (opt.onVertices ? meshes[k].mesh->numPoints() : meshes[k].mesh->numFaces()) * size_t(nS) : 0);
-  std::vector<std::string> warns(meshes.size());
-  par_for(meshes.size(), [&](size_t k) {
-    if (meshes[k].sensor) elems[k] = make_sensors_into(*meshes[k].mesh, opt, ladybug, sc.c, sens.p.data() + sAt[k], sens.n.data() + sAt[k], warns[k]);
-  });
   std::string warn;
-  out.ranges.clear();
-  for (size_t k = 0; k < meshes.size(); ++k) {
-    if (!meshes[k].sensor) continue;
-    if (warns[k].rfind("error:", 0) == 0) { err = warns[k]; return false; }
-    if (!warns[k].empty()) warn += (warn.empty() ? "" : "; ") + warns[k];
-    out.ranges.emplace_back(meshes[k].name, elems[k]);
-  }
-  if (sAt.back() != nSens) { err = "internal: " + std::to_string(sAt.back()) + " sensors made for " + std::to_string(nSens); return false; }
+  if (!sensors_of(meshes, opt, ladybug, sc.c, nSens, sens, out, warn, err)) return false;
   out.stats.prepMs += ms(tSens);
   if (opt.verbose) {
     std::fprintf(stderr, "info: %zu sensors, %zu triangles%s, %zu steps (%.1f h)\n", nSens, sc.nTris, out.sceneReused ? " (scene reused)" : "", T, durationHours);

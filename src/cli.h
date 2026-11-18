@@ -1,8 +1,10 @@
 // SPDX-License-Identifier: Apache-2.0 AND LicenseRef-Commons-Clause-1.0
 // CLI contract shared by main.cpp and other front ends (an HTTP server): flag parsing, the weather / time rules that
-// follow parsing, and the output manifest. Return codes mirror the exit codes: 0 ok, 1 usage error, 2 runtime error.
+// follow parsing, and the output manifest, of daylight and of views. Return codes mirror the exit codes: 0 ok, 1 usage
+// error, 2 runtime error.
 #pragma once
 #include "daylight.h"
+#include "views.h"
 #include <functional>
 #include <string>
 #include <vector>
@@ -45,3 +47,19 @@ int prepare(Args& a, Weather& w, bool& haveWeather, std::string& err);
 std::string manifest_json(const Result& r, const std::string& extraFields = "");
 
 }  // namespace daylight::cli
+
+namespace daylight::views::cli {
+
+extern const char* const kUsage;
+
+struct Args : daylight::cli::CommonArgs {
+  Options opt;
+};
+
+// argv[1..argc) -> a: parse_common's flags and the views flags. 0 ok (-h/--help sets a.help and stops), 1 usage error with
+// err set (the caller prints kUsage), also for options field() refuses. Target and --no-occlude names are checked by run().
+int parse(int argc, char** argv, Args& a, std::string& err);
+// The FILE.json manifest: columns, the field ("view": f from field() over the run's meshes), the targets, the meshes.
+std::string manifest_json(const Result& r, const Options& opt, const Field& f);
+
+}  // namespace daylight::views::cli

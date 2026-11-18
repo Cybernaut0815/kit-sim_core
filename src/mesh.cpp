@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0 AND LicenseRef-Commons-Clause-1.0
 // OBJ / .dmesh readers, triangulation (earcut for n-gons), sensor derivation (ladybug / physical rules), optics slots
-// (row checks, resolution per global slot, thin solids), --no-occlude names.
+// (row checks, resolution per global slot, thin solids), --no-occlude names, views' targets.
 #include "internal.h"
 #include "glass.h"
 #include <algorithm>
@@ -230,6 +230,37 @@ bool resolve_no_occlude(const std::vector<MeshView>& meshes, const std::vector<s
     if (k == SIZE_MAX) return false;
     if (!meshes[k].sensor) { err = row + "a context mesh (leave it out to drop its shade)"; return false; }
     open[k] = 1;
+  }
+  return true;
+}
+
+bool resolve_targets(const std::vector<MeshView>& meshes, const std::vector<views::Target>& targets, bool selfOcclude,
+                     const std::vector<char>& open, std::vector<std::string>& groups, std::vector<uint8_t>& cls, std::string& err) {
+  groups.clear();
+  cls.assign(meshes.size(), 2);
+  if (targets.empty()) return true;
+  const Names byName = mesh_names(meshes);
+  for (const views::Target& t : targets) {
+    const std::string row = "--target " + t.mesh + "=" + t.group + ": ";
+    const std::string& g = t.group;
+    const size_t sl = t.mesh.rfind('/');   // NAME/SLOT as --optics reads it
+    if (sl != std::string::npos && sl + 1 < t.mesh.size() && t.mesh.find_first_not_of("0123456789", sl + 1) == std::string::npos) {
+      err = row + "face-slot targets (NAME/SLOT) are not supported, target the whole mesh"; return false;
+    }
+    if (g.empty() || g.find_first_not_of("ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789_-") != std::string::npos) {
+      err = row + "GROUP takes letters, digits, _ and - only"; return false;
+    }
+    if (g == "sky" || g == "ground" || g == "obstruction" || g.rfind("distance", 0) == 0 || g.rfind("reach", 0) == 0) {
+      err = row + "GROUP is reserved (sky, ground, obstruction, distance*, reach*)"; return false;
+    }
+    const size_t k = find_mesh(byName, t.mesh, row, err);
+    if (k == SIZE_MAX) return false;
+    if (cls[k] != 2) { err = row + "the mesh is a target twice"; return false; }
+    if (meshes[k].sensor && (!selfOcclude || open[k])) { err = row + "the mesh blocks no rays (--no-self-occlude or --no-occlude): none can end on it"; return false; }
+    const size_t gi = size_t(std::find(groups.begin(), groups.end(), g) - groups.begin());
+    if (gi == groups.size() && groups.size() == 16) { err = row + "more than 16 target groups"; return false; }
+    if (gi == groups.size()) groups.push_back(g);
+    cls[k] = uint8_t(3 + gi);
   }
   return true;
 }

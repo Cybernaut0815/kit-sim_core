@@ -38,7 +38,7 @@ add_custom_command(OUTPUT "${GEN}/trace_optixir.h"
 
 set(CXX_WARN /W4 /WX /permissive- /fp:precise /utf-8 /EHsc)
 
-add_library(daylightcore STATIC src/mesh.cpp src/sky.cpp src/solar.cpp src/run.cpp src/cli.cpp src/gpu.cu "${GEN}/trace_optixir.h")
+add_library(daylightcore STATIC src/mesh.cpp src/sky.cpp src/solar.cpp src/run.cpp src/views.cpp src/cli.cpp src/gpu.cu "${GEN}/trace_optixir.h")
 set_target_properties(daylightcore PROPERTIES CUDA_ARCHITECTURES "${DAYLIGHT_CUDA_ARCHITECTURES}")
 target_include_directories(daylightcore PUBLIC src PRIVATE "${OPTIX_INCLUDE}" "${earcut_SOURCE_DIR}/include" "${GEN}")
 target_link_libraries(daylightcore PUBLIC CUDA::cudart_static)
@@ -53,6 +53,13 @@ target_link_libraries(daylight_cli PRIVATE daylightcore)
 target_compile_definitions(daylight_cli PRIVATE _CRT_SECURE_NO_WARNINGS NOMINMAX)
 target_compile_options(daylight_cli PRIVATE ${CXX_WARN})
 target_link_options(daylight_cli PRIVATE /NODEFAULTLIB:libcmt)   # cudart_static pulls the static CRT; we are /MD
+
+add_executable(views_cli src/main.cpp)   # the same main, the views flags and run
+set_target_properties(views_cli PROPERTIES OUTPUT_NAME views)
+target_link_libraries(views_cli PRIVATE daylightcore)
+target_compile_definitions(views_cli PRIVATE VIEWS_CLI _CRT_SECURE_NO_WARNINGS NOMINMAX)
+target_compile_options(views_cli PRIVATE ${CXX_WARN})
+target_link_options(views_cli PRIVATE /NODEFAULTLIB:libcmt)
 
 file(GLOB CHECK_SRC CONFIGURE_DEPENDS tests/check*.cpp)
 add_executable(check ${CHECK_SRC})
@@ -69,12 +76,18 @@ add_test(NAME cli_smoke_npy COMMAND daylight_cli "${CMAKE_CURRENT_SOURCE_DIR}/te
          --quantity sunhours --time 06-21T12:00 --out "${CMAKE_CURRENT_BINARY_DIR}/smoke.npy")
 add_test(NAME cli_smoke_clearsky COMMAND daylight_cli "${CMAKE_CURRENT_SOURCE_DIR}/tests/box.obj" --clear-sky --lat 41.98 --lon -87.92
          --quantity radiation --time 06-21T12:00 --out "${CMAKE_CURRENT_BINARY_DIR}/smoke_cs.txt")
+add_test(NAME views_smoke COMMAND views_cli "${CMAKE_CURRENT_SOURCE_DIR}/tests/box.obj" --target ground=lawn --reach en17037
+         --out "${CMAKE_CURRENT_BINARY_DIR}/views_smoke.txt")
+add_test(NAME views_smoke_npy COMMAND views_cli "${CMAKE_CURRENT_SOURCE_DIR}/tests/box.obj" --fov 360 --offset 1.6 --sides both
+         --dump-rays "${CMAKE_CURRENT_BINARY_DIR}/views_rays.npy" --out "${CMAKE_CURRENT_BINARY_DIR}/views_smoke.npy")
 
 option(DAYLIGHT_USD "USD input for the CLI via bindings/cpp (fetches LightUSD)" OFF)
 if(DAYLIGHT_USD)
   add_subdirectory(bindings/cpp)
   target_compile_definitions(daylight_cli PRIVATE DAYLIGHT_USD)
   target_link_libraries(daylight_cli PRIVATE daylight_usd)   # carries the bindings/cpp include dir
+  target_compile_definitions(views_cli PRIVATE DAYLIGHT_USD)
+  target_link_libraries(views_cli PRIVATE daylight_usd)
   add_test(NAME cli_usd COMMAND daylight_cli "${CMAKE_CURRENT_SOURCE_DIR}/bindings/cpp/box.usda" --lat 41.98 --lon -87.92 --tz -6
            --quantity sunhours --time 06-21T12:00 --out "${CMAKE_CURRENT_BINARY_DIR}/usd_smoke.txt")
 endif()

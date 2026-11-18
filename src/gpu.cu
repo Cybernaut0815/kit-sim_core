@@ -170,9 +170,12 @@ __global__ void k_series_dc(unsigned nc, Dc dc, const float* S, int T, float* E)
 // Views: one warp per sensor i, lane l sums the directions l, l + 32, ... in order (weight w = wRow[row], double) per class
 // c: w, w x ln d, min d with d = the distance clamped to [0.1, farDist] (open: farDist); the own-surface weight; per reach
 // threshold the weight of distances >= it. Then a fixed shuffle tree adds the lanes, so a sensor's sums do not depend on
-// the chunk it is in. out[i*NA + a]: per class (w, w ln d, min d), then own, then the reach sums.
-// ponytail: ln d in float (~1e-7 relative in a log mean; the clamps take exact logs, so a view all open gives farDist);
-// a double log costs 4x the reduce (+18 % of a --bench run on the 2060's 1/32-rate FP64), use it if 1e-7 matters
+// the chunk it is in. out[i*NA + a]: per class (w, w ln d, min d), then own, then the reach sums. The rays are
+// direction-major (cls[d*nc + i], as __raygen__view stores them): a lane's loads are strided, the block's 8 sensors
+// share their sectors.
+// ponytail: ln d in float (~1e-7 relative in a log mean; the clamps take exact logs, and views.cpp's store() gives a mean
+// all at the far clamp as farDist exactly); a double log costs 4x the reduce (+18 % of a --bench run on the 2060's
+// 1/32-rate FP64), use it if 1e-7 matters
 struct Reach { float d[8]; };
 __device__ __forceinline__ double warp_sum(double v) {
   for (unsigned s = 16; s; s >>= 1) v += __shfl_down_sync(~0u, v, s);
@@ -185,11 +188,9 @@ __global__ void k_view(unsigned nc, unsigned K, unsigned nAz, const unsigned cha
   double w[kViewClasses] = {}, wl[kViewClasses] = {}, rc[8] = {}, own = 0;
   float mn[kViewClasses];
   for (unsigned c = 0; c < kViewClasses; ++c) mn[c] = __int_as_float(0x7f800000);
-  const unsigned char* ci = cls + size_t(i) * K;
-  const float* di = dist + size_t(i) * K;
   for (unsigned d = lane; d < K; d += 32) {
-    const unsigned c = ci[d];
-    const float t = di[d];
+    const unsigned c = cls[size_t(d) * nc + i];
+    const float t = dist[size_t(d) * nc + i];
     const double wd = wRow[d / nAz];
     if (c == 254) { own += wd; continue; }
     const float dd = fminf(fmaxf(t, 0.1f), farDist);
@@ -525,13 +526,16 @@ bool gpu_view(Gpu& g, size_t i0, size_t nc, unsigned rayFlags, const ViewLaunch&
   p.world = v.world; p.cull = v.cull; p.jitter = v.jitter; p.nS = v.nS; p.back = v.back; p.vground = v.vground; p.groundZ = v.groundZ;
   // Closest hits cost as varied as gpu_trace's byte mode (a street's rays end at the next facade, a roof's cross the
   // city), so its policy: 2^13 threads first and at least, then ~40 ms, at most doubling.
+  // ponytail: the size carries across chunks, so sensors > ~50x costlier than the previous launch's (open views, then a
+  // box pile like daylight's --bench: 60-90x) can pass the 2 s TDR; cap a launch's rays if that shows up
   const size_t nMin = std::max<size_t>(1, (size_t(1) << 13) / nWords);
   size_t n = std::max(launch, nMin);
+  p.nc = unsigned(nc);   // the row stride: a sub-launch writes its slice cls[d*nc + done + i]
   for (size_t done = 0; done < nc;) {
     if (v.cancel && v.cancel->load()) { err = "cancelled"; return false; }
     const size_t m = std::min(n, nc - done);
     p.P = g.dP + i0 + done; p.N = g.dN + i0 + done; p.i0 = unsigned(i0 + done);
-    p.cls = reinterpret_cast<unsigned char*>(b) + done * K; p.dist = reinterpret_cast<float*>(b + view_dist(nc * K)) + done * K;
+    p.cls = reinterpret_cast<unsigned char*>(b) + done; p.dist = reinterpret_cast<float*>(b + view_dist(nc * K)) + done;
     CU(cudaMemcpy(g.dParams, &p, sizeof p, cudaMemcpyHostToDevice));
     CU(cudaEventRecord(g.ev[0]));
     OX(optixLaunch(g.pipeline, 0, reinterpret_cast<CUdeviceptr>(g.dParams), sizeof(Params), &g.sbt[kView], (unsigned)m, (unsigned)nWords, 1));
@@ -647,13 +651,18 @@ bool gpu_download_dc(Gpu& g, size_t nc, std::vector<float>& out, std::string& er
 
 bool gpu_download_view(Gpu& g, size_t nc, std::vector<uint8_t>& cls, std::vector<float>& dist, std::string& err) {
   if (nc != g.viewN) { err = "gpu_download_view: no gpu_view for this chunk"; return false; }
-  cls.resize(nc * g.viewK);
-  dist.resize(nc * g.viewK);
+  const size_t K = g.viewK;
+  std::vector<uint8_t> c(nc * K);   // the device's [K x nc]
+  std::vector<float> t(nc * K);
   const char* b = static_cast<const char*>(g.dView);
-  if (!cls.empty()) {
-    CU(cudaMemcpy(cls.data(), b, cls.size(), cudaMemcpyDeviceToHost));
-    CU(cudaMemcpy(dist.data(), b + view_dist(cls.size()), dist.size() * sizeof(float), cudaMemcpyDeviceToHost));
+  if (!c.empty()) {
+    CU(cudaMemcpy(c.data(), b, c.size(), cudaMemcpyDeviceToHost));
+    CU(cudaMemcpy(t.data(), b + view_dist(c.size()), t.size() * sizeof(float), cudaMemcpyDeviceToHost));
   }
+  cls.resize(nc * K);
+  dist.resize(nc * K);
+  for (size_t d = 0; d < K; ++d)
+    for (size_t i = 0; i < nc; ++i) { cls[i * K + d] = c[d * nc + i]; dist[i * K + d] = t[d * nc + i]; }
   return true;
 }
 

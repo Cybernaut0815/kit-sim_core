@@ -80,8 +80,10 @@ bool scene_acquire(const std::vector<MeshView>& meshes, const std::function<bool
   if (!R.gpu && !(R.gpu = gpu_init(err))) return false;
   Gpu* g = *gpu = R.gpu;
   if (installed) return true;
-  // park the installed keyed scene when more than one may stay resident; an unparked GAS is freed by attach / build
-  if (!R.cur.key.empty() && residentScenes > 1) { Scene p = R.cur; p.gas = gpu_detach(*g); R.parked.insert(R.parked.begin(), p); }
+  // park the installed keyed scene when more than one may stay resident (the insert first: if it throws, the installed
+  // scene stays whole); else its GAS goes now, before a build measures its room (attach / build would replace it anyway)
+  if (!R.cur.key.empty() && residentScenes > 1) { R.parked.insert(R.parked.begin(), R.cur); R.parked.front().gas = gpu_detach(*g); }
+  else { GasSlot old = gpu_detach(*g); gpu_free(old); }
   R.cur = Scene{};   // a failed build leaves nothing installed
   if (auto it = parkedAt(); reuse && it != R.parked.end()) {
     Scene p = *it;
@@ -136,7 +138,7 @@ bool scene_acquire(const std::vector<MeshView>& meshes, const std::function<bool
       std::memmove(tris.i.data() + at, tris.i.data() + tBase[k], made[k] * sizeof(uint3));
       if (slotted) std::memmove(tris.slot.data() + at, tris.slot.data() + tBase[k], made[k] * sizeof(uint32_t));
     }
-    if (blocks(k)) s.order.push_back({meshes[k].name, at, made[k]});
+    if (blocks(k)) s.order.push_back({meshes[k].name, at, made[k], meshes[k].mesh});
     at += made[k];
     s.skipped += skip[k];
   }

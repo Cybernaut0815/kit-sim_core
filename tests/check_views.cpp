@@ -1,11 +1,12 @@
 // SPDX-License-Identifier: Apache-2.0 AND LicenseRef-Commons-Clause-1.0
 // Checks for views (views.h). Runs with --jitter off against a host model of the same cells, traced in double from the
 // device's float sensor origins (every ray's class and distance through --dump-rays, then every column): facades,
-// tilted, turned and flat faces, --north, an eye 10 m over a 2 km target quad (360), the virtual ground's height and
-// switch, a wall past --far, sensors in the plane of a 2 km quad, rectangle targets with group distances and --reach.
-// Then the jitter, chunking, progress, f32 columns, sides, a scene shared with daylight, labels on reused, renamed and
-// reordered resident scenes, cancel, ray counts, the option, target and CLI rules and the dump size guard. Self-skips
-// without a CUDA device.
+// tilted, turned, flat and nearly flat faces, vertices, --north, an eye 10 m over a 2 km target quad (360), the virtual
+// ground's height and switch, a screen nearer than 0.1 m, a wall past --far, sensors in the plane of a 2 km quad,
+// rectangle targets with group distances and --reach (also past --far). Then the horizon, degenerate faces, the jitter
+// (in its cells), chunks and sub-launches, progress, f32 columns, sides, a scene shared with daylight, labels on reused,
+// renamed, reordered and name-swapped resident scenes, cancel (no dump left), ray counts, the option, target and CLI
+// rules, the manifest's escaping and the dump size guard. Self-skips without a CUDA device.
 #include "cli.h"
 #include "internal.h"
 #include <algorithm>
@@ -74,11 +75,11 @@ struct Quad { double lo[3], hi[3]; int axis; uint8_t cls; };
 
 // Where a ray ends: its class, distance (inf: open or own surface), the cosine between it and the normal of the surface
 // it ends on (a direction error moves the end by 1 / that) and how far off that surface the hardware may meet it:
-// 2^-22 x the quad's extent, what own_plane in trace_dev.cu allows (8x the hardware's error); 0 on the virtual plane.
+// 2^-22 x the quad's extent, what own_plane in trace_dev.cu allows (4x the hardware's error); 0 on the virtual plane.
 struct End { uint8_t cls = 255; double t = INFINITY, cosInc = 1, off = 0; };
 
 // The device's ray from o along unit d (n: the sensor's normal), as views.h defines it: 360 at offset 0 culls the
-// sensor's back (254), the closest quad, else sky above the horizon, ground below it, ended by the virtual ground (to
+// sensor's back (254), the closest quad, else sky on or above the horizon, ground below it, ended by the virtual ground (to
 // 1 cm past its plane; the eye on or below it: 0.1 m). margin shrinks to how close (radians) the ray passes a quad's
 // edge, the horizon or, culled, the sensor's plane.
 static End trace(const double o[3], const double d[3], const double n[3], bool cull, bool vground, double plane,
@@ -112,15 +113,16 @@ static End trace(const double o[3], const double d[3], const double n[3], bool c
   }
   if (e.cls != 255) return e;
   margin = std::min(margin, std::fabs(d[2]));
-  e.cls = d[2] > 0 ? 0 : 1;
+  e.cls = d[2] >= 0 ? 0 : 1;
   if (down) { e.t = (o[2] - plane) / -d[2]; e.cosInc = -d[2]; }
   return e;
 }
 
 // One views run with --jitter off and its dump against the host model: the field's cells (centres in azimuth and in sine
 // of elevation, rows top-down from HI, columns clockwise from the left edge, weights = solid angles) from each sensor's
-// frame (forward = normal, right = horizontal or, looking straight up or down, east turned by --north, up = right x
-// forward; 360: true north, east, up), traced from the device's origin (the sensors of make_sensors_into, offset_ray)
+// frame (forward = normal, right = horizontal or, within 1e-3 of straight up or down, east turned by --north and made
+// square to the normal, up = right x forward; 360: true north, east, up), traced from the device's origin (the sensors of
+// make_sensors_into, offset_ray)
 // against the blocking meshes' faces. Every ray's class must match and its end lie within tol x its distance (plus End::off)
 // of the host's, measured across the surface it ends on; every column as views.h defines it (shares and reach 1e-9,
 // distances tol relative). margin: how close any ray comes to another class (radians off a quad's edge, the horizon or the
@@ -201,7 +203,13 @@ static Result expect(const char* what, const std::vector<Mesh>& meshes, views::O
     double f[3] = {-sinN, cosN, 0}, rt[3] = {cosN, sinN, 0}, u[3] = {0, 0, 1};
     if (!world) {
       std::copy(n, n + 3, f);
-      if (l > 1e-6) { rt[0] = n[1] / l; rt[1] = -n[0] / l; rt[2] = 0; }
+      if (l > 1e-3) { rt[0] = n[1] / l; rt[1] = -n[0] / l; rt[2] = 0; }
+      else if (l > 0) {
+        const double en = rt[0] * n[0] + rt[1] * n[1];
+        for (int b = 0; b < 3; ++b) rt[b] -= en * n[b];
+        const double len = std::sqrt(rt[0] * rt[0] + rt[1] * rt[1] + rt[2] * rt[2]);
+        for (double& x : rt) x /= len;
+      }
       u[0] = rt[1] * f[2] - rt[2] * f[1]; u[1] = rt[2] * f[0] - rt[0] * f[2]; u[2] = rt[0] * f[1] - rt[1] * f[0];
     }
     std::vector<double> w(3 + nG), wl(3 + nG), mn(3 + nG, INFINITY), rc(o.reach.size());
@@ -299,12 +307,16 @@ static void check_rules() {
       {"needs -90 <= LO < HI <= 90", [](views::Options& o) { o.elevLo = 50; }},
       {"needs -90 <= LO < HI <= 90", [](views::Options& o) { o.elevHi = 91; }},
       {"--cell must be positive", [](views::Options& o) { o.cell = 0; }},
+      {"--cell must be positive", [](views::Options& o) { o.cell = INFINITY; }},
+      {"--north and --offset must be finite", [](views::Options& o) { o.north = NAN; }},
+      {"--north and --offset must be finite", [](views::Options& o) { o.offset = INFINITY; }},
       {"exceed 2^20", [](views::Options& o) { o.fovH = 360; o.elevLo = -90; o.elevHi = 90; o.cell = 0.1; }},
       {"--far must be more than 0.1", [](views::Options& o) { o.farDist = 0.1; }},
       {"--far must be more than 0.1", [](views::Options& o) { o.farDist = INFINITY; }},
       {"at most 8", [](views::Options& o) { o.reach = {1, 2, 3, 4, 5, 6, 7, 8, 9}; }},
       {"must be positive", [](views::Options& o) { o.reach = {6, 0}; }},
       {"must be positive", [](views::Options& o) { o.reach = {INFINITY}; }},
+      {"must differ: two make column reach_6", [](views::Options& o) { o.reach = {6, 20, 6.0000001}; }},   // one %g name
       {"--ground-z must be finite", [](views::Options& o) { o.groundZ = -INFINITY; }},
       {"face-slot targets", [](views::Options& o) { o.targets = {{"t0/1", "a"}}; }},
       {"letters, digits, _ and -", [](views::Options& o) { o.targets = {{"t0", "a b"}}; }},
@@ -314,6 +326,8 @@ static void check_rules() {
       {"is reserved", [](views::Options& o) { o.targets = {{"t0", "obstruction"}}; }},
       {"is reserved", [](views::Options& o) { o.targets = {{"t0", "distance_x"}}; }},
       {"is reserved", [](views::Options& o) { o.targets = {{"t0", "reach6"}}; }},
+      {"is reserved", [](views::Options& o) { o.targets = {{"t0", "a"}, {"t1", "a_distance"}}; }},   // a's distance column
+      {"is reserved", [](views::Options& o) { o.targets = {{"t0", "a_distance_min"}}; }},
       {"no mesh of that name", [](views::Options& o) { o.targets = {{"nope", "a"}}; }},
       {"several meshes have that name", [](views::Options& o) { o.targets = {{"dup", "a"}}; }},
       {"a target twice", [](views::Options& o) { o.targets = {{"t0", "a"}, {"t1", "b"}, {"t0", "b"}}; }},
@@ -358,10 +372,23 @@ static void check_rules() {
   CHECK(parse({"f.obj", "--reach", "en17037"}, a, err) == 0 && a.opt.reach == std::vector<double>({6, 20, 50}));
   CHECK(parse({"f.obj", "--jitter", "off", "--virtual-ground", "off", "--ground-z", "-2.5", "--far", "300"}, a, err) == 0 && !a.opt.jitter &&
         !a.opt.virtualGround && a.opt.groundZ == -2.5 && a.opt.farDist == 300);
+  CHECK(parse({"f.obj", "--north", "-30.5", "--offset", "1.6"}, a, err) == 0 && a.opt.north == -30.5 && a.opt.offset == 1.6);
   for (const std::vector<const char*>& bad : std::vector<std::vector<const char*>>{{"f.obj", "--fov", "1,2"}, {"f.obj", "--fov", "200"}, {"f.obj", "--jitter", "no"},
                                                                                   {"f.obj", "--far", "0.1"}, {"f.obj", "--cell", "x"}, {"f.obj", "--reach", "6,,20"},
-                                                                                  {"f.obj", "--fov", "360,-90,90", "--cell", "0.1"}})
+                                                                                  {"f.obj", "--fov", "360,-90,90", "--cell", "0.1"}, {"f.obj", "--fov", "120,,50"},
+                                                                                  {"f.obj", "--cell", "inf"}, {"f.obj", "--reach", "6,6"}, {"f.obj", "--offset", "1,6"},
+                                                                                  {"f.obj", "--offset", "1e999"}, {"f.obj", "--north", "abc"}, {"f.obj", "--north", "nan"}})
     CHECK(parse(bad, a, err) == 1);
+  // the manifest writes names as JSON strings: quote, backslash and control bytes escaped
+  {
+    Result r;
+    r.ranges = {{"w\"1\\x\x01", 1}};
+    views::Options mo;
+    mo.targets = {{"t\"0", "g"}};
+    const std::string j = views::cli::manifest_json(r, mo, views::Field{});
+    CHECK(j.find("{\"name\": \"w\\\"1\\\\x\\u0001\", \"first\": 0, \"count\": 1}") != std::string::npos &&
+          j.find("{\"mesh\": \"t\\\"0\", \"group\": \"g\"}") != std::string::npos);
+  }
 }
 
 int check_views(const char* testsDir) {
@@ -381,7 +408,8 @@ int check_views(const char* testsDir) {
   }
 
   // 1, 4: faces in an empty scene (--no-self-occlude): a facade 1 m over the lowest point, a roof, a tilted, a turned and a
-  // tilted-down face, a ceiling 1.5 m up and a face looking down at the lowest point (its eye on the virtual plane)
+  // tilted-down face, a ceiling 1.5 m up and a face looking down at the lowest point (its eye, nudged along its normal by
+  // offset_ray, a hair below the virtual plane)
   Mesh faces = mesh("faces", true);
   face(faces, {-1, 0, 0, 1, 0, 0, 1, 0, 2, -1, 0, 2});
   face(faces, {5, 0, 2, 6, 0, 2, 6, 1, 2, 5, 1, 2});
@@ -395,9 +423,9 @@ int check_views(const char* testsDir) {
   const Result r1 = expect("faces in an empty scene", {faces}, o1);
   if (r1.columns.size() == 5) {
     // the facade sees the sky above the horizon of the field (-70..50 deg) and the virtual ground below it, at 1 / sin
-    // (the host model); the roof sees only sky, at --far; the face on the plane sees the ground at 0.1 m
+    // (the host model); the roof sees only sky, at --far exactly; the face on the plane sees the ground at 0.1 m
     CHECK(std::fabs(at(r1, 0, "sky_front") - kSky) <= 1e-9 && std::fabs(at(r1, 0, "ground_front") - (1 - kSky)) <= 1e-9);
-    CHECK(at(r1, 1, "sky_front") == 1 && std::fabs(at(r1, 1, "distance_front") / 1000 - 1) <= 1e-9 && at(r1, 1, "distance_min_front") == 1000);
+    CHECK(at(r1, 1, "sky_front") == 1 && at(r1, 1, "distance_front") == 1000 && at(r1, 1, "distance_min_front") == 1000);
     CHECK(at(r1, 6, "ground_front") == 1 && std::fabs(at(r1, 6, "distance_front") / 0.1 - 1) <= 1e-9 && at(r1, 6, "distance_min_front") == 0.1);
     for (double v : r1.values) CHECK(std::isfinite(v));
   }
@@ -412,12 +440,46 @@ int check_views(const char* testsDir) {
       for (double v : rj.values) CHECK(std::isfinite(v));
     }
   }
-  {   // --virtual-ground off: the facade's ground rays are open
+  {   // --virtual-ground off: the facade's ground rays are open, every ray at --far: 1000 exactly
     views::Options off = o1;
     off.virtualGround = false;
     const Result r = expect("faces, --virtual-ground off", {faces}, off);
-    CHECK(std::fabs(at(r, 0, "ground_front") - (1 - kSky)) <= 1e-9 && std::fabs(at(r, 0, "distance_front") / 1000 - 1) <= 1e-9 &&
-          at(r, 0, "distance_min_front") == 1000);
+    CHECK(std::fabs(at(r, 0, "ground_front") - (1 - kSky)) <= 1e-9 && at(r, 0, "distance_front") == 1000 && at(r, 0, "distance_min_front") == 1000);
+  }
+  {   // on vertices: the facade's foot lies on the virtual plane, an eye there sees ground at 0.1 m in every downward
+      // direction
+    views::Options ov = o1;
+    ov.onVertices = true;
+    expect("vertices in an empty scene", {faces}, ov);
+  }
+  {   // a screen 5 cm in front of a facade: hits nearer than 0.1 m count as 0.1 m in the log mean
+    const std::vector<Mesh> scr = {quad("s", true, {-1, 0, 0, 1, 0, 0, 1, 0, 2, -1, 0, 2}),
+                                   quad("screen", false, {-5, -0.05, -1, 5, -0.05, -1, 5, -0.05, 3, -5, -0.05, 3})};
+    expect("a screen 5 cm in front", scr, views::Options{});
+  }
+  {   // the horizon is sky: --fov 360,-1,1 at --jitter off puts every ray on it (dir.z = 0); in the open the facade sees
+      // sky in front and its own surface behind (360, offset 0), no ray is ground (none points below the horizon)
+    views::Options oh = o1;
+    oh.fovH = 360; oh.elevLo = -1; oh.elevHi = 1; oh.jitter = false;
+    Result rh;
+    CHECK(views::run({faces}, oh, rh, err) && std::fabs(at(rh, 0, "sky_front") - 0.5) <= 1e-12 && std::fabs(at(rh, 0, "obstruction_front") - 0.5) <= 1e-12);
+    for (size_t e = 0; e < 7; ++e) CHECK(at(rh, e, "ground_front") == 0);
+  }
+  {   // a degenerate face (no area, no normal) traces no ray, in view mode and 360 at an offset: all own surface, as 360
+      // at offset 0 gives it (obstruction 1, no distance, no reach)
+    Mesh deg = mesh("deg", true);
+    face(deg, {0, 0, 1, 1, 0, 1, 2, 0, 1});
+    face(deg, {-1, 0, 0, 1, 0, 0, 1, 0, 2, -1, 0, 2});
+    for (const double fov : {120.0, 360.0}) {
+      views::Options od = o1;
+      od.fovH = fov;
+      od.offset = 0.5;
+      od.reach = {6};
+      Result rd;
+      CHECK(views::run({deg}, od, rd, err) && at(rd, 0, "obstruction_front") == 1 && at(rd, 0, "sky_front") == 0 && at(rd, 0, "ground_front") == 0 &&
+            std::isnan(at(rd, 0, "distance_front")) && std::isnan(at(rd, 0, "distance_min_front")) && at(rd, 0, "reach_6_front") == 0 &&
+            at(rd, 1, "sky_front") > 0.4);
+    }
   }
   {   // a canopy 3 m over the roof, on one side: what the roof sees of it turns with --north (its right: east turned)
     std::vector<Mesh> canopy = {faces, quad("canopy", false, {6, 1.2, 5, 30, 1.2, 5, 30, 30, 5, 6, 30, 5})};
@@ -426,6 +488,13 @@ int check_views(const char* testsDir) {
     const Result a = expect("faces under a canopy", canopy, n0), b = expect("faces under a canopy, --north 30", canopy, n30);
     const double o0 = at(a, 1, "obstruction_front"), o30 = at(b, 1, "obstruction_front");
     CHECK(o0 > 0.01 && o30 > 0.01 && std::fabs(o0 - o30) > 0.01);
+    // a roof a hair off flat (its north edge 0.1 mm up: float noise, the normal 1e-4 off vertical) takes the flat roof's
+    // frame, so it sees the canopy as the flat one does (its tilt's own frame would turn the field 180 deg)
+    Mesh roofs = mesh("roofs", true);
+    face(roofs, {5, 0, 2, 6, 0, 2, 6, 1, 2, 5, 1, 2});
+    face(roofs, {5, 0, 2, 6, 0, 2, 6, 1, 2.0001, 5, 1, 2.0001});
+    const Result rr = expect("a flat and a nearly flat roof under a canopy", {roofs, canopy[1]}, n0);
+    CHECK(at(rr, 0, "obstruction_front") > 0.01 && std::fabs(at(rr, 1, "obstruction_front") - at(rr, 0, "obstruction_front")) <= 1e-3);
   }
 
   // 2: 360 degrees from an eye 10 m over a 2 km target quad (a facade sensor at --offset 0.5: its back is traced too). The
@@ -508,6 +577,12 @@ int check_views(const char* testsDir) {
     CHECK(at(rf, 0, "distance_min_front") == at(rf, 0, "water_distance_min_front") && at(rf, 0, "water_distance_min_front") < at(rf, 0, "park_distance_min_front"));
     CHECK(at(rf, 0, "water_distance_front") > 10 && at(rf, 0, "water_distance_front") < 12 && at(rf, 0, "park_distance_front") > 30 &&
           at(rf, 0, "park_distance_front") < 40);
+    // --far 30 under reach 50: the reach by the true distance (sky reaches 50 m); every ray to b (31 m and more) at the
+    // far clamp: its log mean 30 exactly
+    views::Options fr = o3;
+    fr.farDist = 30;
+    const Result r30 = expect("two rectangle targets, --far 30", st, fr);
+    CHECK(at(r30, 0, "reach_50_front") > 0.3 && at(r30, 0, "park_distance_front") == 30 && at(r30, 0, "park_distance_min_front") == 30);
     // --distance none: the shares and the reach only
     views::Options on = o3;
     on.distMean = on.distMin = on.distGroup = false;
@@ -548,6 +623,19 @@ int check_views(const char* testsDir) {
     CHECK(views::run(m, tiny, b, err) && same(a, b) && b.stats.launches >= 32);
     CHECK(progress.load() == 1.0);
   }
+  {   // 841 sensors at cell 6 (38 words: 215 sensors in the first launch, then more): sub-launches seed as chunks do
+    std::vector<Mesh> grid = {mesh("grid", true)};
+    for (int k = 0; k < 29 * 29; ++k) {
+      const double x = k % 29, y = k / 29;
+      face(grid[0], {x, y, 0, x + 1, y, 0, x + 1, y + 1, 0, x, y + 1, 0});
+    }
+    views::Options g6;
+    g6.fovH = 360; g6.cell = 6; g6.offset = 1;
+    views::Options g1 = g6;
+    g1.chunkBytes = 4 * 1200 * 100;   // 100 sensors per chunk: one launch each
+    Result whole, chunked;
+    CHECK(views::run(grid, g6, whole, err) && views::run(grid, g1, chunked, err) && whole.stats.launches >= 3 && same(whole, chunked));
+  }
   {   // f32 columns: float of each value, column-major
     views::Options f32 = o;
     f32.f32Columns = true;
@@ -573,6 +661,7 @@ int check_views(const char* testsDir) {
         ok = ok && (x == y || (std::isnan(x) && std::isnan(y)));
       }
     CHECK(ok);
+    for (size_t k = 0; ok && k < C / 2; ++k) CHECK(r.columns[k] == a.columns[2 * k + 1]);   // named as both's back columns
   }
   // a daylight run, then a views run without targets on one key: daylight's scene serves it
   Options d;
@@ -604,12 +693,37 @@ int check_views(const char* testsDir) {
     CHECK(views::run(views_of(m), keyed, rt, err));   // the key's scene in the order ground, box
     CHECK(views::run(rev, keyed, r2r, err) && r2r.sceneReused && same(r1r, r2r));
   }
-  {   // cancel
+  {   // the names swapped under the key ("ground" now names the box): the scene holds "ground" for the other mesh, so it
+      // is built afresh and the box is the target, as in a keyless run
+    std::vector<MeshView> sw = views_of(m);
+    std::swap(sw[0].name, sw[1].name);
+    views::Options swapped = keyed;
+    swapped.targets = {{"ground", "cube"}};
+    Result rs;
+    CHECK(views::run(sw, swapped, rs, err) && !rs.sceneReused && same(rs, a));
+  }
+  {   // cancel: the dump files it had opened go too
     std::atomic<bool> stop{true};
     views::Options oc = o;
     oc.cancel = &stop;
+    oc.dumpPath = tmpPath;
     Result rc;
     CHECK(!views::run(m, oc, rc, err) && err == "cancelled");
+    for (const std::string& p : {tmpPath, tmpPath + ".depth.npy"}) {
+      std::FILE* f = std::fopen(p.c_str(), "rb");
+      CHECK(!f);
+      if (f) std::fclose(f);
+    }
+  }
+  {   // from a 2 cm facade (360, offset 0) a target wall 10 m out, +-30 m high, spans azimuths 90..180 exactly: jittered
+      // rays stay in their cells, so it takes exactly a quarter of the field
+    const std::vector<Mesh> qs = {quad("p", true, {-0.01, 0, -0.01, 0.01, 0, -0.01, 0.01, 0, 0.01, -0.01, 0, 0.01}),
+                                  quad("w", false, {10, 0, -30, 0, -10, -30, 0, -10, 30, 10, 0, 30})};
+    views::Options oq;
+    oq.fovH = 360;
+    oq.targets = {{"w", "w"}};
+    Result rq;
+    CHECK(views::run(qs, oq, rq, err) && std::fabs(at(rq, 0, "w_front") - 0.25) <= 1e-12);
   }
   {   // --dump-rays above 4 GB (29 x 29 faces x 1440 x 720 rays x 5 bytes) is refused before anything is traced or written
     std::vector<Mesh> grid = {mesh("grid", true)};

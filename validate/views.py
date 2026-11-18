@@ -11,15 +11,16 @@ centroid; vertex: the normalised sum of its faces' Newell vectors, (0,0,1) when 
 normal, a back side at minus the offset with the negated normal; rows element by element, front then back) with the
 core's float32 recentring on the bounding-box centre and offset_ray's nudge, and every ray of a row as
 src/trace_dev.cu __raygen__view does at --jitter off (cell centres: the middle of the azimuth and of the sine of the
-elevation; rows top-down from HI, columns clockwise; view mode: forward = the normal, right = normal x z, or east turned
-by --north when the normal is vertical, up = right x forward; 360 mode: forward = north turned by --north, up = +z).
+elevation; rows top-down from HI, columns clockwise; view mode: forward = the normal, right = normal x z, or, within 1e-3
+of vertical, east turned by --north and made square to the normal, up = right x forward; 360 mode: forward = north
+turned by --north, up = +z).
 The blocking meshes (context, receivers unless --no-self-occlude / --no-occlude) go to Radiance as the core's
 triangles at its float32 vertex positions, one plastic modifier per class (c2 obstruction, c3 + g target group g);
 `rtrace -ab 0 -oLmN` gives each ray's first hit. There is no plane in the Radiance scene: on the host a downward ray
 whose hit lies past where the core's ray ends (1 cm under the virtual ground, tmax = (o.z - plane + 0.01) / -dir.z),
 or that hits nothing, is `ground` at its exact plane distance (eye on or below the plane: ground at 0.1 m, untraced),
-with --virtual-ground off a downward miss is `ground` at +inf; a miss above the horizon is `sky` (+inf). Own-surface
-rays (360 mode, --offset 0, n.d <= 0) must be class 254 and are not traced.
+with --virtual-ground off a downward miss is `ground` at +inf; a miss on or above the horizon (dir.z >= 0) is `sky`
+(+inf). Own-surface rays (360 mode, --offset 0, n.d <= 0) must be class 254 and are not traced.
 Per case, hard: >= 99.9 % of the compared rays in the same class, and >= 99.9 % of those with a finite distance within
 |dt| <= 1e-5 t + 1e-4 m. Not compared: grazing hits (|cos| < 0.05 between the ray and the face rtrace hit), hits within
 1 mm (in z) of where the core's downward rays end, and rays within 1e-6 of a sign test (n.d for the own surface,
@@ -314,10 +315,12 @@ def rays(view, N32):
     if H == 360:
         f = np.broadcast_to([-sn, cn, 0.0], n.shape)
         r = np.broadcast_to([cn, sn, 0.0], n.shape)
-    else:                                       # right = n x z normalised; a vertical normal: east turned by north
-        f, ln = n, np.hypot(n[:, 0], n[:, 1])
+    else:                                       # right = n x z normalised; within 1e-3 of vertical: east turned by
+        f, ln = n, np.hypot(n[:, 0], n[:, 1])   # north, made square to the normal
         side = np.stack([n[:, 1], -n[:, 0], np.zeros(len(n))], axis=1) / np.where(ln > 0, ln, 1)[:, None]
-        r = np.where((np.sqrt(N32[:, 0] * N32[:, 0] + N32[:, 1] * N32[:, 1]) > F32(1e-6))[:, None], side, [cn, sn, 0.0])
+        east = np.array([cn, sn, 0.0]) - (n @ np.array([cn, sn, 0.0]))[:, None] * n
+        east /= np.maximum(np.linalg.norm(east, axis=1, keepdims=True), 1e-300)   # 0 only where side is taken
+        r = np.where((np.sqrt(N32[:, 0] * N32[:, 0] + N32[:, 1] * N32[:, 1]) > F32(1e-3))[:, None], side, east)
     u = np.cross(r, f)
     cs, cc = (c[:, None] * sa[None, :]).ravel(), (c[:, None] * ca[None, :]).ravel()      # per direction d
     sd = np.repeat(s, nAz)
@@ -350,7 +353,7 @@ def expect(view, o32, N32, C, gz, dirs, octree, vground):
     with np.errstate(invalid='ignore'):
         near = plane & np.isfinite(ht) & (np.abs(ht - cut) * -dzg < CUT_M)
     graze = hit & (hcos < GRAZING)
-    cls[go] = np.where(hit, hc, np.where(dzg > 0, 0, 1))
+    cls[go] = np.where(hit, hc, np.where(dzg >= 0, 0, 1))   # the horizon is sky
     t[go] = np.where(hit, ht, np.where(plane, tg, np.inf))
     out, nodist = sign.copy(), np.zeros((S, K), bool)
     out[go] |= graze | near

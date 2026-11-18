@@ -37,8 +37,8 @@ struct Params {
   unsigned mf, nBins;
   float alpha;            // patch row height (rad), Patches::alpha
   float cosN, sinN;       // cos / sin of --north: turns escaping directions back to true north (views: true north's frame)
-  // __raygen__view (views): sensor-major cls[i*K + d] / dist[i*K + d] of the launch's sensors, K = nAz x nEl directions,
-  // d = row * nAz + column, rows top-down, columns clockwise from az0
+  // __raygen__view (views): direction-major cls[d*nc + i] / dist[d*nc + i] (from the launch's first sensor; nc the
+  // chunk's), K = nAz x nEl directions, d = row * nAz + column, rows top-down, columns clockwise from az0
   unsigned char* cls;     // 0 sky, 1 ground, 2 obstruction, 3 + g target group g, 254 own surface (not traced)
   float* dist;            // true distance: the hit's t, the virtual ground's, +inf open sky / own surface
   const unsigned char* label;   // class per triangle (primitive index); null: every hit is an obstruction

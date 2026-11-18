@@ -8,7 +8,7 @@
 namespace daylight::views {
 
 // Rays ending on mesh `mesh` (Mesh::name, as --no-occlude) count for `group` ([A-Za-z0-9_-]+, not sky, ground,
-// obstruction, distance* or reach*); several meshes may share a group, at most 16 groups.
+// obstruction, distance*, reach*, *_distance or *_distance_min); several meshes may share a group, at most 16 groups.
 struct Target { std::string mesh, group; };
 
 struct Options : RunOptions {
@@ -21,7 +21,8 @@ struct Options : RunOptions {
   double farDist = 1000;              // metres (> 0.1): what open counts as, and the cap of every distance
   double groundZ = NAN;               // the virtual ground's height (metres); NAN = the lowest point of the meshes
   std::vector<double> reach;          // reach_<D> columns: the share of the field that sees at least D metres (at most 8)
-  std::string dumpPath;               // classes uint8 [N x rays] (.npy) + dumpPath.depth.npy float32 distances; empty = off
+  std::string dumpPath;               // classes uint8 [rows x rays] (.npy, a row per element and side) + dumpPath.depth.npy
+                                      // float32 distances; empty = off; a failed run removes both
 };
 
 // What run() derives from opt before tracing (a manifest needs it too): the option checks (false with err), the grid of
@@ -31,9 +32,10 @@ bool field(const std::vector<MeshView>& meshes, const Options& opt, Field& f, st
 
 // Rows as daylight's run(): sensor meshes in input order, a row per face or point. Columns <name>_<side> (sides inner):
 // the shares sky, ground, obstruction and one per group (first appearance), summing to 1; distance, distance_min (log mean
-// and minimum of the distances clamped to [0.1, farDist]); per group <g>_distance, <g>_distance_min (NaN: not in view);
-// reach_<D>. Result::nSky, nSun and durationHours stay 0. Fails on bad options, target or --no-occlude names the meshes do
-// not resolve, and memory running out ("out of memory: ...", never the process). One call at a time per process.
+// and minimum of the distances clamped to [0.1, farDist]; NaN when no ray is traced: all own surface, as a degenerate
+// element's); per group <g>_distance, <g>_distance_min (NaN: not in view); reach_<D>. Result::nSky, nSun and
+// durationHours stay 0. Fails on bad options, target or --no-occlude names the meshes do not resolve, and memory running
+// out ("out of memory: ...", never the process). One call at a time per process.
 bool run(const std::vector<MeshView>& meshes, const Options& opt, Result& out, std::string& err);
 bool run(const std::vector<Mesh>& meshes, const Options& opt, Result& out, std::string& err);
 

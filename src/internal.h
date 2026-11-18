@@ -98,8 +98,9 @@ inline bool resolve_no_occlude(const std::vector<Mesh>& meshes, const std::vecto
 }
 // views::Options::targets: cls[k] = 3 + g when mesh k is a target of groups[g] (groups in order of first appearance), else
 // 2 (an obstruction). Errors: NAME/SLOT (face-slot targets are not supported), a GROUP not [A-Za-z0-9_-]+ or reserved (sky,
-// ground, obstruction, distance*, reach*), an unknown or ambiguous name, a mesh given twice, a mesh that blocks no rays (a
-// sensor mesh under --no-self-occlude or open[k], --no-occlude), more than 16 groups.
+// ground, obstruction, distance*, reach*, *_distance, *_distance_min: column names), an unknown or ambiguous name, a
+// mesh given twice, a mesh that blocks no rays (a sensor mesh under --no-self-occlude or open[k], --no-occlude), more
+// than 16 groups.
 bool resolve_targets(const std::vector<MeshView>& meshes, const std::vector<views::Target>& targets, bool selfOcclude,
                      const std::vector<char>& open, std::vector<std::string>& groups, std::vector<uint8_t>& cls, std::string& err);
 // Faces of slot s in m (recentred by c) as one closed thin solid: positions welded on a 1e-5 m grid, every edge used
@@ -189,9 +190,9 @@ struct ViewLaunch {
 };
 // Class per triangle of the GAS (build order), read at views' hits; empty: none, every hit an obstruction.
 bool gpu_set_labels(Gpu& g, const std::vector<uint8_t>& label, std::string& err);
-// Trace sensors [i0, i0+nc) over the grid; classes and distances stay on device, sensor-major [nc x K]. Sub-launches as
-// gpu_trace's byte mode (2^13 threads first and at least, then ~40 ms, at most doubling), the size carried from chunk to
-// chunk in launch (0 = start over); v.cancel is checked between them.
+// Trace sensors [i0, i0+nc) over the grid; classes and distances stay on device, direction-major [K x nc]. Sub-launches
+// as gpu_trace's byte mode (2^13 threads first and at least, then ~40 ms, at most doubling), the size carried from chunk
+// to chunk in launch (0 = start over); v.cancel is checked between them.
 bool gpu_view(Gpu& g, size_t i0, size_t nc, unsigned rayFlags, const ViewLaunch& v, size_t& launch, std::string& err);
 // out (host, nc x NA doubles, NA = 3 nClass + 1 + reach.size()) for the last gpu_view: per sensor and class the weight,
 // weight x ln d and min d (d = the distance clamped to [0.1, farDist]; min +inf: the class is not in view), then the
@@ -199,7 +200,7 @@ bool gpu_view(Gpu& g, size_t i0, size_t nc, unsigned rayFlags, const ViewLaunch&
 // Deterministic: the same bits for any chunking.
 bool gpu_reduce_view(Gpu& g, size_t nc, const std::vector<double>& wRow, unsigned nClass, double farDist, const std::vector<float>& reach,
                      double* out, std::string& err);
-bool gpu_download_view(Gpu& g, size_t nc, std::vector<uint8_t>& cls, std::vector<float>& dist, std::string& err);   // [nc x K] each
+bool gpu_download_view(Gpu& g, size_t nc, std::vector<uint8_t>& cls, std::vector<float>& dist, std::string& err);   // [nc x K] each (transposed)
 struct GpuStats {
   double buildMs = 0, traceMs = 0, bounceMs = 0;
   size_t rays = 0, gasBytes = 0, launches = 0, paths = 0, bounceLaunches = 0;
@@ -214,7 +215,9 @@ unsigned gpu_bounce_flags(bool cullBackfaces);
 // ------------------------------------------------------------------ run.cpp
 bool npy_write_header(std::FILE* f, size_t rows, size_t cols, const char* descr);   // .npy v1.0 [rows x cols] C order, descr "<f8" / "<f4" / "<u4" / "<u1"
 // An occluder scene as the process keeps it (installed in the Gpu, or parked in VRAM under its key) and a run sees it.
-struct SceneMesh { std::string name; size_t tri0 = 0, nTri = 0; };   // a mesh's triangles [tri0, tri0 + nTri) of the GAS
+struct SceneMesh {   // a mesh's triangles [tri0, tri0 + nTri) of the GAS, its name and Mesh as the building run had them
+  std::string name; size_t tri0 = 0, nTri = 0; const Mesh* mesh = nullptr;
+};
 struct Scene {
   std::string key;
   double c[3] = {0, 0, 0};          // bbox centre the scene's triangles were recentred by

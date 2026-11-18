@@ -22,7 +22,9 @@ include(FetchContent)
 FetchContent_Declare(earcut GIT_REPOSITORY https://github.com/mapbox/earcut.hpp GIT_TAG v2.2.4 GIT_SHALLOW TRUE SOURCE_SUBDIR include)
 FetchContent_MakeAvailable(earcut)
 
-# OptiX device program -> OptiX-IR -> embedded byte array. Only place with --use_fast_math (visibility only).
+# OptiX device program -> OptiX-IR -> embedded byte array. Only place with --use_fast_math: the OptiX programs
+# (visibility, transmittance, reflected-light paths, views' directions and plane distances; division and sqrt within
+# ~2 ulp, denormals flushed).
 set(GEN "${CMAKE_CURRENT_BINARY_DIR}/gen")
 file(MAKE_DIRECTORY "${GEN}")
 add_custom_command(OUTPUT "${GEN}/trace.optixir"

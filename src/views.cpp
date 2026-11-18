@@ -11,6 +11,7 @@
 #include <exception>
 #include <memory>
 #include <new>
+#include <unordered_map>
 
 namespace daylight::views {
 namespace {
@@ -19,13 +20,15 @@ using File = std::unique_ptr<std::FILE, decltype(&std::fclose)>;
 using Clk = std::chrono::steady_clock;
 double ms(Clk::time_point t0) { return std::chrono::duration<double, std::milli>(Clk::now() - t0).count(); }
 constexpr double kDeg = 3.14159265358979323846 / 180;
+std::string reach_name(double D) { char s[48]; std::snprintf(s, sizeof s, "reach_%g", D); return s; }
 
 }  // namespace
 
 bool field(const std::vector<MeshView>& meshes, const Options& opt, Field& f, std::string& err) {
   if (!(opt.fovH > 0 && opt.fovH <= 180) && opt.fovH != 360) { err = "--fov H must be in (0, 180] (about the normal) or 360 (all around)"; return false; }
   if (!(opt.elevLo >= -90 && opt.elevLo < opt.elevHi && opt.elevHi <= 90)) { err = "--fov H,LO,HI needs -90 <= LO < HI <= 90"; return false; }
-  if (!(opt.cell > 0)) { err = "--cell must be positive degrees"; return false; }
+  if (!(opt.cell > 0) || std::isinf(opt.cell)) { err = "--cell must be positive and finite (degrees)"; return false; }
+  if (!std::isfinite(opt.north) || !std::isfinite(opt.offset)) { err = "--north and --offset must be finite"; return false; }
   const double nAz = std::max(1.0, std::round(opt.fovH / opt.cell)), nEl = std::max(1.0, std::round((opt.elevHi - opt.elevLo) / opt.cell));
   if (nAz * nEl > double(1 << 20)) {
     char s[160];
@@ -33,9 +36,13 @@ bool field(const std::vector<MeshView>& meshes, const Options& opt, Field& f, st
     err = s;
     return false;
   }
-  if (!(opt.farDist > 0.1) || std::isinf(opt.farDist)) { err = "--far must be more than 0.1 (metres)"; return false; }
+  if (!(opt.farDist > 0.1) || std::isinf(opt.farDist)) { err = "--far must be more than 0.1 (metres) and finite"; return false; }
   if (opt.reach.size() > 8) { err = "--reach takes at most 8 distances"; return false; }
-  for (double D : opt.reach) if (!(D > 0) || std::isinf(D)) { err = "--reach distances must be positive (metres)"; return false; }
+  for (size_t k = 0; k < opt.reach.size(); ++k) {
+    if (!(opt.reach[k] > 0) || std::isinf(opt.reach[k])) { err = "--reach distances must be positive (metres) and finite"; return false; }
+    for (size_t j = 0; j < k; ++j)
+      if (reach_name(opt.reach[j]) == reach_name(opt.reach[k])) { err = "--reach distances must differ: two make column " + reach_name(opt.reach[k]); return false; }
+  }
   if (std::isinf(opt.groundZ)) { err = "--ground-z must be finite"; return false; }
   f.nAz = unsigned(nAz);
   f.nEl = unsigned(nEl);
@@ -46,8 +53,10 @@ bool field(const std::vector<MeshView>& meshes, const Options& opt, Field& f, st
   return true;
 }
 
-// The run itself; `stage` names what it is doing, for the out-of-memory message of run() below.
-static bool run_views(const std::vector<MeshView>& meshes, const Options& opt, Result& out, std::string& err, const char*& stage) {
+// The run itself; `stage` names what it is doing, for the out-of-memory message of run() below; `dumping` once the
+// --dump-rays files exist.
+static bool run_views(const std::vector<MeshView>& meshes, const Options& opt, Result& out, std::string& err, const char*& stage,
+                      bool& dumping) {
   const auto cancelled = [&] { if (opt.cancel && opt.cancel->load()) { err = "cancelled"; return true; } return false; };
   out = Result{};   // nSky, nSun and durationHours stay 0
   // ---- options and roles -------------------------------------------------------------------------------------------
@@ -64,7 +73,7 @@ static bool run_views(const std::vector<MeshView>& meshes, const Options& opt, R
   size_t nElem = 0;
   for (const MeshView& v : meshes) if (v.sensor) nElem += opt.onVertices ? v.mesh->numPoints() : v.mesh->numFaces();
   const size_t nSens = nElem * nS, K = size_t(fd.nAz) * fd.nEl, nClass = 3 + groups.size(), NA = 3 * nClass + 1 + opt.reach.size();
-  if (nSens == 0) { err = "no sensor elements (no sensor meshes, or all faces degenerate)"; return false; }
+  if (nSens == 0) { err = "no sensor elements (no sensor meshes, or none with faces / points)"; return false; }
   if (!opt.dumpPath.empty() && nSens * K * 5 > (size_t(4) << 30)) {
     err = "--dump-rays: " + std::to_string(nSens) + " sensors x " + std::to_string(K) + " rays exceed 4 GB (fewer receivers or a coarser --cell)";
     return false;
@@ -85,10 +94,11 @@ static bool run_views(const std::vector<MeshView>& meshes, const Options& opt, R
   }
   for (double& w : wRow) w /= sum;
 
-  // classes uint8 [nSens x K] and true distances float32 [nSens x K], sensor-major as on the device
+  // classes uint8 [nSens x K] and true distances float32 [nSens x K], sensor-major (the device's chunks transposed)
   File cf(nullptr, std::fclose), df(nullptr, std::fclose);
   const std::string depthPath = opt.dumpPath + ".depth.npy";
   if (!opt.dumpPath.empty()) {
+    dumping = true;
     cf.reset(std::fopen(opt.dumpPath.c_str(), "wb"));
     if (!cf || !npy_write_header(cf.get(), nSens, K, "<u1")) { err = "cannot write " + opt.dumpPath; return false; }
     df.reset(std::fopen(depthPath.c_str(), "wb"));
@@ -99,17 +109,19 @@ static bool run_views(const std::vector<MeshView>& meshes, const Options& opt, R
   Gpu* g = nullptr;
   Scene sc;
   if (!scene_acquire(meshes, blocks, {Slot{}}, false, key, opt.residentScenes, opt.cancel, &g, sc, out, stage, err)) return false;
-  // label[t] = the class of a hit on triangle t, from the scene's build order by mesh name (a resident scene may have been
-  // built from another mesh order); a name the scene lacks (built under other names): a fresh build under the key
+  // label[t] = the class of a hit on triangle t, from the scene's build order: a target's triangles are the ones the
+  // scene holds under its name for its Mesh (a resident scene may have been built from another mesh order); a target the
+  // scene lacks so (built under other names, or its name now on another mesh): a fresh build under the key
   std::vector<uint8_t> label;
   const auto labelled = [&] {
     label.assign(sc.nTris, 2);
+    std::unordered_map<std::string, const SceneMesh*> byName;   // null: the scene has the name twice
+    for (const SceneMesh& s : sc.order) if (!byName.emplace(s.name, &s).second) byName[s.name] = nullptr;
     for (size_t k = 0; k < meshes.size(); ++k) {
       if (clsOf[k] == 2) continue;
-      const SceneMesh* m = nullptr;
-      for (const SceneMesh& s : sc.order) if (s.name == meshes[k].name) { if (m) return false; m = &s; }
-      if (!m) return false;
-      std::fill_n(label.data() + m->tri0, m->nTri, clsOf[k]);
+      const auto it = byName.find(meshes[k].name);
+      if (it == byName.end() || !it->second || it->second->mesh != meshes[k].mesh) return false;
+      std::fill_n(label.data() + it->second->tri0, it->second->nTri, clsOf[k]);
     }
     return true;
   };
@@ -120,10 +132,11 @@ static bool run_views(const std::vector<MeshView>& meshes, const Options& opt, R
     if (!labelled()) { err = "internal: a target mesh is not in the scene"; return false; }
   }
   const GpuStats st0 = gpu_stats(*g);   // the GPU's counters before this run's trace (they add up over the process)
-  // Beside the scene: the sensors, the labels, and per sensor of a chunk its classes (1 B per ray), distances (4 B, capped
-  // by chunkBytes) and sums
+  // Beside the scene: the sensors, the labels, and per sensor of a chunk its classes (1 B per ray), distances (4 B) and
+  // sums (NA doubles); chunkBytes caps the distances and the sums
   size_t chunkBytes = opt.chunkBytes;
-  if (!run_admission(*g, nSens, 4 * K, 5 * K + NA * sizeof(double), label.size(), opt.residentScenes, chunkBytes, err)) return false;
+  const size_t perSensor = std::max(4 * K, NA * sizeof(double));
+  if (!run_admission(*g, nSens, perSensor, 5 * K + NA * sizeof(double), label.size(), opt.residentScenes, chunkBytes, err)) return false;
 
   stage = "making the sensors";
   const auto tSens = Clk::now();
@@ -131,11 +144,16 @@ static bool run_views(const std::vector<MeshView>& meshes, const Options& opt, R
   std::string warn;
   if (!sensors_of(meshes, opt, false, sc.c, nSens, sens, out, warn, err)) return false;
   out.stats.prepMs += ms(tSens);
+  const float plane = float(fd.groundZ - sc.c[2]);   // the virtual ground, recentred
   if (opt.verbose) {
-    std::fprintf(stderr, "info: %zu sensors, %zu triangles%s, %u x %u = %zu rays per sensor, %zu target groups\n", nSens, sc.nTris,
-                 out.sceneReused ? " (scene reused)" : "", fd.nEl, fd.nAz, K, groups.size());
+    char vg[48] = "off";
+    if (opt.virtualGround) std::snprintf(vg, sizeof vg, "at z %g", fd.groundZ);
+    std::fprintf(stderr, "info: %zu sensors, %zu triangles%s, %u x %u = %zu rays per sensor, %zu target groups, virtual ground %s\n", nSens,
+                 sc.nTris, out.sceneReused ? " (scene reused)" : "", fd.nEl, fd.nAz, K, groups.size(), vg);
     if (sc.skipped) std::fprintf(stderr, "warn: %d degenerate faces skipped in occluders\n", sc.skipped);
     if (!warn.empty()) std::fprintf(stderr, "warn: %s\n", warn.c_str());
+    const size_t below = opt.virtualGround ? size_t(std::count_if(sens.p.begin(), sens.p.end(), [&](const float3& p) { return p.z < plane; })) : 0;
+    if (below) std::fprintf(stderr, "warn: %zu sensors lie below the virtual ground: their downward rays end at 0.1 m, the others pass up through it\n", below);
   }
   if (!gpu_set_scene(*g, sens, {}, err) || !gpu_set_slots(*g, {Slot{}}, err) || !gpu_set_labels(*g, label, err)) return false;
   sens = Sensors{};   // on the device now
@@ -151,7 +169,7 @@ static bool run_views(const std::vector<MeshView>& meshes, const Options& opt, R
     if (opt.distMean) names.push_back(groups[k] + "_distance");
     if (opt.distMin) names.push_back(groups[k] + "_distance_min");
   }
-  for (double D : opt.reach) { char s[48]; std::snprintf(s, sizeof s, "reach_%g", D); names.push_back(s); }
+  for (double D : opt.reach) names.push_back(reach_name(D));
   out.columns.clear();
   for (const std::string& n : names)
     for (size_t s = 0; s < nS; ++s) out.columns.push_back(n + ((opt.sides == Sides::Back || (opt.sides == Sides::Both && s == 1)) ? "_back" : "_front"));
@@ -161,8 +179,8 @@ static bool run_views(const std::vector<MeshView>& meshes, const Options& opt, R
   if (opt.f32Columns) out.f32.assign(C * nElem, 0.f);
   else out.values.assign(nElem * C, 0.0);
   // sensor si (element si / nS, side si % nS) from its sums a (gpu_reduce_view): shares of the whole field (own-surface
-  // rays are obstructions without a distance), log means exp(sum w ln d / sum w), minima (+inf: none, NaN; the float
-  // clamps as given)
+  // rays are obstructions without a distance), log means exp(sum w ln d / sum w) (every ray at the far clamp, min d =
+  // far: farDist exactly, not to double rounding), minima (+inf: none, NaN; the float clamps as given)
   const double nearF = 0.1f, farF = float(opt.farDist);
   const auto least = [&](double m) { return std::isinf(m) ? NAN : m <= nearF ? 0.1 : m >= farF ? opt.farDist : m; };
   const auto store = [&](size_t si, const double* a) {
@@ -173,7 +191,7 @@ static bool run_views(const std::vector<MeshView>& meshes, const Options& opt, R
       else out.values[e * C + col] = v;
       col += nS;
     };
-    const auto logMean = [](double w, double wl) { return w > 0 ? std::exp(wl / w) : NAN; };
+    const auto logMean = [&](double w, double wl, double m) { return !(w > 0) ? NAN : m >= farF ? opt.farDist : std::exp(wl / w); };
     const double own = a[3 * nClass];
     double w = 0, wl = 0, mn = INFINITY;
     for (size_t c = 0; c < nClass; ++c) { w += a[3 * c]; wl += a[3 * c + 1]; mn = std::min(mn, a[3 * c + 2]); }
@@ -182,21 +200,21 @@ static bool run_views(const std::vector<MeshView>& meshes, const Options& opt, R
     put(a[3] / total);
     put((a[6] + own) / total);
     for (size_t k = 0; k < groups.size(); ++k) put(a[3 * (3 + k)] / total);
-    if (opt.distMean) put(logMean(w, wl));
+    if (opt.distMean) put(logMean(w, wl, mn));
     if (opt.distMin) put(least(mn));
     for (size_t k = 0; opt.distGroup && k < groups.size(); ++k) {
-      if (opt.distMean) put(logMean(a[3 * (3 + k)], a[3 * (3 + k) + 1]));
+      if (opt.distMean) put(logMean(a[3 * (3 + k)], a[3 * (3 + k) + 1], a[3 * (3 + k) + 2]));
       if (opt.distMin) put(least(a[3 * (3 + k) + 2]));
     }
     for (size_t r = 0; r < opt.reach.size(); ++r) put(a[3 * nClass + 1 + r] / total);
   };
 
   stage = "tracing";
-  const size_t ncMax = std::max<size_t>(1, chunkBytes / (4 * K));
+  const size_t ncMax = std::max<size_t>(1, chunkBytes / perSensor);
   ViewLaunch vl;
   vl.nAz = fd.nAz; vl.nEl = fd.nEl; vl.az0 = float(world ? 0 : -opt.fovH / 2); vl.dAz = float(dAz); vl.rowSin = rowSin.data();
   vl.world = world; vl.cull = world && opt.offset == 0; vl.jitter = opt.jitter; vl.back = opt.sides == Sides::Back;
-  vl.vground = opt.virtualGround; vl.nS = unsigned(nS); vl.groundZ = float(fd.groundZ - sc.c[2]); vl.north = opt.north; vl.cancel = opt.cancel;
+  vl.vground = opt.virtualGround; vl.nS = unsigned(nS); vl.groundZ = plane; vl.north = opt.north; vl.cancel = opt.cancel;
   const unsigned flags = gpu_bounce_flags(opt.cullBackfaces);   // closest hits, no any-hit
   std::vector<float> reach;   // compared with the float distances
   for (double D : opt.reach) reach.push_back(float(D));
@@ -235,8 +253,9 @@ static bool run_views(const std::vector<MeshView>& meshes, const Options& opt, R
 bool run(const std::vector<MeshView>& meshes, const Options& opt, Result& out, std::string& err) {
   // as daylight's run(): running out of host memory fails the run, never the caller
   const char* stage = "preparing the run";
+  bool dumping = false, ok = false;
   try {
-    return run_views(meshes, opt, out, err, stage);
+    ok = run_views(meshes, opt, out, err, stage, dumping);
   } catch (const std::bad_alloc&) {
     out = Result{};
     err = std::string("out of memory: host memory ran out while ") + stage;
@@ -244,7 +263,9 @@ bool run(const std::vector<MeshView>& meshes, const Options& opt, Result& out, s
     out = Result{};
     err = std::string("internal error while ") + stage + ": " + e.what();
   }
-  return false;
+  // a failed run leaves no dump (closed by now): its headers promise rows it never wrote
+  if (!ok && dumping) { std::remove(opt.dumpPath.c_str()); std::remove((opt.dumpPath + ".depth.npy").c_str()); }
+  return ok;
 }
 
 bool run(const std::vector<Mesh>& meshes, const Options& opt, Result& out, std::string& err) {

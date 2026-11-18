@@ -102,6 +102,17 @@ const char* value(int argc, char** argv, int& i, const char* flag, std::string& 
   return argv[++i];
 }
 
+// s as a JSON string: quote, backslash and control bytes escaped, other bytes as given.
+std::string json_str(const std::string& s) {
+  std::string o = "\"";
+  for (const char ch : s) {
+    if (ch == '"' || ch == '\\') o += '\\';
+    if (static_cast<unsigned char>(ch) < 0x20) { char u[8]; std::snprintf(u, sizeof u, "\\u%04x", unsigned(ch)); o += u; }
+    else o += ch;
+  }
+  return o + "\"";
+}
+
 // The manifest's "meshes" array: {name, first row, row count} per sensor mesh, in input order.
 std::string manifest_meshes(const Result& r) {
   std::string m = "[";
@@ -109,7 +120,7 @@ std::string manifest_meshes(const Result& r) {
   size_t first = 0;
   for (size_t i = 0; i < r.ranges.size(); ++i) {
     std::snprintf(buf, sizeof buf, ", \"first\": %zu, \"count\": %zu}", first, r.ranges[i].second);
-    m += std::string(i ? ",\n    {\"name\": \"" : "\n    {\"name\": \"") + r.ranges[i].first + "\"" + buf;
+    m += std::string(i ? ",\n    {\"name\": " : "\n    {\"name\": ") + json_str(r.ranges[i].first) + buf;
     first += r.ranges[i].second;
   }
   return m + "\n  ]";
@@ -139,8 +150,13 @@ int parse_common(int argc, char** argv, CommonArgs& a, RunOptions& o, std::strin
         o.noOcclude.push_back(s.substr(b, e - b));
       }
     }
-    else if (f == "--north") { if (!(v = need(i, "--north"))) return 1; o.north = std::atof(v); }
-    else if (f == "--offset") { if (!(v = need(i, "--offset"))) return 1; o.offset = std::atof(v); }
+    else if (f == "--north" || f == "--offset") {   // the whole token, finite (a decimal comma is no number)
+      if (!(v = need(i, f.c_str()))) return 1;
+      char* end = nullptr;
+      const double x = std::strtod(v, &end);
+      if (!*v || *end || !std::isfinite(x)) { err = f == "--north" ? "--north DEG" : "--offset M"; return 1; }
+      (f == "--north" ? o.north : o.offset) = x;
+    }
     else if (f == "--virtual-ground") { if (!(v = need(i, "--virtual-ground"))) return 1; if (!std::strcmp(v, "on")) o.virtualGround = true; else if (!std::strcmp(v, "off")) o.virtualGround = false; else { err = "--virtual-ground on|off"; return 1; } }
     else if (f == "--out") { if (!(v = need(i, "--out"))) return 1; a.out = v; }
     else if (f == "--bench") {
@@ -276,7 +292,8 @@ const char* const kUsage =
     "  --north DEG  --offset M  --no-self-occlude\n"
     "  --no-occlude NAME[;NAME...]  these sensor meshes are analysed but block no rays (repeatable)\n"
     "  --out FILE[.npy]         values (text rows, or float64 [N x C] NumPy when .npy) + FILE.json manifest\n"
-    "  --dump-rays F.npy        classes uint8 [N x rays] + F.npy.depth.npy float32 distances\n"
+    "  --dump-rays F.npy        classes uint8 [rows x rays] (a row per element and side) + F.npy.depth.npy float32\n"
+    "                           distances\n"
     "  --bench [NSENS NTRIS]  -v          exit code: 1 usage, 2 runtime error\n";
 
 namespace {
@@ -300,6 +317,7 @@ bool parse_targets(const std::string& s, std::vector<Target>& out, std::string& 
     e = std::min(s.find(';', b), s.size());
     const std::string spec = s.substr(b, e - b);
     const size_t eq = spec.rfind('=');
+    if (spec.empty()) { err = "--target " + s + ": empty NAME=GROUP (a stray ;)"; return false; }
     if (eq == std::string::npos || eq == 0 || eq + 1 == spec.size()) { err = "--target " + spec + ": NAME=GROUP"; return false; }
     out.push_back({spec.substr(0, eq), spec.substr(eq + 1)});
   }
@@ -355,7 +373,7 @@ int parse(int argc, char** argv, Args& a, std::string& err) {
 }
 
 std::string manifest_json(const Result& r, const Options& opt, const Field& f) {
-  const auto num = [](double v) { char s[32]; std::snprintf(s, sizeof s, "%.10g", v); return std::string(std::isnan(v) ? "null" : s); };
+  const auto num = [](double v) { char s[32]; std::snprintf(s, sizeof s, "%.10g", v); return std::string(std::isfinite(v) ? s : "null"); };
   std::string m = "{\n  \"columns\": [";
   for (size_t c = 0; c < r.columns.size(); ++c) m += (c ? ", \"" : "\"") + r.columns[c] + "\"";
   m += "],\n  \"view\": {\"fov\": [" + num(opt.fovH) + ", " + num(opt.elevLo) + ", " + num(opt.elevHi) + "], \"cell\": " + num(opt.cell) +
@@ -369,7 +387,7 @@ std::string manifest_json(const Result& r, const Options& opt, const Field& f) {
     if (std::find(groups.begin(), groups.end(), t.group) == groups.end()) { groups.push_back(t.group); m += ", \"" + t.group + "\""; }
   m += "],\n    \"image\": \"rows from HI down, columns clockwise from the field's left edge (360: from north)\"},\n  \"targets\": [";
   for (size_t k = 0; k < opt.targets.size(); ++k)
-    m += std::string(k ? ", " : "") + "{\"mesh\": \"" + opt.targets[k].mesh + "\", \"group\": \"" + opt.targets[k].group + "\"}";
+    m += std::string(k ? ", " : "") + "{\"mesh\": " + daylight::cli::json_str(opt.targets[k].mesh) + ", \"group\": \"" + opt.targets[k].group + "\"}";
   m += "],\n  \"meshes\": " + daylight::cli::manifest_meshes(r) + "\n}\n";
   return m;
 }

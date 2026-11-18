@@ -1,9 +1,11 @@
 # daylight (Python binding)
 
-USD stage -> raw mesh arrays for the agnostic `daylight` core, a `.dmesh` writer for numpy arrays, and a thin
-`subprocess` wrapper around the CLI. uv project (Python >= 3.10, `usd-core==26.8`, `numpy`); no C++ build is
-needed for the conversion itself. Everything stays binary: `meshes()` is vectorised numpy, meshes go to the core as
-`.dmesh`, values come back as `.npy` (1M quads: `meshes()` 0.1 s + `to_dmesh` 0.15 s after `Stage.Open`).
+USD stage -> raw mesh arrays for the agnostic `daylight` core, a `.dmesh` writer for numpy arrays, a thin
+`subprocess` wrapper around the core's two CLIs (`daylight.exe`: daylight / solar, `views.exe`: view analysis), and
+`daylight.native`, both tools in-process through the C ABI (`daylight_c.dll`, [docs/c-abi.md](../../docs/c-abi.md)).
+uv project (Python >= 3.10, `usd-core==26.8`, `numpy`); no C++ build is needed for the conversion itself. Everything
+stays binary: `meshes()` is vectorised numpy, meshes go to the core as `.dmesh` (or as arrays in-process), values come
+back as `.npy` (1M quads: `meshes()` 0.1 s + `to_dmesh` 0.15 s after `Stage.Open`).
 
 ## Usage
 
@@ -26,6 +28,17 @@ values, m = daylight.run_meshes([x[1:] for x in sens], [x[1:] for x in ctx], epw
 print([x[0] for x in sens], m['meshes'], values.shape)                  # prim paths in row order
 ```
 
+Views (`tool='views'`, [docs/views.md](../../docs/views.md)): `run_meshes` also takes the `(name, points, counts,
+indices)` tuples of `meshes()` as they are; each name becomes the file stem `python -m daylight` gives it
+(`/World/Lake` -> `World_Lake`), the mesh name in the manifest and in flags such as `--target NAME=GROUP`:
+
+```python
+import daylight
+sens, ctx = daylight.split(daylight.meshes('scene.usd'), sensors=['/World/Bldg'])
+values, m = daylight.run_meshes(sens, ctx, tool='views', args=['--target', 'World_Lake=water', '--reach', 'en17037'])
+print(m['columns'], m['targets'])                  # sky_front ground_front obstruction_front water_front ...
+```
+
 Results back on the stage (`write_results`): a new layer that sublayers `scene.usd` and overrides each sensor prim
 with float primvars `daylight_<column>` + `primvars:displayColor` (viridis via `colormap`), so opening the new file
 alone in usdview / Kit shows the coloured scene and `scene.usd` stays untouched:
@@ -39,12 +52,15 @@ daylight.write_results('scene.usd', values, m, [x[0] for x in sens], 'daylight.u
 ```
 
 One-liner (writes `out/<stem>.dmesh` per mesh + `out/meshes.json`; flags after `--` go to the core ->
-`out/values.npy(.json)`, rows in `meshes.json` order; `--write-usd PATH` adds the sublayer file):
+`out/values.npy(.json)`, rows in `meshes.json` order; `--write-usd PATH` adds the sublayer file; `--tool views` runs
+`views.exe` instead of `daylight.exe`, primvars `views_<column>`):
 
 ```
 cd bindings/python && uv sync
 uv run python -m daylight scene.usd --sensors /World/Bldg -o out --write-usd out/daylight.usda -- --epw x.epw --quantity radiation
-uv run python -m daylight.check          # to_dmesh / masking / converter / colormap / write_results self-checks + run_meshes end to end (needs the exe)
+uv run python -m daylight scene.usd --sensors /World/Bldg -o out --tool views -- --target World_Lake=water
+uv run python -m daylight.check          # self-checks: to_dmesh / masking / converter / colormap / write_results,
+                                         # run_meshes end to end (needs the exes), native in-process (needs the DLL)
 ```
 
 `--sensors`/`--context` are prim-path prefixes (repeatable): no `--sensors` = every mesh is a sensor, no `--context`
@@ -53,17 +69,60 @@ stage start time). File stem = prim path with `[^A-Za-z0-9._-]` replaced by `_`,
 with `_2`, `_3` ... (`/World/Bldg/roof` -> `World_Bldg_roof.dmesh`); `meshes.json` is the ordered list
 `[{"file", "prim", "role": "sensor" | "context"}]`, sensors first.
 
+## In-process (`daylight.native`)
+
+Both tools in this process through `daylight_c.dll`: no process start, no files, the GPU context kept, and runs over
+the same `Mesh` objects in the same roles and order reuse the resident GPU scene (no triangulation, upload or GAS
+build; daylight and views share it). Flags are the CLIs' own, values and manifest bit for bit what the CLI writes.
+
+```python
+from daylight import Mesh, native
+with Mesh.load('site.obj') as site, Mesh('grid', P, C, I) as grid:             # P [N,3] float64, C counts, I indices
+    r = native.run('daylight', ['--epw', 'site.epw', '--quantity', 'radiation'], grid, context=site)
+    v = native.run('views', ['--fov', '360', '--offset', '1.6', '--target', 'lake=water'], grid, context=site)
+print(r.values.shape, r.manifest['columns'], v.stats['scene_reused'])             # True: the scene of the first run
+```
+
+- `Mesh(name, points, counts, indices, slots=None)`: one mesh from the `.dmesh` arrays (numpy or sequences, made
+  C-contiguous float64 points `[N,3]`, int32 counts and 0-based indices, uint16 optics slot per face), copied into the
+  DLL; `Mesh.load(path)`: the meshes of a `.obj` (one per `o`/`g` group) or `.dmesh` file as the CLI reads them.
+  `.names` = what the manifest, `--target`, `--optics` and `--no-occlude` call them. `close()`, a `with` block or
+  garbage collection frees the handle; never close one a run on another thread is using.
+- `native.run(tool, args, sensors, context=(), control=None)` -> `Result(values, manifest, stats)`: `tool` `'daylight'`
+  ([cli.md](../../docs/cli.md)) or `'views'` ([views.md](../../docs/views.md)), `args` its flags as strings (mesh
+  paths, `--context`, `--out`, `--bench` and `-h` are refused: the meshes are `sensors` / `context`, each a `Mesh` or
+  an iterable of them), `values` `[N x C]` float64, `manifest` the CLI's `FILE.json` as a dict, `stats` `{scene_reused,
+  prep_ms, sky_ms, build_ms, trace_ms, reduce_ms, bounce_ms, rays, launches, gas_bytes}`. Files in flags (`--epw`,
+  `--timeseries`, `--dump-*`) are paths of this process; a `str` goes as UTF-8 (names), a `pathlib.Path` in the ANSI
+  code page the core opens files with, as the CLI's argv: give a non-ASCII path as a `Path`. `native.usage(tool)`: the
+  CLI's `-h` text.
+- `Control()`: pass it as `control`, then from another thread `cancel()` (the run stops at its next check and raises
+  `DaylightError` 2 `cancelled`) or read `progress` (0..1). One control per run; `close()` / `with` as for `Mesh`.
+- Errors raise `native.DaylightError` with `.status` = the CLI's exit code (1: flags, arguments, mesh names the flags
+  do not resolve; 2: a file, the GPU, out of memory, `cancelled`) and the core's message. Numbers are read and written
+  with `.` whatever `locale.setlocale` set (the DLL runs each call in the `"C"` locale).
+- Threads: ctypes releases the GIL during every DLL call, so other threads keep running while a run traces (that is
+  how `cancel()` and `progress` reach it; Ctrl+C waits for the run to return). Runs take turns: one GPU run per process.
+- The DLL loads on first use, by absolute path: `DAYLIGHT_DLL` if set, else `daylight/daylight_c.dll` next to the
+  package, else `<repo>/build/RelWithDebInfo/daylight_c.dll`. It needs the NVIDIA driver and the VC++ 2015-2022 x64
+  runtime ([docs/c-abi.md](../../docs/c-abi.md#loading-the-dll)); another ABI version is refused (`OSError`).
+
 ## API
 
 - `meshes(stage, time=None)` -> `[(name, points [N,3] float64, counts int32 [F], indices int32 [sum(counts)])]`
   (the `.dmesh` arrays, 0-based flat indices); `split(meshes, sensors, context)`; `to_obj(meshes, path)` (interop).
 - `to_dmesh(points, counts, indices, path)`: one mesh as raw arrays -> `.dmesh` (layout below). `ValueError` unless
   `sum(counts) == len(indices)`, every count >= 3 and every index in `[0, n_points)`.
-- `run(sensors, context=(), epw=None, args=(), out=None)` -> `(values [N x C], manifest)`; `sensors`/`context` are
-  a mesh file (`.obj` / `.dmesh`) or an iterable of them, passed positional / as repeated `--context`. `out` keeps
-  the value file: `.npy` (default, `np.load`) or any other suffix for text (`np.loadtxt`).
+- `run(sensors, context=(), epw=None, args=(), out=None, tool='daylight')` -> `(values [N x C], manifest)`;
+  `sensors`/`context` are a mesh file (`.obj` / `.dmesh`) or an iterable of them, passed positional / as repeated
+  `--context`. `tool='views'` runs `views.exe` (`epw` is daylight's). `out` keeps the value file: `.npy` (default,
+  `np.load`) or any other suffix for text (`np.loadtxt`).
 - `run_meshes(sensors, context=(), **run kwargs)`: each argument an iterable of `(points, counts, indices)` triples
-  (a single triple is accepted too); written as `sensor_<i>.dmesh` / `context_<i>.dmesh` (= the manifest names).
+  or `(name, points, counts, indices)` tuples as `meshes()` gives them (a single one is accepted too); written as
+  `<stem>.dmesh` (= the manifest names): the name's file stem as `python -m daylight` makes it, `sensor_<i>` /
+  `context_<i>` for a triple.
+- `native`: the in-process API above (`Mesh`, `Control`, `run`, `usage`, `DaylightError`); `daylight.Mesh` is
+  `native.Mesh`.
 - `write_results(stage, values, manifest, prims, out, on='faces', name='daylight', vmin=None, vmax=None)` -> written
   prim paths. `stage` = path or `Usd.Stage`; `values` `[N x C]` (1-D = one column) with rows per `manifest['meshes']`,
   `prims` the sensor prim paths in that order; `out` (.usda/.usdc) is created / overwritten with `subLayerPaths =
@@ -98,4 +157,5 @@ prim when `faceVertexCounts` / `faceVertexIndices` are inconsistent or out of ra
 OBJ contract of the core (`to_obj`, interop only): world metres, Z-up, right-handed (counter-clockwise = front)
 winding, one `o` group per mesh, 1-based global vertex indices.
 
-Core executable: `DAYLIGHT_EXE` if set, else `<repo>/build/RelWithDebInfo/daylight.exe`.
+Core executables: `DAYLIGHT_EXE` / `VIEWS_EXE` if set, else `<repo>/build/RelWithDebInfo/daylight.exe` /
+`views.exe` (`core.find_exe(tool)`).

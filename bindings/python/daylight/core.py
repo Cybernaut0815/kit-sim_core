@@ -1,7 +1,8 @@
 # SPDX-License-Identifier: Apache-2.0 AND LicenseRef-Commons-Clause-1.0
-"""Run the daylight CLI (daylight.exe) on mesh files or raw arrays (.dmesh) and load its values + manifest."""
+"""Run the core's CLIs (daylight.exe, views.exe) on mesh files or raw arrays (.dmesh) and load values + manifest."""
 import json
 import os
+import re
 import struct
 import subprocess
 import tempfile
@@ -9,22 +10,34 @@ from pathlib import Path
 
 import numpy as np
 
+REPO = Path(__file__).resolve().parents[3]
+TOOLS = ('daylight', 'views')                                    # index = the C ABI's tool id (DL_DAYLIGHT, DL_VIEWS)
 
-def find_exe():
-    return os.environ.get('DAYLIGHT_EXE') or str(Path(__file__).resolve().parents[3] / 'build' / 'RelWithDebInfo' / 'daylight.exe')
+
+def _tool(tool):
+    """The tool's C ABI id; ValueError unless 'daylight' or 'views'."""
+    if tool not in TOOLS:
+        raise ValueError(f"tool {tool!r}: 'daylight' or 'views'")
+    return TOOLS.index(tool)
+
+
+def find_exe(tool='daylight'):
+    """DAYLIGHT_EXE / VIEWS_EXE if set, else <repo>/build/RelWithDebInfo/<tool>.exe."""
+    _tool(tool)
+    return os.environ.get(f'{tool.upper()}_EXE') or str(REPO / 'build' / 'RelWithDebInfo' / f'{tool}.exe')
 
 
 def _paths(p):
     return [] if p is None else [str(p)] if isinstance(p, (str, os.PathLike)) else [str(q) for q in p]
 
 
-def run(sensors, context=(), epw=None, args=(), out=None):
+def run(sensors, context=(), epw=None, args=(), out=None, tool='daylight'):
     """`sensors` / `context`: a mesh file (.obj / .dmesh) or an iterable of them; sensors are analysed and block,
-    context blocks only. -> (values [N x C] float64, manifest dict). `args` are further core flags; `out` keeps the
-    value file (`.npy` = binary, default; any other suffix = text)."""
+    context blocks only. -> (values [N x C] float64, manifest dict). `args` are further flags of `tool` ('daylight' or
+    'views'; `epw` is daylight's); `out` keeps the value file (`.npy` = binary, default; any other suffix = text)."""
     with tempfile.TemporaryDirectory() as d:
         out = Path(out or Path(d) / 'values.npy')
-        cmd = [find_exe(), *_paths(sensors)] + [a for c in _paths(context) for a in ('--context', c)] \
+        cmd = [find_exe(tool), *_paths(sensors)] + [a for c in _paths(context) for a in ('--context', c)] \
             + (['--epw', str(epw)] if epw else []) + list(args) + ['--out', str(out)]
         subprocess.run(cmd, check=True)
         values = np.load(out) if out.suffix == '.npy' else np.loadtxt(out, ndmin=2)
@@ -64,19 +77,38 @@ def to_dmesh(points, counts, indices, path):
             a.tofile(f)
 
 
-def _triples(ms):
+def _stem(name, used):
+    """File stem of a mesh name: [^A-Za-z0-9._-] -> '_', leading '_' stripped, made unique with _2, _3 ... against
+    `used` (lower-case stems, updated: NTFS file names are case-insensitive)."""
+    stem = base = re.sub('[^A-Za-z0-9._-]', '_', name).lstrip('_')
+    k = 1
+    while stem.lower() in used:
+        k += 1
+        stem = f'{base}_{k}'
+    used.add(stem.lower())
+    return stem
+
+
+def _named(ms):
+    """-> [(name or None, points, counts, indices)] from one mesh or an iterable of them, each a (points, counts,
+    indices) triple or a (name, points, counts, indices) tuple as usd.meshes() gives."""
     ms = list(ms)
-    return [tuple(ms)] if len(ms) == 3 and np.ndim(ms[0][0]) == 1 else ms       # one (points, counts, indices)?
+    if ms and (isinstance(ms[0], str) or (len(ms) == 3 and np.ndim(ms[0][0]) == 1)):   # a single mesh?
+        ms = [ms]
+    return [tuple(m) if len(m) == 4 else (None, *m) for m in ms]
 
 
 def run_meshes(sensors, context=(), **kw):
     """Raw arrays: `sensors` / `context` are iterables of (points [N,3] world metres Z-up, counts [F], 0-based flat
-    indices) triples (a single triple is accepted too). Written as sensor_<i>.dmesh / context_<i>.dmesh and passed
-    to `run(**kw)`; manifest mesh names are those stems."""
+    indices) triples or (name, points, counts, indices) tuples as usd.meshes() gives (a single one is accepted too).
+    Written as <stem>.dmesh and passed to `run(**kw)`; the stems name the meshes in the manifest and in flags such as
+    views' --target NAME=GROUP: a name made a file stem as python -m daylight does ('/World/lake' -> 'World_lake'),
+    sensor_<i> / context_<i> for a triple."""
     with tempfile.TemporaryDirectory() as d:
-        files = []
-        for kind, ms in ('sensor', _triples(sensors)), ('context', _triples(context)):
-            files.append([Path(d) / f'{kind}_{i}.dmesh' for i in range(len(ms))])
-            for f, m in zip(files[-1], ms):
-                to_dmesh(*m, f)
+        files, used = [], set()
+        for kind, ms in ('sensor', _named(sensors)), ('context', _named(context)):
+            files.append([])
+            for i, (name, *arrays) in enumerate(ms):
+                files[-1].append(Path(d) / f'{_stem(name or f"{kind}_{i}", used)}.dmesh')
+                to_dmesh(*arrays, files[-1][-1])
         return run(*files, **kw)

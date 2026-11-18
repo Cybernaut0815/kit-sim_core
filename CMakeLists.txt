@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.27)
-project(daylight LANGUAGES CXX CUDA)
+project(daylight LANGUAGES C CXX CUDA)   # C: tests/c_abi.c
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -63,6 +63,16 @@ target_compile_definitions(views_cli PRIVATE VIEWS_CLI _CRT_SECURE_NO_WARNINGS N
 target_compile_options(views_cli PRIVATE ${CXX_WARN})
 target_link_options(views_cli PRIVATE /NODEFAULTLIB:libcmt)
 
+# The C ABI (src/daylight_c.h, docs/c-abi.md): daylight_c.dll beside the exes, what the C#, Python and Node bindings
+# load; named so it never collides with a managed Daylight.dll. The static core inside, as in the exes (gpu.cu's OptiX
+# function table once in this module, cudart_static, /MD).
+add_library(daylight_c SHARED src/c_api.cpp)
+target_link_libraries(daylight_c PRIVATE daylightcore)
+target_include_directories(daylight_c INTERFACE src)
+target_compile_definitions(daylight_c PRIVATE DAYLIGHT_C_BUILD _CRT_SECURE_NO_WARNINGS NOMINMAX)
+target_compile_options(daylight_c PRIVATE ${CXX_WARN})
+target_link_options(daylight_c PRIVATE /NODEFAULTLIB:libcmt)
+
 file(GLOB CHECK_SRC CONFIGURE_DEPENDS tests/check*.cpp)
 add_executable(check ${CHECK_SRC})
 target_link_libraries(check PRIVATE daylightcore)
@@ -82,6 +92,15 @@ add_test(NAME views_smoke COMMAND views_cli "${CMAKE_CURRENT_SOURCE_DIR}/tests/b
          --out "${CMAKE_CURRENT_BINARY_DIR}/views_smoke.txt")
 add_test(NAME views_smoke_npy COMMAND views_cli "${CMAKE_CURRENT_SOURCE_DIR}/tests/box.obj" --fov 360 --offset 1.6 --sides both
          --dump-rays "${CMAKE_CURRENT_BINARY_DIR}/views_rays.npy" --out "${CMAKE_CURRENT_BINARY_DIR}/views_smoke.npy")
+# The C ABI from plain C through the DLL (a static core here would be tested instead), against the two .npy smokes.
+# Named c_abi.c, not check*.cpp: the glob above would pull it into check.
+add_executable(c_abi tests/c_abi.c)
+target_link_libraries(c_abi PRIVATE daylight_c)
+target_compile_definitions(c_abi PRIVATE _CRT_SECURE_NO_WARNINGS)
+target_compile_options(c_abi PRIVATE /W4 /WX /utf-8)
+add_test(NAME c_abi COMMAND c_abi "${CMAKE_CURRENT_SOURCE_DIR}/tests" "${CMAKE_CURRENT_BINARY_DIR}")
+set_tests_properties(cli_smoke_npy views_smoke_npy PROPERTIES FIXTURES_SETUP cli_npy)
+set_tests_properties(c_abi PROPERTIES FIXTURES_REQUIRED cli_npy TIMEOUT 300)
 
 option(DAYLIGHT_USD "USD input for the CLI via bindings/cpp (fetches LightUSD)" OFF)
 if(DAYLIGHT_USD)

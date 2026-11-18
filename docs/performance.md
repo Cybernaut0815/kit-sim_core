@@ -119,6 +119,27 @@ but a 4.9-5.1 s trace (0.72-0.75 G rays/s) and a 6.45-6.7 s run; the reduce, rea
 ~8-11 ms slower: 31,920 facade quads in a 244k-triangle street grid 159 -> 41 ms trace, 13 -> 21 ms reduce; 40k facade
 quads, 80k triangles 119 -> 32 ms, 15 -> 26 ms; an empty scene 114 -> 17 ms (interleaved best of 3-5, `-v`).
 
+## In-process vs CLI
+
+Wall time per run from Python on the RTX 2060 (2026-11-18, `feature/bindings`), the same meshes and flags: the process
+runner (`daylight.run_meshes`: writes the `.dmesh` files, starts the exe, reads its `.npy`) against the C ABI
+(`daylight.native.run` on `daylight_c.dll`, [c-abi.md](c-abi.md)), each mode in a fresh Python process, interleaved,
+2 x 4 runs per row, medians. The values were identical in both modes.
+
+| scene | flags | CLI per run | in-process, first run | in-process, next runs |
+|---|---|---|---|---|
+| 4 ground quads + a box | daylight sun hours, June 21 hourly | 0.70 s | 0.40 s | 0.9 ms |
+| the same | views `--fov 360 --offset 1.6` | 0.61 s | 0.36 s | 1.0 ms |
+| 10 x 10 blocks, 206,480 facade quads (1 m), roofs, ground | daylight sun hours, June 21 hourly | 0.92 s | 0.62 s | 103 ms |
+| the same | views `--fov 120` (3,600 rays per quad, 743 M rays) | 1.31 s | 0.94 s | 504 ms |
+
+A CLI run pays about 0.5 s before tracing: the process, the CUDA context and OptiX pipeline, writing and reading the
+files, triangulating and building the scene. In-process the first run pays the GPU start once (about 0.35 s); later
+runs over the same `Mesh` objects reuse the resident scene (no triangulation, upload or GAS build), so what is left is
+the run itself: about 1 ms for a small model, the sky and reduce work for the daylight city, mostly the 0.29 s trace
+for the views city. Creating the meshes in-process took 5-11 ms. One large run gains little; repeated runs over the
+same model (parameter studies, Grasshopper sliders, notebooks, a server) gain the most.
+
 ## Other GPUs
 
 The numbers above are an RTX 2060 (Turing, compute capability 7.5). The same exe runs on any NVIDIA GPU of 7.5 or newer

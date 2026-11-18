@@ -81,6 +81,9 @@ size_t triangulate_into(const Mesh& m, const double c[3], float3* v, uint3* tri,
 // Global slots: every mesh in input order takes slot_count(m) = max face slot + 1 (1 without slots); mesh base = the sum
 // over the meshes before it.
 size_t slot_count(const Mesh& m);
+// The .dmesh array rules (daylight.h) on m: faces of 3 or more vertices, sum(counts) = indices, indices within the
+// points; err starts with label. read_dmesh and the C ABI's dl_mesh_create share them.
+bool mesh_ok(const Mesh& m, const std::string& label, std::string& err);
 // Optics rows within range (0..1, rho + tau <= 1; glass rho 0, 0 < tau <= 0.918), --bounces 0..20, --bounce-samples
 // 64..65536 and the mode rules (ladybug: no transmission, no bounces). False + err naming the first bad row or flag.
 bool optics_ok(const Options& opt, std::string& err);

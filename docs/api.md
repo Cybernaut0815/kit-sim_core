@@ -1,6 +1,7 @@
 # Library and bindings
 
-In-process use from C++, and the Python / TypeScript bindings that drive the CLI. CLI flags: [cli.md](cli.md).
+In-process use from C++; the C ABI `daylight_c.dll` ([c-abi.md](c-abi.md)); the C#, Python and TypeScript /
+JavaScript bindings, which run both tools in-process through the C ABI or drive the CLIs. CLI flags: [cli.md](cli.md).
 
 ## C++
 
@@ -108,10 +109,42 @@ so (built under other names, or the name now on another mesh), which rebuilds it
 its `dumpPath` files. `src/cli.h` (`daylight::views::cli::parse` / `manifest_json` / `kUsage`)
 exposes the views CLI's flag parsing and manifest for front ends that accept its flags verbatim.
 
+## C# (.NET)
+
+`bindings/csharp` (netstandard2.0, no package dependencies: .NET 8/9, .NET Framework 4.8 hosts such as Rhino 6 /
+Grasshopper, Unity): `Mesh.Create` / `Mesh.Load`, `Core.Run` / `Core.RunAsync` with the CLI's flags for either tool,
+`Result` (columns, row-major values, `Column(name)`, the manifest, mesh ranges, `SceneReused`), `RunControl` (cancel,
+progress), `DaylightException` (`Status` = the CLI's exit code). `Daylight.dll` loads `daylight_c.dll` from
+`DAYLIGHT_DLL` or its own folder. See [bindings/csharp/README.md](../bindings/csharp/README.md).
+
+```csharp
+using Daylight;
+using (Mesh roof = Mesh.Create("roof", new double[] { 0,0,3, 10,0,3, 10,8,3, 0,8,3 }, new[] { 4 }, new[] { 0, 1, 2, 3 }))
+using (Mesh city = Mesh.Load("city.obj")) {
+    Result r = Core.Run(Tool.Daylight, new[] { "--epw", "site.epw", "--quantity", "radiation,sunhours" }, new[] { roof }, new[] { city });
+    double[] radiation = r.Column("radiation_front");
+    Result v = Core.Run(Tool.Views, new[] { "--fov", "360" }, new[] { roof }, new[] { city });   // v.SceneReused: true
+}
+```
+
 ## Python
 
-`run_meshes` takes `(points, counts, indices)` triples (numpy or lists), writes `.dmesh` files, runs the
-CLI and loads its `.npy` output; `meshes` / `split` turn a composed USD stage (`usd-core`) into the same flat arrays;
+In-process (`daylight.native`, through `daylight_c.dll`): `Mesh(name, points, counts, indices)` / `Mesh.load(path)`
+and `native.run(tool, args, sensors, context=(), control=None)` -> `Result(values [N x C], manifest, stats)`; runs
+over the same `Mesh` objects reuse the GPU scene, and each run releases the GIL (a `Control` cancels it or reads its
+progress from another thread).
+
+```python
+from daylight import Mesh, native
+with Mesh('roof', P, [4], [0, 1, 2, 3]) as roof, Mesh.load('city.obj') as city:
+    r = native.run('daylight', ['--epw', 'site.epw', '--quantity', 'radiation,sunhours'], roof, context=city)
+    v = native.run('views', ['--fov', '360', '--target', 'lake=water'], roof, context=city)
+print(r.manifest['columns'], r.values, v.stats['scene_reused'])
+```
+
+Through the CLI: `run_meshes` takes `(points, counts, indices)` triples or named `(name, points, counts, indices)`
+meshes (numpy or lists; names for `--target`, `--optics`, `--no-occlude`), writes `.dmesh` files, runs the CLI
+(`tool='views'` for views.exe) and loads its `.npy` output; `meshes` / `split` turn a composed USD stage (`usd-core`) into the same flat arrays;
 `write_results` puts the values back on the stage as primvars (see [results-on-meshes.md](results-on-meshes.md)).
 
 ```python
@@ -130,7 +163,19 @@ daylight.write_results('scene.usd', values, manifest, [m[0] for m in sens], 'day
 python -m daylight scene.usd --sensors /World/Bldg -o out --write-usd out/daylight.usda -- --epw site.epw   # USD in, USD out
 ```
 
-## TypeScript
+## TypeScript and JavaScript
+
+One package, `daylight-mesh` (`bindings/ts`): the TypeScript sources in `src/`, compiled ES modules with type
+declarations in `lib/`, so plain JavaScript imports the same entries (Node, bundlers; a browser needs
+`@gltf-transform/core` resolvable, e.g. an import map). `daylight-mesh/native` (Node only, koffi) runs both tools
+in-process through `daylight_c.dll` on a worker thread, so the event loop stays free:
+
+```ts
+import { Mesh, run } from 'daylight-mesh/native';
+const sensors = fromThree([scene]).map(Mesh.fromObj), context = [Mesh.load('city.obj')];
+const r = await run('daylight', ['--epw', 'site.epw'], { sensors, context });              // r.data: a Float64Array per column
+const v = await run('views', ['--fov', '360'], { sensors, context }, { signal, onProgress }); // v.stats.sceneReused: true
+```
 
 `fromThree` / `fromGLB` produce meshes in the core frame (Y-up to Z-up, mirrored transforms
 unflipped); `run` (Node) writes `.dmesh` files, runs the CLI and reads its `.npy`; `applyToThree` colours the mesh.
@@ -152,8 +197,14 @@ console.log(remote.columns[0], remote.data[0]);                      // the same
 
 ## Bindings overview
 
-Each binding lives in its own folder with its own tests and README; none changes the core.
+Each binding lives in its own folder with its own tests and README; none changes the core. In-process, every binding
+loads the C ABI ([c-abi.md](c-abi.md)): the CLIs' flags, the values bit for bit the CLI's, resident scenes over reused
+meshes; browsers use the HTTP server (CUDA cannot run in a browser).
 
+- **C ABI** (`src/daylight_c.h`, `daylight_c.dll`, ctest `c_abi`): mesh handles, `dl_run(tool, flags, sensors,
+  context)`, results, cancel / progress. See [c-abi.md](c-abi.md).
+- **C#** (`bindings/csharp`, netstandard2.0): `Mesh`, `Core.Run` / `RunAsync`, `Result`, `RunControl`; check
+  program on net9.0 and net48. See [bindings/csharp/README.md](../bindings/csharp/README.md).
 - **Python + USD** (`bindings/python`, uv project, `usd-core`): `run_meshes` / `to_dmesh` for raw arrays,
   `meshes` / `split` for a composed stage (instancing, visibility, purpose, leftHanded, mirrored transforms,
   metersPerUnit, up axis; all vectorised, flat arrays out), `write_results` / `colormap` for results on the stage,
@@ -162,6 +213,8 @@ Each binding lives in its own folder with its own tests and README; none changes
 - **C++ + USD** (`bindings/cpp`, LightUSD): the `daylight_usd` library (`read_usd(path, upAxis, metersPerUnit,
   meshes, err)`) and its `check_usd` test; with `-DDAYLIGHT_USD=ON` the CLI reads `.usd*` directly. See
   [bindings/cpp/README.md](../bindings/cpp/README.md).
-- **TypeScript + glTF / three.js** (`bindings/ts`, npm package `daylight-mesh`): `fromThree` / `fromGLB` into the
-  core frame, `toDmesh` / `toObj` writers, `run(exe, {sensors, context, args})` drives the CLI from Node and reads
-  its `.npy`, `applyToThree` / `colormap` for display. See [bindings/ts/README.md](../bindings/ts/README.md).
+- **TypeScript / JavaScript + glTF / three.js** (`bindings/ts`, npm package `daylight-mesh`, compiled JS in `lib/`):
+  `fromThree` / `fromGLB` into the core frame, `toDmesh` / `toObj` writers, `run(exe, {sensors, context, args})`
+  drives either CLI from Node and reads its `.npy`, `daylight-mesh/native` runs both tools in-process (Node),
+  `runRemote` runs daylight on the web app's server (browsers), `applyToThree` / `colormap` for display. See
+  [bindings/ts/README.md](../bindings/ts/README.md).

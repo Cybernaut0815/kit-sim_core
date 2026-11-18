@@ -1,6 +1,21 @@
-# daylight-mesh (TypeScript binding)
+# daylight-mesh (TypeScript and JavaScript binding)
 
-Turns three.js scenes or `.glb` files into the raw `.dmesh` arrays (or OBJ) the daylight core CLI reads, and (Node only) runs the core.
+Turns three.js scenes or `.glb` files into the raw `.dmesh` arrays (or OBJ) the daylight core reads, and runs the core:
+from Node through `daylight.exe` / `views.exe` (`run`) or in-process through `daylight_c.dll` (`daylight-mesh/native`),
+from a browser through a `daylight_server` (`runRemote`; a browser cannot run the GPU).
+
+One package for TypeScript and plain JavaScript: `src/*.ts` compiles (`npm run build`) to the committed `lib/*.js` with
+`lib/*.d.ts` beside them, and `package.json` `exports` points `daylight-mesh` at `lib/index.js` and `daylight-mesh/native`
+at `lib/native.js` (ES modules). Node and bundlers import them as they are; a browser without a bundler needs
+`@gltf-transform/core` resolvable, e.g. an import map:
+
+```html
+<script type="importmap">{ "imports": { "@gltf-transform/core": "https://esm.sh/@gltf-transform/core@4" } }</script>
+<script type="module">import { fromThree, runRemote } from './node_modules/daylight-mesh/lib/index.js';</script>
+```
+
+(`three` is imported lazily, by `applyToThree` only.) The web app imports `src/index.ts` directly; it stays browser-safe
+and never imports `native`.
 
 Node (three.js scene -> values):
 
@@ -21,6 +36,37 @@ import fs from 'node:fs/promises';
 const sensors = await fromGLB(await fs.readFile('a.glb'));            // { scale } multiplies metres
 const context = await fromGLB(await fs.readFile('city.glb'));
 const { data } = await run('daylight.exe', { sensors, context, args: ['--epw', 'x.epw', '--quantity', 'radiation'] });
+```
+
+Views (`views.exe`, [docs/views.md](../../docs/views.md)): the same runner, another exe and its flags. Mesh names reach
+the core as `dmeshStems(names)` (sanitised to `[A-Za-z0-9._-]`, unique), so `--target`, `--optics` and `--no-occlude`
+name them so:
+
+```ts
+import { dmeshStems, fromGLB, run } from 'daylight-mesh';
+import fs from 'node:fs/promises';
+
+const sensors = await fromGLB(await fs.readFile('facades.glb')), context = await fromGLB(await fs.readFile('city.glb'));
+const stems = dmeshStems([...sensors, ...context].map((m) => m.name)); // the core's names: 'park/lawn' -> 'park_lawn'
+const lawn = stems[sensors.length + context.findIndex((m) => m.name === 'park/lawn')];
+const { data, columns } = await run('views.exe', { sensors, context, args: ['--fov', '360', '--target', `${lawn}=green`] });
+// columns: sky_front, ground_front, obstruction_front, green_front, distance_front, ... (docs/views.md)
+```
+
+In-process (Node only, `daylight-mesh/native`): `daylight_c.dll` runs both tools in this process, so there are no files
+and no process start, the GPU context lives as long as the process, and runs over the same mesh handles keep their
+scene on the GPU ([docs/c-abi.md](../../docs/c-abi.md)). Needs `koffi` 3 (an optional peer dependency:
+`npm install koffi`) and the DLL: `init(path)`, else env `DAYLIGHT_DLL`, else `<repo>/build/RelWithDebInfo/daylight_c.dll`.
+
+```ts
+import { fromThree } from 'daylight-mesh';
+import { Mesh, run } from 'daylight-mesh/native';
+
+const sensors = fromThree([scene]).map(Mesh.fromObj);                // copied once; names as given (Mesh.names)
+const ctrl = new AbortController();
+const r = await run('views', ['--fov', '360'], { sensors }, { signal: ctrl.signal, onProgress: (p) => bar(p) });
+const again = await run('daylight', ['--epw', 'x.epw', '--quantity', 'radiation'], { sensors }); // same scene, stats.sceneReused
+for (const m of sensors) m.free();                                   // else freed when garbage collected
 ```
 
 Browser (or Node) against a `daylight_server` (the GPU box runs the core in-process; meshes go up once under their
@@ -71,11 +117,12 @@ await applyToThree(mesh, data[col].subarray(first, first + count)); // one value
   SHA-256 hex of its `.dmesh` bytes (8 bodies at a time; a named mesh's name folded in, since the server keeps one name
   per id); a context id equal to a sensor's is salted (`sha256(id \0 ctx)`: the server refuses a mesh in both roles).
 - `toObj(meshes)`: one `o` group per mesh, 1-based global indices; throws on bad indices (interop with other OBJ tools).
-- `run(exe, { sensors, context?, args })`: temp dir, `exe <sensors...> [--context <file>]... ...args --out out.npy`,
-  returns `{ data: Float64Array[] (one per column: data[c][element] for columns[c]), columns, manifest }`; rejects
-  with the core's stderr.
+- `run(exe, { sensors, context?, args })`: `exe` is `daylight.exe` or `views.exe`; temp dir,
+  `exe <sensors...> [--context <file>]... ...args --out out.npy`, returns `{ data: Float64Array[] (one per column:
+  data[c][element] for columns[c]), columns, manifest }`; rejects with the core's stderr.
   `sensors`/`context` accept `ObjMesh[]` (written as one `<name>.dmesh` per mesh, name sanitised to `[A-Za-z0-9._-]`
-  and made unique; the manifest's mesh names are the file stems) or OBJ text (written as one `.obj`).
+  and made unique: `dmeshStems` of the sensors' then the context's names, which `--target`, `--optics` and
+  `--no-occlude` must use; the manifest's mesh names are the file stems) or OBJ text (written as one `.obj`).
   Needs Node >= 20 and the GPU build of the core.
 - `runRemote(url, { sensors, context?, epw?, args?, signal?, clientId?, onStatus?, onUpload? })`: `sensors`/`context`
   are `ObjMesh`es or `{ id?, name?, dmesh: () => bytes }` (bodies built on demand). Submits a job (`POST url/jobs`)
@@ -100,6 +147,38 @@ await applyToThree(mesh, data[col].subarray(first, first + count)); // one value
 - `parseValues(text)`: parses a core `--out FILE` text file into columns the same way.
 
 Browser bundles use `toDmesh`, `toObj`, `fromThree`, `fromGLB`, `colormap`, `applyToThree`, `meshIds`, `runRemote` (`meshIds` needs `crypto.subtle`: a secure context such as localhost or https); `run` imports Node builtins lazily and must stay on Node.
+
+### `daylight-mesh/native` (Node only)
+
+`daylight_c.dll` through [koffi](https://koffi.dev) 3 (pointers are `BigInt`; `int64` arguments take numbers, `int64`
+results come back as numbers, `BigInt` only beyond 2^53; strings UTF-8). Windows x64, the NVIDIA driver and the
+Visual C++ runtime ([docs/c-abi.md](../../docs/c-abi.md#loading-the-dll)).
+
+- `init(dll?)`: loads the DLL once per process: `dll`, else env `DAYLIGHT_DLL`, else
+  `<repo>/build/RelWithDebInfo/daylight_c.dll` (found from `src/` or `lib/`); the calls below call it without a path.
+  Throws when it does not load (a missing file: `no such file`), has another ABI version, or another path is loaded
+  already. Kept loaded while Node runs (koffi frees it as Node exits).
+- `usage(tool)`: `'daylight' | 'views'` -> the CLI's `-h` text.
+- `Mesh.create(name, positions, counts, indices, slots?)`: the `.dmesh` arrays (xyz, vertices per face >= 3, 0-based
+  indices, a slot per face), copied; `Mesh.fromObj(objMesh)`: triangles (counts all 3), its `name` and `slots` as they
+  are (not through `dmeshStems`); `Mesh.load(path)`: a `.obj` (a mesh per group) or `.dmesh`, as the CLI reads it
+  (ASCII paths). `mesh.names`: what `--target`, `--optics`, `--no-occlude` and the manifest call its meshes.
+  `mesh.free()` frees it now (throws while a run uses it); else a `FinalizationRegistry` frees it when collected.
+  These throw an `Error` with the core's message (`bad: vertex index out of range`, `cannot open`, ...).
+- `run(tool, args, { sensors, context? }, { signal?, onProgress? })`: the CLI's flags without the program name (no mesh
+  paths, `--context`, `--out`, `--bench`, `-h`; paths in flags, such as `--epw`, ASCII as for `Mesh.load`), handles in
+  place of its mesh arguments and `--context` files. Resolves
+  `{ data: Float64Array[] (columns, as run(exe)), columns, manifest, manifestText (FILE.json, LF), stats: { sceneReused,
+  prepMs, skyMs, buildMs, traceMs, reduceMs, bounceMs, rays, launches, gasBytes } }`, values and manifest bit for bit
+  the CLI's. Runs over the same handles in the same roles and order keep the scene on the GPU (`sceneReused`); daylight
+  and views share it. Rejects with a `DaylightError` (`status` 1 usage, 2 runtime, the CLI's message). Aborting
+  `signal` cancels the run at its next check (rejects 2 `cancelled`); `onProgress(p)` sees the share of sensors traced,
+  polled every 100 ms and at the end (1).
+
+Runs go one at a time on one worker thread that this module starts (unref'd while idle), so the event loop stays free
+during the GPU work. The run and `dl_last_error` must share a thread (the message is per thread), which koffi's
+`.async` (libuv's pool) does not guarantee; the worker gets the handles as `BigInt` addresses. The worker runs this
+module's own file (`import.meta.url`), so keep `daylight-mesh/native` out of bundles (mark it and `koffi` external).
 
 ## Performance (2M triangles, RTX 2060)
 
@@ -135,6 +214,13 @@ offset 32  float64   xyz[3 * n_points]      world metres, Z-up
 The core rejects other flag bits and a short slot block ([docs/input.md](../../docs/input.md)).
 
 ```sh
-npm install && npm run build && npm test
-DAYLIGHT_EXE=../../build/RelWithDebInfo/daylight.exe npm test    # also runs the box through the core via .dmesh (12 rows)
+npm install && npm run build && npm test     # build: src -> lib (committed; test/lib.test.ts fails when lib is stale)
+B=../../build/RelWithDebInfo
+DAYLIGHT_EXE=$B/daylight.exe VIEWS_EXE=$B/views.exe DAYLIGHT_DLL=$B/daylight_c.dll npm test
 ```
+
+`DAYLIGHT_EXE` runs the box through `daylight.exe` via `.dmesh` (12 rows); `DAYLIGHT_DLL` (or the default build) runs
+test/native.test.ts, the cases of the C test (`tests/c_abi.c`): both tools on `tests/box.obj` equal to the CLI smokes
+`build/smoke.npy` and `build/views_smoke.npy` (ctest writes them) byte for byte, resident scenes, cancel, progress;
+`VIEWS_EXE` also compares `run('views.exe')` with the in-process run. Tests from `src/` start the run thread from
+`src/native.ts`: Node >= 22.18 (type stripping); `lib/` needs Node >= 20.

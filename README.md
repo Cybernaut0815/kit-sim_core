@@ -1,19 +1,28 @@
-# daylight
+# kit-sim_core
 
-GPU annual daylight / solar simulation for meshes. Generic face-vertex meshes in, one value list per element out (per
-face or per vertex, input order). Ray casting on NVIDIA RT cores via OptiX 9; sky model is a port of Radiance
-`gendaymtx` (Perez all-weather); results validated against Ladybug Tools, Radiance and pvlib.
+GPU simulation core for meshes: two tools on one library (`daylightcore`: mesh readers, sensors, mesh roles, the OptiX
+pipeline and the resident scenes). `daylight.exe` is annual daylight / solar simulation, the tool this page describes.
+`views.exe` is view analysis from the same meshes: which share of a field of view ends on sky, ground, obstructions or
+target groups, and how far each face sees ([Views](#views), [docs/views.md](docs/views.md)).
 
-The repository holds two tools on one core library (`daylightcore`: mesh readers, sensors, mesh roles, the OptiX
-pipeline and the resident scenes): `daylight.exe`, the simulation this page describes, and `views.exe`, view analysis
-from the same meshes: which share of a field of view ends on sky, ground, obstructions or target groups, and how far
-each face sees ([Views](#views), [docs/views.md](docs/views.md)).
+daylight: generic face-vertex meshes in, one value list per element out (per face or per vertex, input order). Ray
+casting on NVIDIA RT cores via OptiX 9; sky model is a port of Radiance `gendaymtx` (Perez all-weather); results
+validated against Ladybug Tools, Radiance and pvlib.
 
-The core is a format-agnostic CLI (and a C++ library) that takes raw vertex / face-vertex-index arrays: `.dmesh`
-files (one `fread`, no library semantics) are the native input, `.obj` is text interop, `.usd*` is interop when the
-CLI is built with `-DDAYLIGHT_USD=ON`. USD, glTF and three.js scenes otherwise go through the bindings
-(`bindings/python`, `bindings/cpp`, `bindings/ts`), which write `.dmesh`, call the C++ API in-process, and put the
-results back onto the meshes (USD primvars, three.js vertex colours).
+Ways in, all with raw vertex / face-vertex-index arrays:
+
+- **CLIs**: `.dmesh` files (one `fread`, no library semantics) are the native input, `.obj` is text interop, `.usd*`
+  is interop when built with `-DDAYLIGHT_USD=ON`.
+- **C++ library** (`daylight.h`, `views.h`).
+- **C ABI** `daylight_c.dll` ([docs/c-abi.md](docs/c-abi.md)). The bindings load it to run both tools in-process from
+  **C#** (`bindings/csharp`: .NET, Rhino / Grasshopper, Unity), **Python** (`bindings/python`, also USD in and out)
+  and **Node** (`bindings/ts`, TypeScript and plain JavaScript, also three.js / glTF). In-process runs skip the
+  process start, the GPU start and the files, and keep the scene of reused meshes on the GPU
+  ([docs/performance.md](docs/performance.md#in-process-vs-cli)).
+- **Browsers** through the web app's HTTP server (`runRemote` in `bindings/ts`): CUDA cannot run in a browser.
+
+The bindings also drive the CLIs as processes and put results back onto the meshes (USD primvars, three.js vertex
+colours).
 
 ```
 daylight roof.obj --context city.obj --epw site.epw --out rad.txt                      # annual kWh/m2 per face
@@ -75,8 +84,32 @@ const { values, columns } = await run('build/RelWithDebInfo/daylight.exe', { sen
 await applyToThree(roofMesh, values.map((v) => v[0]));               // viridis vertex colours
 ```
 
+**In-process** (`daylight_c.dll`; the same flags, values bit for bit the CLI's; runs over the same meshes reuse their
+GPU scene). Python, Node and C#:
+
+```python
+from daylight import Mesh, native
+with Mesh('grid', P, C, I) as grid, Mesh.load('site.obj') as site:
+    r = native.run('daylight', ['--epw', 'site.epw', '--quantity', 'radiation'], grid, context=site)
+    v = native.run('views', ['--fov', '360', '--offset', '1.6'], grid, context=site)   # v.stats['scene_reused']: True
+```
+
+```ts
+import { Mesh, run } from 'daylight-mesh/native';                     // Node; plain JavaScript imports the same
+const sensors = [Mesh.load('facade.obj')], context = [Mesh.load('city.obj')];
+const r = await run('views', ['--target', 'lake=water'], { sensors, context }, { onProgress: (p) => console.log(p) });
+```
+
+```csharp
+using Daylight;
+using (Mesh facade = Mesh.Load("facade.obj"), city = Mesh.Load("city.obj")) {
+    Result r = Core.Run(Tool.Views, new[] { "--fov", "120" }, new[] { facade }, new[] { city });
+    double[] sky = r.Column("sky_front");
+}
+```
+
 USD from C++, writing results back onto meshes and the full binding APIs: [docs/api.md](docs/api.md),
-[docs/results-on-meshes.md](docs/results-on-meshes.md).
+[docs/c-abi.md](docs/c-abi.md), [docs/results-on-meshes.md](docs/results-on-meshes.md).
 
 ## Views
 
@@ -106,10 +139,11 @@ and OptiX ships in the driver. The same exe runs on every such card without a re
 [docs/performance.md](docs/performance.md#other-gpus)).
 
 ```
-cmake --preset vs2022 && cmake --build --preset release && ctest --preset release                 # build/RelWithDebInfo/daylight.exe, views.exe
+cmake --preset vs2022 && cmake --build --preset release && ctest --preset release                 # build/RelWithDebInfo/daylight.exe, views.exe, daylight_c.dll
 cmake --preset vs2022-usd && cmake --build --preset release-usd && ctest --preset release-usd     # same exes + USD input
 cd bindings/python && uv sync && uv run python -m daylight.check                                  # Python (usd-core, numpy)
-cd bindings/ts && npm install && npm run build && npm test                                        # TypeScript (vitest)
+cd bindings/ts && npm install && npm run build && npm test                                        # TypeScript + JavaScript (vitest)
+dotnet run --project bindings/csharp/check -f net9.0                                              # C# (also -f net48)
 ```
 
 The build compiles `src/trace_dev.cu` to OptiX-IR with `nvcc -optix-ir -arch=compute_75` and embeds it; the rest is
@@ -128,7 +162,8 @@ service, note that the OptiX SDK licence restricts hosted / internet use and ask
 
 - [CLI reference](docs/cli.md): every flag, exit codes, output rows / columns / manifest / units
 - [View analysis](docs/views.md): `views.exe`: field of view, ray classes, distances, roles, flags, outputs, examples
-- [Library and bindings](docs/api.md): C++ API, C++ + USD, Python, TypeScript, bindings overview
+- [Library and bindings](docs/api.md): C++ API, C++ + USD, C#, Python, TypeScript / JavaScript, bindings overview
+- [C ABI](docs/c-abi.md): `daylight_c.dll`, both tools in-process for C#, Python and Node
 - [Results on meshes](docs/results-on-meshes.md): writing values back to USD primvars, three.js colours, colormaps
 - [Input and semantics](docs/input.md): `.dmesh` / `.obj` / `.usd*` formats, sensor vs context, culling, faces vs vertices
 - [Modes and weather](docs/modes.md): `physical` vs `ladybug`, EPW vs `--clear-sky`

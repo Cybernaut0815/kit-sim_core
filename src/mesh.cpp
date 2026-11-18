@@ -430,6 +430,15 @@ bool read_obj(const std::string& path, std::vector<Mesh>& out, std::string& err)
   return true;
 }
 
+bool mesh_ok(const Mesh& m, const std::string& label, std::string& err) {
+  uint64_t sum = 0;
+  for (int c : m.counts) { if (c < 3) { err = label + ": face with fewer than 3 vertices"; return false; } sum += (uint64_t)c; }
+  if (sum != m.indices.size()) { err = label + ": sum(counts) != n_indices"; return false; }
+  const uint64_t n = m.numPoints();
+  for (int i : m.indices) if (i < 0 || (uint64_t)i >= n) { err = label + ": vertex index out of range"; return false; }
+  return true;
+}
+
 namespace {
 
 // One .dmesh image in memory -> Mesh named `name`; `label` names the source in error messages (the path for files).
@@ -452,10 +461,7 @@ bool parse_dmesh(const char* data, size_t size, const std::string& name, const s
   std::memcpy(m.counts.data(), p, 4 * h.nFaces); p += 4 * h.nFaces;
   std::memcpy(m.indices.data(), p, 4 * h.nIndices); p += 4 * h.nIndices;
   std::memcpy(m.slot.data(), p, 2 * nSlots);
-  uint64_t sum = 0;
-  for (int c : m.counts) { if (c < 3) { err = label + ": face with fewer than 3 vertices"; return false; } sum += (uint64_t)c; }
-  if (sum != h.nIndices) { err = label + ": sum(counts) != n_indices"; return false; }
-  for (int i : m.indices) if (i < 0 || (uint64_t)i >= h.nPoints) { err = label + ": vertex index out of range"; return false; }
+  if (!mesh_ok(m, label, err)) return false;
   if (h.nFaces) out.push_back(std::move(m));   // empty meshes dropped like empty OBJ groups
   return true;
 }

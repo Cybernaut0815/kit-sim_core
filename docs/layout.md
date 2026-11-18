@@ -10,9 +10,14 @@ src/views.cpp    views: field, grid + cell weights, target labels, chunk loop, c
 src/gpu.cu       OptiX host + CUDA kernels                src/trace_dev.cu  OptiX raygens (bits, bytes, bounce, view)
 src/cli.cpp      CLI flags, weather / time rules, manifests of both tools (shared with servers)
 src/main.cpp     both CLIs (format dispatch, output, --bench scenes): daylight.exe, and views.exe with VIEWS_CLI
-tests/check*.cpp assert-style checks (ctest)
-bindings/python  USD (pxr) in and out, .dmesh writer, CLI wrapper   bindings/cpp    USD reader (LightUSD) for the CLI / C++
-bindings/ts      three.js / glTF -> .dmesh, CLI wrapper, vertex colours   validate/   Python harness + ingest benchmark
+src/daylight_c.h the C ABI (daylight_c.dll)       src/c_api.cpp  its implementation: main.cpp's run over mesh handles
+tests/check*.cpp assert-style checks (ctest)      tests/c_abi.c  the C ABI from plain C through the DLL (ctest c_abi)
+bindings/python  USD (pxr) in and out, .dmesh writer, CLI wrapper, daylight.native (in-process, ctypes)
+bindings/cpp     USD reader (LightUSD) for the CLI / C++
+bindings/csharp  Daylight.dll (netstandard2.0, P/Invoke on daylight_c.dll), check/ on net9.0 + net48
+bindings/ts      three.js / glTF -> .dmesh, CLI wrapper, runRemote, vertex colours; lib/ = compiled JavaScript;
+                 src/native.ts = daylight-mesh/native (Node, koffi, in-process)
+validate/        Python harness + ingest benchmark
 ```
 
 Views ([views.md](views.md)) came in one branch, `feature/views`, with these files and functions:

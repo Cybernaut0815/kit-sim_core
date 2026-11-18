@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0 AND LicenseRef-Commons-Clause-1.0
-// CLI flag parsing, the post-parse weather / time rules and the output manifest, shared by main.cpp and the server.
+// CLI flag parsing, the post-parse weather / time rules and the output manifest, shared by main.cpp and the server;
+// daylight's, then views'.
 #include "cli.h"
 #include "internal.h"
 
@@ -32,6 +33,7 @@ const char* const kUsage =
     "  --hours HH:MM-HH:MM      with --from/--to: only these hours of every day (analysis period)\n"
     "  --sky-density 1|2|4  --patch-samples K  --ground RHO  --north DEG  --offset M  --no-self-occlude\n"
     "  --no-occlude NAME[;NAME...]  these sensor meshes are analysed but cast no shade (NAME as in --optics; repeatable)\n"
+    "  --virtual-ground on|off  ground below the horizon reflecting --ground RHO (default on; off: black, as --ground 0)\n"
     "  --optics SPEC[;SPEC...]  NAME[/SLOT]=RHO[,TAU[,glass|porous]] per mesh / face slot, * = every mesh (repeatable;\n"
     "                           default rho 0.2, tau 0)\n"
     "  --transmission off|on    light through glass / porous slots (default off: every surface opaque)\n"
@@ -94,34 +96,92 @@ bool parse_optics(const std::string& s, std::vector<Optics>& out, std::string& e
   return true;
 }
 
+// The value of the flag at argv[i] (i moves to it), else null with err = "missing value for FLAG".
+const char* value(int argc, char** argv, int& i, const char* flag, std::string& err) {
+  if (i + 1 >= argc) { err = std::string("missing value for ") + flag; return nullptr; }
+  return argv[++i];
+}
+
+// s as a JSON string: quote, backslash and control bytes escaped, other bytes as given.
+std::string json_str(const std::string& s) {
+  std::string o = "\"";
+  for (const char ch : s) {
+    if (ch == '"' || ch == '\\') o += '\\';
+    if (static_cast<unsigned char>(ch) < 0x20) { char u[8]; std::snprintf(u, sizeof u, "\\u%04x", unsigned(ch)); o += u; }
+    else o += ch;
+  }
+  return o + "\"";
+}
+
+// The manifest's "meshes" array: {name, first row, row count} per sensor mesh, in input order.
+std::string manifest_meshes(const Result& r) {
+  std::string m = "[";
+  char buf[160];
+  size_t first = 0;
+  for (size_t i = 0; i < r.ranges.size(); ++i) {
+    std::snprintf(buf, sizeof buf, ", \"first\": %zu, \"count\": %zu}", first, r.ranges[i].second);
+    m += std::string(i ? ",\n    {\"name\": " : "\n    {\"name\": ") + json_str(r.ranges[i].first) + buf;
+    first += r.ranges[i].second;
+  }
+  return m + "\n  ]";
+}
+
 }  // namespace
 
-int parse(int argc, char** argv, Args& a, std::string& err) {
-  auto need = [&](int& i, const char* flag) -> const char* {
-    if (i + 1 >= argc) { err = std::string("missing value for ") + flag; return nullptr; }
-    return argv[++i];
-  };
+int parse_common(int argc, char** argv, CommonArgs& a, RunOptions& o, std::string& err,
+                 const std::function<int(int& i, const std::string& flag)>& tool) {
+  const auto need = [&](int& i, const char* flag) { return value(argc, argv, i, flag, err); };
   for (int i = 1; i < argc; ++i) {
     std::string f = argv[i];
     const char* v = nullptr;
     if (f == "-h" || f == "--help") { a.help = true; return 0; }
-    else if (f == "-v") a.opt.verbose = true;
+    else if (f == "-v") o.verbose = true;
     else if (f == "--context") { if (!(v = need(i, "--context"))) return 1; a.context.push_back(v); }
-    else if (f == "--on") { if (!(v = need(i, "--on"))) return 1; if (!std::strcmp(v, "faces")) a.opt.onVertices = false; else if (!std::strcmp(v, "vertices")) a.opt.onVertices = true; else { err = "--on faces|vertices"; return 1; } }
-    else if (f == "--mode") { if (!(v = need(i, "--mode"))) return 1; if (!std::strcmp(v, "physical")) a.opt.mode = Mode::Physical; else if (!std::strcmp(v, "ladybug")) a.opt.mode = Mode::Ladybug; else { err = "--mode physical|ladybug"; return 1; } }
-    else if (f == "--quantity") { if (!(v = need(i, "--quantity"))) return 1; if (!parse_quantities(v, a.opt.quantities)) { err = "unknown quantity"; return 1; } }
-    else if (f == "--sides") { if (!(v = need(i, "--sides"))) return 1; if (!std::strcmp(v, "front")) a.opt.sides = Sides::Front; else if (!std::strcmp(v, "back")) a.opt.sides = Sides::Back; else if (!std::strcmp(v, "both")) a.opt.sides = Sides::Both; else { err = "--sides front|back|both"; return 1; } }
-    else if (f == "--cull-backfaces") a.opt.cullBackfaces = true;
-    else if (f == "--no-self-occlude") a.opt.selfOcclude = false;
+    else if (f == "--on") { if (!(v = need(i, "--on"))) return 1; if (!std::strcmp(v, "faces")) o.onVertices = false; else if (!std::strcmp(v, "vertices")) o.onVertices = true; else { err = "--on faces|vertices"; return 1; } }
+    else if (f == "--sides") { if (!(v = need(i, "--sides"))) return 1; if (!std::strcmp(v, "front")) o.sides = Sides::Front; else if (!std::strcmp(v, "back")) o.sides = Sides::Back; else if (!std::strcmp(v, "both")) o.sides = Sides::Both; else { err = "--sides front|back|both"; return 1; } }
+    else if (f == "--cull-backfaces") o.cullBackfaces = true;
+    else if (f == "--no-self-occlude") o.selfOcclude = false;
     else if (f == "--no-occlude") {   // NAME[;NAME...]; the names are checked by run()
       if (!(v = need(i, "--no-occlude"))) return 1;
       const std::string s = v;
       for (size_t b = 0, e; b <= s.size(); b = e + 1) {
         e = std::min(s.find(';', b), s.size());
         if (e == b) { err = "--no-occlude " + s + ": empty NAME"; return 1; }
-        a.opt.noOcclude.push_back(s.substr(b, e - b));
+        o.noOcclude.push_back(s.substr(b, e - b));
       }
     }
+    else if (f == "--north" || f == "--offset") {   // the whole token, finite (a decimal comma is no number)
+      if (!(v = need(i, f.c_str()))) return 1;
+      char* end = nullptr;
+      const double x = std::strtod(v, &end);
+      if (!*v || *end || !std::isfinite(x)) { err = f == "--north" ? "--north DEG" : "--offset M"; return 1; }
+      (f == "--north" ? o.north : o.offset) = x;
+    }
+    else if (f == "--virtual-ground") { if (!(v = need(i, "--virtual-ground"))) return 1; if (!std::strcmp(v, "on")) o.virtualGround = true; else if (!std::strcmp(v, "off")) o.virtualGround = false; else { err = "--virtual-ground on|off"; return 1; } }
+    else if (f == "--out") { if (!(v = need(i, "--out"))) return 1; a.out = v; }
+    else if (f == "--bench") {
+      a.bench = true;
+      if (i + 2 < argc && std::isdigit(static_cast<unsigned char>(argv[i + 1][0])) && std::isdigit(static_cast<unsigned char>(argv[i + 2][0]))) {
+        a.benchSens = static_cast<size_t>(std::atoll(argv[++i]));
+        a.benchTris = static_cast<size_t>(std::atoll(argv[++i]));
+      }
+    }
+    else if (f.size() > 1 && f[0] == '-' && !std::isdigit(static_cast<unsigned char>(f[1]))) {
+      const int rc = tool(i, f);
+      if (rc < 0) { err = "unknown flag " + f; return 1; }
+      if (rc) return rc;
+    }
+    else a.sensors.push_back(f);
+  }
+  return 0;
+}
+
+int parse(int argc, char** argv, Args& a, std::string& err) {
+  const auto need = [&](int& i, const char* flag) { return value(argc, argv, i, flag, err); };
+  const int rc = parse_common(argc, argv, a, a.opt, err, [&](int& i, const std::string& f) {
+    const char* v = nullptr;
+    if (f == "--mode") { if (!(v = need(i, "--mode"))) return 1; if (!std::strcmp(v, "physical")) a.opt.mode = Mode::Physical; else if (!std::strcmp(v, "ladybug")) a.opt.mode = Mode::Ladybug; else { err = "--mode physical|ladybug"; return 1; } }
+    else if (f == "--quantity") { if (!(v = need(i, "--quantity"))) return 1; if (!parse_quantities(v, a.opt.quantities)) { err = "unknown quantity"; return 1; } }
     else if (f == "--epw") { if (!(v = need(i, "--epw"))) return 1; a.epw = v; }
     else if (f == "--clear-sky") a.clearSky = true;
     else if (f == "--turbidity") { if (!(v = need(i, "--turbidity"))) return 1; a.turbidity = std::atof(v); }
@@ -154,23 +214,14 @@ int parse(int argc, char** argv, Args& a, std::string& err) {
       const char* e = v + std::strlen(v);
       if (const auto r = std::from_chars(v, e, n); r.ec != std::errc() || r.ptr != e) { err = f + " needs a whole number"; return 1; }
     }
-    else if (f == "--north") { if (!(v = need(i, "--north"))) return 1; a.opt.north = std::atof(v); }
-    else if (f == "--offset") { if (!(v = need(i, "--offset"))) return 1; a.opt.offset = std::atof(v); }
-    else if (f == "--out") { if (!(v = need(i, "--out"))) return 1; a.out = v; }
     else if (f == "--timeseries") { if (!(v = need(i, "--timeseries"))) return 1; a.opt.seriesPath = v; }
     else if (f == "--dump-bits") { if (!(v = need(i, "--dump-bits"))) return 1; a.opt.dumpBitsPath = v; }
     else if (f == "--dump-sky") { if (!(v = need(i, "--dump-sky"))) return 1; a.opt.dumpSky = v; }
     else if (f == "--dump-sun") { if (!(v = need(i, "--dump-sun"))) return 1; a.opt.dumpSun = v; }
-    else if (f == "--bench") {
-      a.bench = true;
-      if (i + 2 < argc && std::isdigit(static_cast<unsigned char>(argv[i + 1][0])) && std::isdigit(static_cast<unsigned char>(argv[i + 2][0]))) {
-        a.benchSens = static_cast<size_t>(std::atoll(argv[++i]));
-        a.benchTris = static_cast<size_t>(std::atoll(argv[++i]));
-      }
-    }
-    else if (f.size() > 1 && f[0] == '-' && !std::isdigit(static_cast<unsigned char>(f[1]))) { err = "unknown flag " + f; return 1; }
-    else a.sensors.push_back(f);
-  }
+    else return -1;
+    return 0;
+  });
+  if (rc || a.help) return rc;
   return optics_ok(a.opt, err) ? 0 : 1;
 }
 
@@ -208,19 +259,137 @@ std::string manifest_json(const Result& r, const std::string& extraFields) {
   std::string m = "{\n  \"columns\": [";
   for (size_t c = 0; c < r.columns.size(); ++c) m += (c ? ", \"" : "\"") + r.columns[c] + "\"";
   char buf[160];
-  std::snprintf(buf, sizeof buf, "],\n  \"duration_h\": %.6f,\n  \"dirs\": {\"sky\": %zu, \"ground\": %zu, \"sun\": %zu},\n  \"meshes\": [",
+  std::snprintf(buf, sizeof buf, "],\n  \"duration_h\": %.6f,\n  \"dirs\": {\"sky\": %zu, \"ground\": %zu, \"sun\": %zu},\n  \"meshes\": ",
                 r.durationHours, r.nSky, r.nSky, r.nSun);
-  m += buf;
-  size_t first = 0;
-  for (size_t i = 0; i < r.ranges.size(); ++i) {
-    std::snprintf(buf, sizeof buf, ", \"first\": %zu, \"count\": %zu}", first, r.ranges[i].second);
-    m += std::string(i ? ",\n    {\"name\": \"" : "\n    {\"name\": \"") + r.ranges[i].first + "\"" + buf;
-    first += r.ranges[i].second;
-  }
-  m += "\n  ]";
+  m += buf + manifest_meshes(r);
   if (!extraFields.empty()) m += ",\n  " + extraFields;
   m += "\n}\n";
   return m;
 }
 
 }  // namespace daylight::cli
+
+namespace daylight::views::cli {
+
+const char* const kUsage =
+    "usage: views <mesh>... [flags]\n"
+    "  meshes: .obj (one o/g group per mesh), .dmesh (raw arrays, layout in daylight.h) or .usd/.usda/.usdc/.usdz\n"
+    "          (-DDAYLIGHT_USD=ON builds only); world metres, Z-up; positional = analysed (sensor) meshes\n"
+    "  --context FILE           occluder-only mesh (repeatable)\n"
+    "  --target NAME=GROUP[;NAME=GROUP...]  rays ending on mesh NAME count for GROUP (repeatable; at most 16 groups)\n"
+    "  --fov H[,LO,HI]          field in degrees: H wide about the normal (up to 180) or 360 all around, elevation LO..HI\n"
+    "                           (default 120,-70,50; H alone keeps LO,HI)\n"
+    "  --cell DEG               degrees per ray, rows and columns (default 2)\n"
+    "  --jitter on|off          each ray at a random point of its cell (default on; off: the cell centres)\n"
+    "  --distance STAT[,STAT...]  mean|min|group|none (default mean,min; group: also per target group)\n"
+    "  --far M                  what open counts as, and the cap of every distance (default 1000)\n"
+    "  --virtual-ground on|off  a ground plane ends downward rays (default on; off: they stay open)\n"
+    "  --ground-z Z             its height (default: the lowest point of the meshes)\n"
+    "  --reach D[,D...]|en17037  share of the field that sees at least D metres (at most 8; en17037 = 6,20,50)\n"
+    "  --on faces|vertices      sensor placement (default faces)\n"
+    "  --sides front|back|both  viewing side(s) of each element (default front)\n"
+    "  --cull-backfaces         occluders block only from their front side (default two-sided)\n"
+    "  --north DEG  --offset M  --no-self-occlude\n"
+    "  --no-occlude NAME[;NAME...]  these sensor meshes are analysed but block no rays (repeatable)\n"
+    "  --out FILE[.npy]         values (text rows, or float64 [N x C] NumPy when .npy) + FILE.json manifest\n"
+    "  --dump-rays F.npy        classes uint8 [rows x rays] (a row per element and side) + F.npy.depth.npy float32\n"
+    "                           distances\n"
+    "  --bench [NSENS NTRIS]  -v          exit code: 1 usage, 2 runtime error\n";
+
+namespace {
+
+// Comma-separated numbers, each read whole.
+bool numbers(const std::string& s, std::vector<double>& out) {
+  out.clear();
+  for (size_t b = 0, e; b <= s.size(); b = e + 1) {
+    e = std::min(s.find(',', b), s.size());
+    const std::string t = s.substr(b, e - b);
+    char* end = nullptr;
+    out.push_back(std::strtod(t.c_str(), &end));
+    if (t.empty() || *end) return false;
+  }
+  return true;
+}
+
+// NAME=GROUP[;NAME=GROUP...], split at the last '='. The names and groups are checked by run().
+bool parse_targets(const std::string& s, std::vector<Target>& out, std::string& err) {
+  for (size_t b = 0, e; b <= s.size(); b = e + 1) {
+    e = std::min(s.find(';', b), s.size());
+    const std::string spec = s.substr(b, e - b);
+    const size_t eq = spec.rfind('=');
+    if (spec.empty()) { err = "--target " + s + ": empty NAME=GROUP (a stray ;)"; return false; }
+    if (eq == std::string::npos || eq == 0 || eq + 1 == spec.size()) { err = "--target " + spec + ": NAME=GROUP"; return false; }
+    out.push_back({spec.substr(0, eq), spec.substr(eq + 1)});
+  }
+  return true;
+}
+
+}  // namespace
+
+int parse(int argc, char** argv, Args& a, std::string& err) {
+  Options& o = a.opt;
+  const auto need = [&](int& i, const char* flag) { return daylight::cli::value(argc, argv, i, flag, err); };
+  std::vector<double> x;
+  const auto one = [&](const char* v, double& to) { if (!numbers(v, x) || x.size() != 1) return false; to = x[0]; return true; };
+  const int rc = daylight::cli::parse_common(argc, argv, a, o, err, [&](int& i, const std::string& f) {
+    const char* v = nullptr;
+    if (f == "--target") { if (!(v = need(i, "--target")) || !parse_targets(v, o.targets, err)) return 1; }
+    else if (f == "--fov") {
+      if (!(v = need(i, "--fov"))) return 1;
+      if (!numbers(v, x) || (x.size() != 1 && x.size() != 3)) { err = "--fov H[,LO,HI] in degrees"; return 1; }
+      o.fovH = x[0];
+      if (x.size() == 3) { o.elevLo = x[1]; o.elevHi = x[2]; }
+    }
+    else if (f == "--cell") { if (!(v = need(i, "--cell"))) return 1; if (!one(v, o.cell)) { err = "--cell DEG"; return 1; } }
+    else if (f == "--jitter") { if (!(v = need(i, "--jitter"))) return 1; if (!std::strcmp(v, "on")) o.jitter = true; else if (!std::strcmp(v, "off")) o.jitter = false; else { err = "--jitter on|off"; return 1; } }
+    else if (f == "--distance") {
+      if (!(v = need(i, "--distance"))) return 1;
+      const std::string s = v;
+      o.distMean = o.distMin = o.distGroup = false;
+      for (size_t b = 0, e; s != "none" && b <= s.size(); b = e + 1) {
+        e = std::min(s.find(',', b), s.size());
+        const std::string t = s.substr(b, e - b);
+        if (t == "mean") o.distMean = true;
+        else if (t == "min") o.distMin = true;
+        else if (t == "group") o.distGroup = true;
+        else { err = "--distance mean|min|group[,...] or none"; return 1; }
+      }
+      if (o.distGroup && !o.distMean && !o.distMin) { err = "--distance group adds per-group columns to mean and min: name one of them"; return 1; }
+    }
+    else if (f == "--far") { if (!(v = need(i, "--far"))) return 1; if (!one(v, o.farDist)) { err = "--far M"; return 1; } }
+    else if (f == "--ground-z") { if (!(v = need(i, "--ground-z"))) return 1; if (!one(v, o.groundZ)) { err = "--ground-z Z"; return 1; } }
+    else if (f == "--reach") {
+      if (!(v = need(i, "--reach"))) return 1;
+      if (!std::strcmp(v, "en17037")) o.reach = {6, 20, 50};   // EN 17037's view distance levels: minimum, medium, high
+      else if (!numbers(v, o.reach)) { err = "--reach D[,D...] in metres, or en17037"; return 1; }
+    }
+    else if (f == "--dump-rays") { if (!(v = need(i, "--dump-rays"))) return 1; o.dumpPath = v; }
+    else return -1;
+    return 0;
+  });
+  if (rc || a.help) return rc;
+  Field fd;
+  return field({}, o, fd, err) ? 0 : 1;
+}
+
+std::string manifest_json(const Result& r, const Options& opt, const Field& f) {
+  const auto num = [](double v) { char s[32]; std::snprintf(s, sizeof s, "%.10g", v); return std::string(std::isfinite(v) ? s : "null"); };
+  std::string m = "{\n  \"columns\": [";
+  for (size_t c = 0; c < r.columns.size(); ++c) m += (c ? ", \"" : "\"") + r.columns[c] + "\"";
+  m += "],\n  \"view\": {\"fov\": [" + num(opt.fovH) + ", " + num(opt.elevLo) + ", " + num(opt.elevHi) + "], \"cell\": " + num(opt.cell) +
+       ", \"grid\": [" + std::to_string(f.nEl) + ", " + std::to_string(f.nAz) + "], \"jitter\": " + (opt.jitter ? "true" : "false") +
+       ", \"north\": " + num(opt.north) + ", \"offset\": " + num(opt.offset) + ", \"far\": " + num(opt.farDist) + ", \"near\": 0.1, \"virtual_ground\": " +
+       (opt.virtualGround ? "true" : "false") + ", \"ground_z\": " + num(f.groundZ) + ", \"reach\": [";
+  for (size_t k = 0; k < opt.reach.size(); ++k) m += (k ? ", " : "") + num(opt.reach[k]);
+  m += "], \"classes\": [\"sky\", \"ground\", \"obstruction\"";
+  std::vector<std::string> groups;   // first appearance, as run() orders them
+  for (const Target& t : opt.targets)
+    if (std::find(groups.begin(), groups.end(), t.group) == groups.end()) { groups.push_back(t.group); m += ", \"" + t.group + "\""; }
+  m += "],\n    \"image\": \"rows from HI down, columns clockwise from the field's left edge (360: from north)\"},\n  \"targets\": [";
+  for (size_t k = 0; k < opt.targets.size(); ++k)
+    m += std::string(k ? ", " : "") + "{\"mesh\": " + daylight::cli::json_str(opt.targets[k].mesh) + ", \"group\": \"" + opt.targets[k].group + "\"}";
+  m += "],\n  \"meshes\": " + daylight::cli::manifest_meshes(r) + "\n}\n";
+  return m;
+}
+
+}  // namespace daylight::views::cli

@@ -806,6 +806,26 @@ int check_gpu(const char* testsDir) {
     CHECK(st.stats.traceMs > 0 && st.stats.bounceMs > 0 && st.stats.launches > 0 && st.stats.gasBytes > 0);
     CHECK(st.stats.rays == sensorsDone * directions);
     CHECK(progress.load() == 1.0);
+
+    // scene_acquire records the build order: each blocking mesh's triangles once the gaps of skipped faces are closed (a
+    // collinear pentagon draws none of its 3); without rays it only looks the scene up
+    Mesh gap;
+    gap.name = "gap";
+    gap.points = {0, 0, 0, 1, 0, 0, 2, 0, 0, 3, 0, 0, 4, 0, 0, 0, 5, 0};
+    gap.counts = {5, 3};
+    gap.indices = {0, 1, 2, 3, 4, 0, 1, 5};
+    const std::vector<MeshView> mv{{&gap, "gap", false}, {&meshes[0], "ground", true}, {&meshes[1], "box", true}};
+    const auto all = [](size_t) { return true; };
+    Scene sc, seen;
+    Result rs;
+    const char* stage = "";
+    Gpu* gq = nullptr;
+    CHECK(scene_acquire(mv, all, {Slot{}}, false, "order", 1, nullptr, &gq, sc, rs, stage, e2) && gq && !rs.sceneReused);
+    CHECK(sc.nTris == 21 && sc.skipped == 1 && sc.order.size() == 3 && sc.order[0].nTri == 1 && sc.order[1].name == "ground" &&
+          sc.order[1].tri0 == 1 && sc.order[1].nTri == 8 && sc.order[2].tri0 == 9 && sc.order[2].nTri == 12);
+    CHECK(scene_acquire(mv, all, {Slot{}}, false, "order", 1, nullptr, nullptr, seen, rs, stage, e2) && rs.sceneReused && seen.order.size() == 3);
+    CHECK(scene_acquire(mv, [](size_t k) { return k == 2; }, {Slot{}}, false, "box only", 1, nullptr, &gq, sc, rs, stage, e2) &&
+          !rs.sceneReused && sc.nTris == 12 && sc.order.size() == 1 && sc.order[0].name == "box" && sc.order[0].tri0 == 0);
     if (!e2.empty()) std::printf("run: %s\n", e2.c_str());
   }
 

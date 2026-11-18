@@ -323,9 +323,9 @@ int check_mesh(const char* testsDir) {
       CHECK(o[4].mesh == "w/" && o[4].slot == -1 && o[4].tau == 0.3 && !o[4].glass);
       CHECK(o[5].mesh == "x" && o[5].slot == 7 && o[5].rho == 0.4 && o[5].tau == 0);
     }
-    CHECK(!a.opt.transmission && a.opt.fresnel);   // defaults
-    CHECK(parse({"m.obj", "--transmission", "on", "--fresnel", "off"}, a, err) == 0 && a.opt.transmission && !a.opt.fresnel);
-    CHECK(parse({"m.obj", "--transmission", "off", "--fresnel", "on"}, a, err) == 0 && !a.opt.transmission && a.opt.fresnel);
+    CHECK(!a.opt.transmission && a.opt.fresnel && a.opt.virtualGround);   // defaults
+    CHECK(parse({"m.obj", "--transmission", "on", "--fresnel", "off", "--virtual-ground", "off"}, a, err) == 0 && a.opt.transmission && !a.opt.fresnel && !a.opt.virtualGround);
+    CHECK(parse({"m.obj", "--transmission", "off", "--fresnel", "on", "--virtual-ground", "on"}, a, err) == 0 && !a.opt.transmission && a.opt.fresnel && a.opt.virtualGround);
     const char* bad[][2] = {   // every grammar / range / mode error: SPEC, a piece of the message
         {"wall", "NAME[/SLOT]="}, {"=0.2", "NAME[/SLOT]="}, {"a=0.2;", "NAME[/SLOT]="}, {"a=0.1,0.2,glass,1", "NAME[/SLOT]="},
         {"*/1=0.2", "/SLOT needs a mesh NAME"}, {"/3=0.2", "/SLOT needs a mesh NAME"}, {"a/65536=0.2", "SLOT 0..65535"},
@@ -340,6 +340,7 @@ int check_mesh(const char* testsDir) {
     CHECK(parse({"m.obj", "--optics", "a=0.7,0.3"}, a, err) == 0 && parse({"m.obj", "--optics", "a=0,0.918,glass"}, a, err) == 0);   // limits included
     CHECK(parse({"m.obj", "--transmission", "yes"}, a, err) == 1 && err == "--transmission off|on");
     CHECK(parse({"m.obj", "--fresnel", "1"}, a, err) == 1 && err == "--fresnel on|off");
+    CHECK(parse({"m.obj", "--virtual-ground", "no"}, a, err) == 1 && err == "--virtual-ground on|off");
     CHECK(parse({"m.obj", "--optics"}, a, err) == 1 && err == "missing value for --optics");
     CHECK(parse({"m.obj", "--transmission", "on", "--mode", "ladybug"}, a, err) == 1 && err.find("physical") != std::string::npos);
     CHECK(parse({"m.obj", "--mode", "ladybug", "--optics", "a=0.2,0.5", "--transmission", "off"}, a, err) == 0);   // optics: a no-op there

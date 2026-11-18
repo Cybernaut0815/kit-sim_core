@@ -36,5 +36,19 @@ struct Params {
   unsigned bounces;       // diffuse reflections a path may have
   unsigned mf, nBins;
   float alpha;            // patch row height (rad), Patches::alpha
-  float cosN, sinN;       // cos / sin of --north: turns escaping directions back to true north
+  float cosN, sinN;       // cos / sin of --north: turns escaping directions back to true north (views: true north's frame)
+  // __raygen__view (views): direction-major cls[d*nc + i] / dist[d*nc + i] (from the launch's first sensor; nc the
+  // chunk's), K = nAz x nEl directions, d = row * nAz + column, rows top-down, columns clockwise from az0
+  unsigned char* cls;     // 0 sky, 1 ground, 2 obstruction, 3 + g target group g, 254 own surface (not traced)
+  float* dist;            // true distance: the hit's t, the virtual ground's, +inf open sky / own surface
+  const unsigned char* label;   // class per triangle (primitive index); null: every hit is an obstruction
+  const float2* rowSin;   // per row: sin of its bottom and top elevation
+  unsigned nAz, nEl;
+  float az0, dAz;         // degrees: the first column's left edge, the column width
+  unsigned world;         // 360 mode: the world frame (true north, horizon); else the sensor's (gaze = normal)
+  unsigned cull;          // own surface: directions behind the sensor (n . d <= 0) are not traced
+  unsigned jitter;        // one point per cell uniform in solid angle, seeded by (element, cell, side); else the centre
+  unsigned nS, back;      // sides per element; the one side is the back (seeds)
+  unsigned vground;       // the virtual ground plane at z = groundZ (recentred) ends downward rays
+  float groundZ;
 };

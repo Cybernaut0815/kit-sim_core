@@ -3,7 +3,8 @@
 // word w), bit k of bits[w*nc + i] = direction w*32+k is in the sensor's hemisphere and unoccluded; __raygen__bytes (a
 // slot transmits): the same launch, bytes[d*nc + i] = the transmittance along direction d instead (x255, 0 = culled or
 // blocked); __raygen__bounce: one launch index per sensor, the paths of reflected light (--bounces) binned into
-// dc[b*nc + i].
+// dc[b*nc + i]; __raygen__view (views): the launch of __raygen__bits, the class and distance of each direction's
+// closest hit into cls / dist[d*nc + i].
 #include <optix.h>
 #include <cfloat>
 #include "glass.h"
@@ -30,8 +31,9 @@ static __forceinline__ __device__ float dot(float3 a, float3 b) { return a.x * b
 
 // The triangle of the current hit (one GAS: object = world): hit point p, unit normal n on the side the ray came from,
 // ext = its largest edge coordinate from vertex 0, and lift = 2^-20 x ext along n (2 mm at 2 km), what new origins
-// leave it by. The hardware intersects relative to the ray origin, ~2^-25 x that extent off: without the lift a tenth
-// of the rays leaving a 2 km quad near the origin met it, or its coplanar neighbour, again. False when degenerate.
+// leave it by. The hardware intersects relative to the ray origin, ~2^-24 x that extent off (measured: 1.1e-4 m on a
+// 2 km quad): without the lift a tenth of the rays leaving a 2 km quad near the origin met it, or its coplanar
+// neighbour, again. False when degenerate.
 struct Hit { float3 p, n, lift; float ext; bool front; };
 static __forceinline__ __device__ bool hit_triangle(Hit& h) {
   float3 tv[3];
@@ -48,7 +50,7 @@ static __forceinline__ __device__ bool hit_triangle(Hit& h) {
   h.lift = (h.ext * 9.5367432e-7f) * h.n;
   return true;
 }
-// The hit's plane lies within 2^-22 x its triangle's extent of the ray origin (8x the hardware's error), and the ray
+// The hit's plane lies within 2^-22 x its triangle's extent of the ray origin (4x the hardware's error), and the ray
 // goes on into the side of it the sensor (normal n) faces (h.n, the side the ray came from, is the other): from a sensor,
 // its own plane (a large occluder's, near the origin), which such rays meet only through that error; they pass, as tmin
 // means them to. A ray into the plane (a tilted sensor's, e.g. a vertex normal where a facade meets the ground) crosses
@@ -171,6 +173,70 @@ static __forceinline__ __device__ uint3 pcg3d(unsigned x, unsigned y, unsigned z
   return make_uint3(x, y, z);
 }
 static __forceinline__ __device__ float u01(unsigned v) { return float(v >> 8) * (1.f / 16777216.f); }   // [0, 1)
+
+// Views, launched as __raygen__bits: a warp traces one direction for 32 neighbouring sensors. Direction d = row * nAz +
+// column, one point per cell (jitter: uniform in the cell's solid angle, seeded by the global element, d and the side, so
+// chunks and launches change nothing; else the cell's middle in azimuth and in sine of elevation), in the sensor's frame
+// (forward = n, right = horizontal, up) or, 360 mode, the world's (forward = true north, up = +z). The closest hit
+// passes the sensor's own plane as past_own_plane does (at most 4 segments, then an obstruction at the last); its class
+// is the hit triangle's label (one build input: primitive index = triangle order). A ray meeting nothing is sky on or
+// above the horizon (dir.z >= 0, as daylight's sky_bin), else ground. A downward ray ends at the virtual ground:
+// traced 1 cm past its plane, so geometry lying on it (a terrain at the lowest point, a lake) wins, a ray meeting
+// nothing is ground at the plane's distance. A degenerate element (zero normal) traces nothing: all own surface.
+extern "C" __global__ void __raygen__view() {
+  const uint3 li = optixGetLaunchIndex();
+  const unsigned i = li.x, w = li.y, gi = params.i0 + i;   // gi: the global sensor (seeds)
+  const unsigned element = gi / params.nS, side = params.nS == 2 ? gi % 2 : params.back;
+  const float3 n = params.N[i];
+  const float3 o = offset_ray(params.P[i], n);
+  const float inf = __int_as_float(0x7f800000);
+  const bool none = !(dot(n, n) > 0.f);
+  float3 f, r, u;
+  if (params.world) { f = make_float3(-params.sinN, params.cosN, 0.f); r = make_float3(params.cosN, params.sinN, 0.f); u = make_float3(0.f, 0.f, 1.f); }
+  else {   // right = n x z normalised; within 1e-3 of straight up or down (float noise on a flat roof): east turned by
+           // --north, made square to n
+    const float l = sqrtf(n.x * n.x + n.y * n.y);
+    f = n;
+    if (l > 1e-3f) r = make_float3(n.y / l, -n.x / l, 0.f);
+    else {
+      r = make_float3(params.cosN, params.sinN, 0.f);
+      if (l > 0.f) { r = r - dot(r, n) * n; r = rsqrtf(dot(r, r)) * r; }
+    }
+    u = make_float3(r.y * f.z - r.z * f.y, r.z * f.x - r.x * f.z, r.x * f.y - r.y * f.x);
+  }
+  const unsigned K = params.nAz * params.nEl;
+  for (unsigned k = 0; k < 32; ++k) {
+    const unsigned d = w * 32 + k;
+    if (d >= K) break;
+    const float2 rs = params.rowSin[d / params.nAz];   // sin of the row's bottom, top
+    float a = 0.5f, s = 0.5f * (rs.x + rs.y);
+    if (params.jitter) { const uint3 h = pcg3d(element, d, side); a = u01(h.x); s = rs.x + u01(h.y) * (rs.y - rs.x); }
+    float sa, ca;
+    sincospif((params.az0 + (float(d % params.nAz) + a) * params.dAz) * (1.f / 180.f), &sa, &ca);
+    const float c = sqrtf(fmaxf(0.f, 1.f - s * s));
+    const float3 dir = (c * sa) * r + (c * ca) * f + s * u;
+    unsigned char cl = 2;
+    float t = inf;
+    if (none || (params.cull && dot(n, dir) <= 0.f)) cl = 254;   // degenerate, or behind the sensor (360 mode, offset 0)
+    else if (params.vground && dir.z < 0.f && !(o.z > params.groundZ)) { cl = 1; t = 0.1f; }   // eye on or below the plane
+    else {
+      const bool plane = params.vground && dir.z < 0.f;
+      const float tg = plane ? (o.z - params.groundZ) / -dir.z : inf;
+      const float tmax = plane ? (o.z - params.groundZ + 0.01f) / -dir.z : FLT_MAX;
+      float tmin = 1e-5f;
+      for (unsigned seg = 0; seg < 4; ++seg) {
+        optixTraverse(params.gas, o, dir, tmin, tmax, 0.f, OptixVisibilityMask(1), params.rayFlags, 0, 1, 0);
+        if (!optixHitObjectIsHit()) { cl = dir.z >= 0.f ? 0 : 1; t = tg; break; }   // tg: inf unless the plane ends it
+        t = optixHitObjectGetRayTmax();
+        if (!own_hit(n)) { cl = params.label ? params.label[optixHitObjectGetPrimitiveIndex()] : 2; break; }
+        tmin = __uint_as_float(__float_as_uint(t) + 1);   // the next float past it
+      }
+    }
+    const size_t at = size_t(d) * params.nc + i;   // direction-major: a warp's 32 sensors store side by side
+    params.cls[at] = cl;
+    params.dist[at] = t;
+  }
+}
 
 // Cosine-weighted direction about unit n: sin^2 theta = u, azimuth 2 pi v (basis: Duff et al. 2017, JCGT 6(1)).
 static __forceinline__ __device__ float3 cosine_dir(float3 n, float u, float v) {

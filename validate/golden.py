@@ -1,17 +1,21 @@
 # SPDX-License-Identifier: Apache-2.0 AND LicenseRef-Commons-Clause-1.0
-"""Byte-compare goldens of the daylight CLI. Every case writes --out out.npy + out.npy.json, some also --timeseries
-series.npy + series.npy.hoys.txt and --dump-bits bits.npy; `check` must reproduce every file byte for byte.
+"""Byte-compare goldens of the daylight and views CLIs. Every case writes --out out.npy + out.npy.json, some also
+--timeseries series.npy + series.npy.hoys.txt, --dump-bits bits.npy or (views) --dump-rays rays.npy +
+rays.npy.depth.npy; `check` must reproduce every file byte for byte.
 
-  uv run python -I golden.py record [--exe PATH] [--force]   # once, on main: -> _out/golden/<case>/
-  uv run python -I golden.py check [--exe PATH]              # rerun into a temp dir, list every differing file, exit 1
+  uv run python -I golden.py record [--exe PATH] [--force]           # once, on main: -> _out/golden/<case>/ + views/<case>/
+  uv run python -I golden.py record --views [--exe PATH] [--force]   # only the views cases -> _out/golden/views/<case>/
+  uv run python -I golden.py check [--exe PATH] [--views]            # rerun into a temp dir, list every differing file, exit 1
 
+--exe is daylight.exe; the views cases run views.exe beside it (or --views-exe PATH) and are skipped when there is none.
 Cases: the fixture scenes (fixtures.py runs first when its output is missing; usd_xform is converted by the Python
 binding as in compare.py layer 6) in physical mode with all six quantities and in ladybug mode with what it accepts
 (flags as compare.py uses them), a default run, a --from/--to range with --hours, a --time instant, the flag variants,
 a plain .dmesh input and a generated 1.28M-triangle heightfield (hills) that spans 3 GPU chunks, annual and with
 --bounces 1. VARIANTS must give the bytes of their base case; one runs when `daylight --help` lists the
 flags it needs, else it is reported as skipped. The slot-block .dmesh (header word 1, uint16 face % 3 after the
-indices) needs no flag: older readers ignore the word and the trailing bytes."""
+indices) needs no flag: older readers ignore the word and the trailing bytes. VIEWS_CASES run views on the fixtures with
+its default jitter (seeded: the same bytes every run) unless a case turns it off."""
 import argparse
 import json
 import shutil
@@ -60,6 +64,7 @@ CASES = {**{f'{s}_phys': (s, f, PHYS + (DUMPS if s == 'box' else [])) for s, f i
          'box_patch_samples4': ('box', 'obj', PHYS + ['--patch-samples', '4']),
          'box_sky_density2': ('box', 'obj', PHYS + ['--sky-density', '2']),
          'walls_north90': ('walls', 'obj', PHYS + ['--north', '90']),
+         'walls_ground0': ('walls', 'obj', PHYS + ['--ground', '0']),   # walls: box's sensors face up, never see the ground
          'box_lb_sky_density2': ('box', 'obj', ladybug('box') + ['--sky-density', '2']),
          'box_lb_north30': ('box', 'obj', ladybug('box') + ['--north', '30']),
          'box_lb_vertices': ('box', 'obj', ladybug('box') + ['--on', 'vertices']),
@@ -77,7 +82,16 @@ VARIANTS = [('box_dmesh_slots', 'box_dmesh', 'slots', [], []),
              ['--optics', 'box_a/1=0.1,0.5,porous;box_b=0,0.64,glass;flat/2=0.3,0.2', '--transmission', 'off'],
              ['--optics', '--transmission']),
             ('box_phys_bounces0', 'box_phys', None, ['--bounces', '0'], ['--bounces']),
-            ('walls_lb_bounces0', 'walls_lb', None, ['--bounces', '0'], ['--bounces'])]
+            ('walls_lb_bounces0', 'walls_lb', None, ['--bounces', '0'], ['--bounces']),
+            ('walls_virtual_ground_off', 'walls_ground0', None, ['--virtual-ground', 'off'], ['--virtual-ground'])]
+# views cases -> _out/golden/views/<case>/: name -> (scene, mesh format, flags)
+VIEWS_CASES = {'walls_view': ('walls', 'obj', []),                          # default view mode on vertical facades
+               'walls_jitter_off': ('walls', 'obj', ['--jitter', 'off']),
+               'walls_virtual_ground_off': ('walls', 'obj', ['--virtual-ground', 'off']),
+               'box_360': ('box', 'obj', ['--fov', '360', '--offset', '1.6', '--dump-rays', 'rays.npy']),
+               'box_targets': ('box', 'obj', ['--target', 'box_a=water;box_b=park', '--distance', 'mean,min,group',
+                                              '--reach', 'en17037']),
+               'overhang_sides_both': ('overhang', 'obj', ['--sides', 'both'])}
 
 
 def write_dmesh(path, m, slots):
@@ -126,11 +140,11 @@ def mesh_args(scene, fmt, tmp):
 
 
 def run(exe, args, d):
-    """daylight <args> --out out.npy with d (created) as the working directory -> '' or the error."""
+    """exe <args> --out out.npy with d (created) as the working directory -> '' or the error."""
     d.mkdir(parents=True)
     r = subprocess.run([str(exe)] + args + ['--out', 'out.npy'], cwd=d, capture_output=True, text=True, errors='replace',
                        check=False)
-    return f'daylight exit {r.returncode}: {r.stderr.strip()[-500:]}' if r.returncode else ''
+    return f'{exe.stem} exit {r.returncode}: {r.stderr.strip()[-500:]}' if r.returncode else ''
 
 
 def why(a, b):
@@ -163,44 +177,60 @@ def main():
     ap = argparse.ArgumentParser(description=__doc__.split('\n')[0])
     ap.add_argument('cmd', choices=['record', 'check'])
     ap.add_argument('--exe', default=str(HERE.parent / 'build' / 'RelWithDebInfo' / 'daylight.exe'))
+    ap.add_argument('--views-exe', help='views.exe for the views cases (default: beside --exe)')
+    ap.add_argument('--views', action='store_true', help='only the views cases (record: replaces _out/golden/views/ alone)')
     ap.add_argument('--force', action='store_true', help='record: replace existing goldens')
     a = ap.parse_args()
     exe = Path(a.exe).resolve()
+    vexe = Path(a.views_exe).resolve() if a.views_exe else exe.parent / 'views.exe'
     if not exe.exists():
         sys.exit(f'error: --exe {exe} not found: build the CLI first (cmake --build --preset release)')
+    if a.views and not vexe.exists():
+        sys.exit(f'error: {vexe} not found: build the CLI first or pass --views-exe')
     if not BOSTON.exists():
         sys.exit(f'error: {BOSTON} missing: run setup.py')
-    if a.cmd == 'record' and GOLD.exists() and not a.force:
-        sys.exit(f'error: {GOLD} exists; goldens are recorded once, on main (--force replaces them)')
+    root = GOLD / 'views' if a.views else GOLD
+    if a.cmd == 'record' and root.exists() and not a.force:
+        sys.exit(f'error: {root} exists; goldens are recorded once, on main (--force replaces them)')
     if not all((FIX / s / ('usd_xform.usda' if f == 'usd' else 'fixture.json')).exists() for s, f in SCENES.items()):
         subprocess.run([sys.executable, '-I', str(HERE / 'fixtures.py')], check=True)
     tmp, t0 = Path(tempfile.mkdtemp(prefix='golden_')), time.perf_counter()
+    # (name, base case, scene, mesh format, flags, exe); views cases are named views/<case>
+    jobs = [] if a.views else [(n, n, s, f, args, exe) for n, (s, f, args) in CASES.items()]
+    if a.cmd == 'check':
+        for f in (GOLD / 'recorded.txt', GOLD / 'views' / 'recorded.txt'):
+            if f.exists():
+                print(f'goldens of {f.read_text().strip()}')
+        usage = subprocess.run([str(exe), '--help'], capture_output=True, text=True, errors='replace', check=False).stdout
+        for name, base, fmt, extra, needs in [] if a.views else VARIANTS:
+            if lacking := [f for f in needs if f not in usage]:
+                print(f'skip {name}: daylight --help lists no {" ".join(lacking)}')
+            else:
+                scene, bfmt, args = CASES[base]
+                jobs.append((name, base, scene, fmt or bfmt, args + extra, exe))
+    if vexe.exists():
+        jobs += [(f'views/{n}', f'views/{n}', s, f, args, vexe) for n, (s, f, args) in VIEWS_CASES.items()]
+    else:
+        print(f'skip views: no {vexe}')
     if a.cmd == 'record':
-        shutil.rmtree(GOLD, ignore_errors=True)
-        for name, (scene, fmt, args) in CASES.items():
-            if err := run(exe, mesh_args(scene, fmt, tmp) + args, GOLD / name):
-                shutil.rmtree(GOLD)
+        head = subprocess.run(['git', '-C', str(HERE), 'describe', '--always', '--dirty'], capture_output=True, text=True,
+                              check=False).stdout.strip()
+        shutil.rmtree(root, ignore_errors=True)
+        for name, _, scene, fmt, args, x in jobs:
+            if err := run(x, mesh_args(scene, fmt, tmp) + args, GOLD / name):
+                shutil.rmtree(root)
                 sys.exit(f'{name}: {err}')
             print(f'recorded {name}')
-        head = subprocess.run(['git', '-C', str(HERE), 'describe', '--always', '--dirty'], capture_output=True, text=True,
-                              check=False)
-        (GOLD / 'recorded.txt').write_text(f'{head.stdout.strip()} {exe}\n')
+        if not a.views:
+            (GOLD / 'recorded.txt').write_text(f'{head} {exe}\n')
+        if vexe.exists():
+            (GOLD / 'views' / 'recorded.txt').write_text(f'{head} {vexe}\n')
         shutil.rmtree(tmp)
-        print(f'{len(CASES)} cases -> {GOLD}, {time.perf_counter() - t0:.0f} s')
+        print(f'{len(jobs)} cases -> {root}, {time.perf_counter() - t0:.0f} s')
         return 0
-    if (GOLD / 'recorded.txt').exists():
-        print(f'goldens of {(GOLD / "recorded.txt").read_text().strip()}')
-    usage = subprocess.run([str(exe), '--help'], capture_output=True, text=True, errors='replace', check=False).stdout
-    jobs = [(name, name, scene, fmt, args) for name, (scene, fmt, args) in CASES.items()]
-    for name, base, fmt, extra, needs in VARIANTS:
-        if lacking := [f for f in needs if f not in usage]:
-            print(f'skip {name}: daylight --help lists no {" ".join(lacking)}')
-        else:
-            scene, bfmt, args = CASES[base]
-            jobs.append((name, base, scene, fmt or bfmt, args + extra))
     bad = 0
-    for name, base, scene, fmt, args in jobs:
-        err = run(exe, mesh_args(scene, fmt, tmp) + args, tmp / name)
+    for name, base, scene, fmt, args, x in jobs:
+        err = run(x, mesh_args(scene, fmt, tmp) + args, tmp / name)
         diffs = [err] if err else compare(GOLD / base, tmp / name)
         bad += bool(diffs)
         print(f'{"DIFF" if diffs else "ok  "} {name}' + (f' (= {base})' if base != name else ''))

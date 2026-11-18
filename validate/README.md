@@ -22,8 +22,15 @@ uv run compare.py reflect --exe ...      # layer 9 alone (~30 s)
 uv run python -I ingest.py --exe ../build/RelWithDebInfo/daylight.exe       # 1M-quad ingest benchmark -> _out/ingest/, markdown table
 uv run python -I big.py run --exe EXE --mesh bhs --tag T --root R          # large-model bench (convert / hills / run / table / selftest, usage in big.py) -> R/results.jsonl, markdown
 uv run python -I golden.py record        # once, on main: byte goldens of ~30 CLI cases -> _out/golden/<case>/ (~20 s)
+uv run python -I golden.py record --views   # only the views goldens -> _out/golden/views/<case>/ (daylight's stay)
 uv run python -I golden.py check         # rerun them into a temp dir, list every differing file, exit 1 on any
+uv run python -I views.py all --exe ../build/RelWithDebInfo/views.exe       # views ray by ray vs rtrace + LB View Percent (< 1 min)
+uv run python -I views.py rays --exe ... [--case NAME ...]                  # only the rtrace gates
+uv run python -I views.py ladybug --exe ...                                 # only the Ladybug table (info)
 ```
+
+golden.py runs the views cases with `views.exe` beside `--exe` (or `--views-exe PATH`) and skips them when there is
+none; `--views` restricts `record` and `check` to them.
 
 Run the scripts with `uv run python -I script.py` if you want the interpreter isolated from the current directory
 (everything under `_dl/` is downloaded, untrusted data). The venv also installs `bindings/python` (editable) as
@@ -44,7 +51,9 @@ the same command a user runs on their own stage (see `bindings/python/README.md`
 | `_out/ref/scene/{canopy,glass_canopy,canopy_ground,glass_canopy_ground,canyon,plane}/` | `scene.rad` / `scene.oct` (sky glow + context polygons with their materials), `dc_ab{1,2,3}_ad{8192,32768}.npy` (rcontrib coefficients float32 `[N x 146 bins x RGB]`) |
 | `_out/ref/index.json` | file index with timings |
 | `_out/run/<case>/` | CLI outputs per compare case (`out.txt`, `out.txt.json`, `bits.npy`, `sky.txt`, `sun.txt`) |
-| `_out/golden/<case>/` | golden.py byte goldens: `out.npy` + `out.npy.json`, `series.npy` + `series.npy.hoys.txt`, `bits.npy` where the case asks; `recorded.txt` = commit + exe they came from. Variants (slot-block `.dmesh`, opaque `--optics` with `--transmission` off and on, translucent rows with `--transmission off`, `--bounces 0`) are compared to their base case's files and run once `daylight --help` lists their flags |
+| `_out/golden/<case>/` | golden.py byte goldens: `out.npy` + `out.npy.json`, `series.npy` + `series.npy.hoys.txt`, `bits.npy` where the case asks; `recorded.txt` = commit + exe they came from. Variants (slot-block `.dmesh`, opaque `--optics` with `--transmission` off and on, translucent rows with `--transmission off`, `--bounces 0`, `--virtual-ground off` against `--ground 0`) are compared to their base case's files and run once `daylight --help` lists their flags |
+| `_out/golden/views/<case>/` | views goldens (own `recorded.txt`), default jitter (seeded, so byte-stable) unless a case turns it off: `walls_view` (default view mode on the walls' facades), `walls_jitter_off`, `walls_virtual_ground_off`, `box_360` (`--fov 360 --offset 1.6`, also `--dump-rays rays.npy` + `rays.npy.depth.npy`), `box_targets` (`--target box_a=water;box_b=park --distance mean,min,group --reach en17037`), `overhang_sides_both` |
+| `_out/views/<case>/` | views.py: the views run (`out.npy` + `.json`, `rays.npy` + `rays.npy.depth.npy`) and its Radiance scene (`scene.rad`, frozen `scene.oct`); `street/` the generated scene (`facade.obj`, `street.obj`, `context.obj`), `ladybug/<set>/` the Ladybug comparison |
 
 Scenes (tri/quad only): `flat` 10x10 m, 1 m quads; `flat_tri`; `walls` N/E/S/W 10x3 m, 0.5 m cells, outward normals,
 mesh order north, east, south, west; `box` = flat + two open 4x4x6 m boxes (no bottom face) at (0,6) and (-8,0);
@@ -154,3 +163,60 @@ SkyMatrix data (`dir + dif` per sky patch, `rho * mean` for every ground directi
 
 The CLI dump formats compare.py reads (`--out` + `.json` manifest, `--dump-bits`, `--dump-sky`, `--dump-sun`) are
 listed at the top of `compare.py`; they follow what `src/run.cpp` / `src/main.cpp` write.
+
+## views.py (views.exe ray by ray)
+
+Every case runs `views --jitter off --out out.npy --dump-rays rays.npy` and rebuilds each ray on the host: the sensors
+as `src/mesh.cpp` `make_sensors_into` (physical rules: Newell normal, area-weighted fan centroid, vertex normals from
+the faces' Newell vectors; `--offset`, `--sides`, `--on vertices`), recentred to float32 on the bounding-box centre and
+nudged by `offset_ray` as the core does, the directions as `__raygen__view` at the cell centres (rows top-down from HI,
+columns clockwise; view mode in the sensor's frame, 360 mode in the world's turned by `--north`). Radiance traces the
+blocking meshes (context, receivers unless `--no-self-occlude` / `--no-occlude`) as the core's triangles at its float32
+positions, one modifier per class (`c2` obstruction, `c3` + g target group g), with `rtrace -ab 0 -oLmN` from a frozen
+octree. The virtual ground is applied on the host, not in the Radiance scene: a downward ray whose hit lies past the
+core's ray end (1 cm under the plane) or that hits nothing is `ground` at its plane distance; an eye on or below the
+plane gives `ground` at 0.1 m (untraced); with `--virtual-ground off` a downward miss is `ground` at +inf; a miss on or
+above the horizon (dir.z >= 0, so `box_360_own`'s level row) is `sky`. Own-surface rays (360 mode, `--offset 0`,
+n.d <= 0) must be class 254.
+
+| check | reference | metric | limit | hard |
+|---|---|---|---|---|
+| class | rtrace + the host's virtual ground | compared rays in the same class | >= 99.9 % | yes |
+| distance | ditto | of those with a finite distance, `\|dt\| <= 1e-5 t + 1e-4 m` | >= 99.9 % | yes |
+| columns | the run's own dump | `out.npy` recomputed: shares and `reach_*`; log means (the core takes float logs); minima | 1e-9; 1e-6 rel; exact | yes |
+| ladybug | LB View Percent types 0, 2, 3 (ladybug-core `view_sphere`, resolutions 1 and 3), rays traced by rtrace | views `--jitter off` unobstructed share - Ladybug's (sky; plus ground for types 0 and 2) | - | info |
+
+Not compared: grazing hits (`|cos| < 0.05` with the face rtrace hit), hits within 1 mm (in z) of the core's downward
+ray end, and rays within 1e-6 of a sign test (n.d for the own surface, dir.z; exact zeros agree on both sides).
+Geometry lying on the plane itself (a terrain at the lowest point) is compared: the core's ray goes on 1 cm past it.
+The virtual ground counts as a surface: a ray meeting it at `|dir.z| < 0.05` keeps its class check but not its
+distance, which divides the core's float32 rounding of dir.z (~3e-8) by |dir.z| (8 cm at 350 m, 0.02 deg below the
+horizon). Ladybug type 1 (Horizontal30DegreeOffset) is left out: its band depends on how the interpreter rounds.
+
+| case | meshes | flags |
+|---|---|---|
+| `box_view` | `tests/box.obj` | defaults: view mode `120,-70,50`, 2 deg |
+| `box_vertices` | `tests/box.obj` | `--on vertices` (box corners: normals of 3 faces) |
+| `box_360_both` | `tests/box.obj` | `--fov 360 --offset 1.6 --sides both --cell 3` (back eyes below the plane) |
+| `box_360_own` | `tests/box.obj` | `--fov 360 --cell 4` (own surface) |
+| `fixture_box_north` | `box` fixture | `--north 30 --cell 3` (facing up: right = east turned by north) |
+| `fixture_tilt30` | `tilt30` fixture | `--cell 3` |
+| `street_facade` | street `facade` | `--target lake=water;park=park --distance mean,min,group --reach en17037` |
+| `street_360` | street `street` | targets, `--fov 360 --offset 1.6 --north 20 --distance mean,min,group --reach 6,20,50,100` |
+| `street_vg_off` | street `facade` | targets, `--virtual-ground off --cell 3` |
+| `street_ground_z` | street `facade` | targets, `--ground-z 6 --cell 3` |
+
+The street scene is generated into `_out/views/street/` on every run: a 300 m terrain quad at z 0, open boxes along a
+20 m east-west street (heights 9-30 m), a 60 m tower, tree canopies (3-9 m in the park, 2.5-7 m along the street), a
+lake reaching the street from the south and a park from the north, both lifted 5 cm above the terrain (targets
+`water`, `park`); receivers `facade` (the south face of a 30 m block, 5 m cells, not also in the context) and `street`
+(12 x 6 m cells on the street, coplanar with the terrain). Ladybug's sets: the `street` eyes at `--offset 1.6`, the
+`facade` at 0.1.
+
+Measured at 732ca41 (30-50 s for all, the cases about two thirds): every case 100.000 % in class and distance, the worst
+distance 0.32 x its tolerance; columns: shares within 2e-15, log means 2.4e-7, minima exact. Perturbing the host
+model fails the gate: `--north` negated (class 71 % / 83 %), the target codes swapped (98.9 %), the eye 1 cm up
+(distance 31 %), the plane 2 cm down (distance 64 %). Ladybug, views - Ladybug at resolution 3 (1): street type 0
+-0.08 (+1.19) points, type 2 -0.62 (-0.02), type 3 -1.25 (-0.03); facade +0.42 (+0.58), -0.39 (-0.91), -0.94 (-1.85).
+Ladybug's resolution 3 is no converged reference: its patch vectors sit on rows of pi / 43 (4.19 deg), its weights
+take rows of pi / 45 (4.0 deg; at resolution 1 both are 12 deg).

@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0 AND LicenseRef-Commons-Clause-1.0
 // OptiX host side (context, pipeline from the embedded OptiX-IR, SBT, compacted GAS, TDR-safe sub-launches of the
-// visibility and the reflected-light pass) and the plain CUDA reduce / series kernels. Everything runs on the legacy
-// default stream with synchronous copies.
+// visibility, the reflected-light and the views pass) and the plain CUDA reduce / series / views kernels. Everything runs
+// on the legacy default stream with synchronous copies.
 // ponytail: one stream + synchronous D2H; double-buffer the series copy if it ever exceeds ~1 s per 1e6 sensors.
 #include "internal.h"
 #include "params.h"
@@ -19,10 +19,10 @@ namespace daylight {
 struct Gpu {
   OptixDeviceContext ctx = nullptr;
   OptixModule module = nullptr;
-  OptixProgramGroup pg[5] = {};                     // raygen bits, bytes, bounce, miss, hitgroup
+  OptixProgramGroup pg[6] = {};                     // raygen bits, bytes, bounce, view, miss, hitgroup
   OptixPipeline pipeline = nullptr;
-  OptixShaderBindingTable sbt[3] = {};              // per raygen (kBits, kBytes, kBounce); the same miss and hit records
-  char hdr[5][OPTIX_SBT_RECORD_HEADER_SIZE] = {};   // packed headers of pg (the hitgroup's for every slot's record)
+  OptixShaderBindingTable sbt[4] = {};              // per raygen (kBits, kBytes, kBounce, kView); the same miss and hit records
+  char hdr[6][OPTIX_SBT_RECORD_HEADER_SIZE] = {};   // packed headers of pg (the hitgroup's for every slot's record)
   unsigned maxSbt = 0;                              // OPTIX_DEVICE_PROPERTY_LIMIT_MAX_SBT_RECORDS_PER_GAS
   OptixTraversableHandle gas = 0;
   void *dGas = nullptr, *dSbt = nullptr; size_t sbtCap = 0;
@@ -36,11 +36,16 @@ struct Gpu {
   size_t nBins = 0, dcN = 0, dcI0 = 0;
   void* dScratch = nullptr; size_t scratchCap = 0;   // reduce / series inputs
   void* dOut = nullptr; size_t outCap = 0;           // reduce / series outputs
+  void* dView = nullptr; size_t viewCap = 0;         // the last gpu_view's classes | distances (view_dist) | row sines
+  size_t viewN = 0, viewK = 0, viewNAz = 0;          // ... its sensors, directions, columns
+  void* dLabel = nullptr;                            // views: class per triangle (gpu_set_labels), null: none
   cudaEvent_t ev[2] = {};
   GpuStats stats;
 };
 
-enum { kBits, kBytes, kBounce };   // raygen programs: pg / sbt index
+enum { kBits, kBytes, kBounce, kView };   // raygen programs: pg / sbt index
+constexpr unsigned kViewClasses = 3 + 16;  // sky, ground, obstruction, 16 target groups
+static size_t view_dist(size_t n) { return (n + 255) & ~size_t(255); }   // offset of the distances after n class bytes
 
 #define CU(call) do { cudaError_t e_ = (call); if (e_ != cudaSuccess) { err = std::string(#call) + ": " + cudaGetErrorString(e_); return false; } } while (0)
 #define OX(call) do { OptixResult r_ = (call); if (r_ != OPTIX_SUCCESS) { err = std::string(#call) + ": " + optixGetErrorString(r_); return false; } } while (0)
@@ -162,6 +167,53 @@ __global__ void k_series_dc(unsigned nc, Dc dc, const float* S, int T, float* E)
   }
 }
 
+// Views: one warp per sensor i, lane l sums the directions l, l + 32, ... in order (weight w = wRow[row], double) per class
+// c: w, w x ln d, min d with d = the distance clamped to [0.1, farDist] (open: farDist); the own-surface weight; per reach
+// threshold the weight of distances >= it. Then a fixed shuffle tree adds the lanes, so a sensor's sums do not depend on
+// the chunk it is in. out[i*NA + a]: per class (w, w ln d, min d), then own, then the reach sums. The rays are
+// direction-major (cls[d*nc + i], as __raygen__view stores them): a lane's loads are strided, the block's 8 sensors
+// share their sectors.
+// ponytail: ln d in float (~1e-7 relative in a log mean; the clamps take exact logs, and views.cpp's store() gives a mean
+// all at the far clamp as farDist exactly); a double log costs 4x the reduce (+18 % of a --bench run on the 2060's
+// 1/32-rate FP64), use it if 1e-7 matters
+struct Reach { float d[8]; };
+__device__ __forceinline__ double warp_sum(double v) {
+  for (unsigned s = 16; s; s >>= 1) v += __shfl_down_sync(~0u, v, s);
+  return v;
+}
+__global__ void k_view(unsigned nc, unsigned K, unsigned nAz, const unsigned char* cls, const float* dist, const double* wRow,
+                       unsigned nClass, float farDist, double lnFar, unsigned nReach, Reach reach, double* out) {
+  const unsigned i = blockIdx.x * (blockDim.x / 32) + threadIdx.x / 32, lane = threadIdx.x & 31;
+  if (i >= nc) return;   // whole warps
+  double w[kViewClasses] = {}, wl[kViewClasses] = {}, rc[8] = {}, own = 0;
+  float mn[kViewClasses];
+  for (unsigned c = 0; c < kViewClasses; ++c) mn[c] = __int_as_float(0x7f800000);
+  for (unsigned d = lane; d < K; d += 32) {
+    const unsigned c = cls[size_t(d) * nc + i];
+    const float t = dist[size_t(d) * nc + i];
+    const double wd = wRow[d / nAz];
+    if (c == 254) { own += wd; continue; }
+    const float dd = fminf(fmaxf(t, 0.1f), farDist);
+    w[c] += wd;
+    wl[c] += wd * (dd == farDist ? lnFar : dd == 0.1f ? -2.302585092994045684 : (double)logf(dd));   // ln 0.1
+    mn[c] = fminf(mn[c], dd);
+    for (unsigned r = 0; r < nReach; ++r) if (t >= reach.d[r]) rc[r] += wd;
+  }
+  double* o = out + size_t(i) * (3 * nClass + 1 + nReach);
+  for (unsigned c = 0; c < nClass; ++c) {
+    float m = mn[c];
+    for (unsigned s = 16; s; s >>= 1) m = fminf(m, __shfl_down_sync(~0u, m, s));
+    const double a = warp_sum(w[c]), b = warp_sum(wl[c]);
+    if (!lane) { o[3 * c] = a; o[3 * c + 1] = b; o[3 * c + 2] = m; }
+  }
+  const double ow = warp_sum(own);
+  if (!lane) o[3 * nClass] = ow;
+  for (unsigned r = 0; r < nReach; ++r) {
+    const double a = warp_sum(rc[r]);
+    if (!lane) o[3 * nClass + 1 + r] = a;
+  }
+}
+
 // ------------------------------------------------------------------ init / destroy
 static bool init(Gpu& g, std::string& err) {
   int n = 0;
@@ -184,27 +236,27 @@ static bool init(Gpu& g, std::string& err) {
   po.pipelineLaunchParamsVariableName = "params";
   OXL(optixModuleCreate(g.ctx, &mo, &po, reinterpret_cast<const char*>(trace_optixir), trace_optixir_len, log, &logSize, &g.module));
 
-  OptixProgramGroupDesc pd[5] = {};
-  const char* raygen[3] = {"__raygen__bits", "__raygen__bytes", "__raygen__bounce"};
-  for (int k = 0; k < 3; ++k) { pd[k].kind = OPTIX_PROGRAM_GROUP_KIND_RAYGEN; pd[k].raygen.module = g.module; pd[k].raygen.entryFunctionName = raygen[k]; }
-  pd[3].kind = OPTIX_PROGRAM_GROUP_KIND_MISS;     pd[3].miss.module = g.module;       pd[3].miss.entryFunctionName = "__miss__ms";
-  pd[4].kind = OPTIX_PROGRAM_GROUP_KIND_HITGROUP; pd[4].hitgroup.moduleCH = g.module; pd[4].hitgroup.entryFunctionNameCH = "__closesthit__ch";
-  pd[4].hitgroup.moduleAH = g.module; pd[4].hitgroup.entryFunctionNameAH = "__anyhit__tr";
+  OptixProgramGroupDesc pd[6] = {};
+  const char* raygen[4] = {"__raygen__bits", "__raygen__bytes", "__raygen__bounce", "__raygen__view"};
+  for (int k = 0; k < 4; ++k) { pd[k].kind = OPTIX_PROGRAM_GROUP_KIND_RAYGEN; pd[k].raygen.module = g.module; pd[k].raygen.entryFunctionName = raygen[k]; }
+  pd[4].kind = OPTIX_PROGRAM_GROUP_KIND_MISS;     pd[4].miss.module = g.module;       pd[4].miss.entryFunctionName = "__miss__ms";
+  pd[5].kind = OPTIX_PROGRAM_GROUP_KIND_HITGROUP; pd[5].hitgroup.moduleCH = g.module; pd[5].hitgroup.entryFunctionNameCH = "__closesthit__ch";
+  pd[5].hitgroup.moduleAH = g.module; pd[5].hitgroup.entryFunctionNameAH = "__anyhit__tr";
   OptixProgramGroupOptions pgo = {};
   logSize = sizeof log;
-  OXL(optixProgramGroupCreate(g.ctx, pd, 5, &pgo, log, &logSize, g.pg));
+  OXL(optixProgramGroupCreate(g.ctx, pd, 6, &pgo, log, &logSize, g.pg));
 
   OptixPipelineLinkOptions lo = {};
   lo.maxTraceDepth = 1;
   logSize = sizeof log;
-  OXL(optixPipelineCreate(g.ctx, &po, &lo, g.pg, 5, log, &logSize, &g.pipeline));
+  OXL(optixPipelineCreate(g.ctx, &po, &lo, g.pg, 6, log, &logSize, &g.pipeline));
   OptixStackSizes ss = {};
   for (OptixProgramGroup p : g.pg) OX(optixUtilAccumulateStackSizes(p, &ss, g.pipeline));
   unsigned trav = 0, state = 0, cont = 0;
   OX(optixUtilComputeStackSizes(&ss, 1, 0, 0, &trav, &state, &cont));
   OX(optixPipelineSetStackSize(g.pipeline, trav, state, cont, 1));
 
-  for (int k = 0; k < 5; ++k) OX(optixSbtRecordPackHeader(g.pg[k], g.hdr[k]));
+  for (int k = 0; k < 6; ++k) OX(optixSbtRecordPackHeader(g.pg[k], g.hdr[k]));
   CU(cudaMalloc(reinterpret_cast<void**>(&g.dParams), sizeof(Params)));
   CU(cudaEventCreate(&g.ev[0])); CU(cudaEventCreate(&g.ev[1]));
   return gpu_set_slots(g, {Slot{}}, err);   // one opaque slot until a scene brings its own
@@ -223,7 +275,7 @@ void gpu_destroy(Gpu* g) {
   for (OptixProgramGroup p : g->pg) if (p) optixProgramGroupDestroy(p);
   if (g->module) optixModuleDestroy(g->module);
   if (g->ctx) optixDeviceContextDestroy(g->ctx);
-  for (void* p : {g->dGas, g->dSbt, (void*)g->dParams, (void*)g->dP, (void*)g->dN, (void*)g->dD, g->dVis, g->dDc, g->dScratch, g->dOut}) cudaFree(p);
+  for (void* p : {g->dGas, g->dSbt, (void*)g->dParams, (void*)g->dP, (void*)g->dN, (void*)g->dD, g->dVis, g->dDc, g->dScratch, g->dOut, g->dView, g->dLabel}) cudaFree(p);
   for (cudaEvent_t e : g->ev) if (e) cudaEventDestroy(e);
   delete g;
 }
@@ -254,16 +306,17 @@ size_t gpu_build_bytes(Gpu& g, size_t nVerts, size_t nTris, bool slotted, std::s
   return std::max(inputs + sz.tempSizeInBytes + sz.outputSizeInBytes, 2 * sz.outputSizeInBytes);
 }
 
-// Frees the per-run device buffers: the chunk buffers (visibility, reflected-light rows, reduce scratch and outputs) and,
-// with sensors, the sensor points and normals. They grow back on the next run.
+// Frees the per-run device buffers: the chunk buffers (visibility, reflected-light rows, reduce scratch and outputs, views'
+// classes and distances) and, with sensors, the sensor points and normals and views' labels. They grow back on the next run.
 void gpu_trim(Gpu& g, bool sensors) {
   cudaFree(g.dVis); g.dVis = nullptr; g.visCap = 0;
   cudaFree(g.dDc); g.dDc = nullptr; g.dcCap = 0;
   cudaFree(g.dScratch); g.dScratch = nullptr; g.scratchCap = 0;
   cudaFree(g.dOut); g.dOut = nullptr; g.outCap = 0;
+  cudaFree(g.dView); g.dView = nullptr; g.viewCap = 0; g.viewN = 0;
   if (sensors) {
-    cudaFree(g.dP); cudaFree(g.dN);
-    g.dP = g.dN = nullptr;
+    cudaFree(g.dP); cudaFree(g.dN); cudaFree(g.dLabel);
+    g.dP = g.dN = nullptr; g.dLabel = nullptr;
     g.nSensors = 0;
   }
 }
@@ -346,19 +399,19 @@ bool gpu_build(Gpu& g, const Tris& t, const std::vector<Slot>& slots, std::strin
 
 bool gpu_set_slots(Gpu& g, const std::vector<Slot>& slots, std::string& err) {
   struct alignas(OPTIX_SBT_RECORD_ALIGNMENT) Rec { char header[OPTIX_SBT_RECORD_HEADER_SIZE]; Slot s; };
-  std::vector<Rec> rec(4 + std::max<size_t>(1, slots.size()));   // the three raygens, miss, one hit record per slot
+  std::vector<Rec> rec(5 + std::max<size_t>(1, slots.size()));   // the four raygens, miss, one hit record per slot
   for (size_t k = 0; k < rec.size(); ++k) {
-    std::memcpy(rec[k].header, g.hdr[std::min<size_t>(k, 4)], sizeof rec[k].header);
-    rec[k].s = k >= 4 && k - 4 < slots.size() ? slots[k - 4] : Slot{};
+    std::memcpy(rec[k].header, g.hdr[std::min<size_t>(k, 5)], sizeof rec[k].header);
+    rec[k].s = k >= 5 && k - 5 < slots.size() ? slots[k - 5] : Slot{};
   }
   if (!grow(&g.dSbt, &g.sbtCap, rec.size() * sizeof(Rec), err)) return false;
   CU(cudaMemcpy(g.dSbt, rec.data(), rec.size() * sizeof(Rec), cudaMemcpyHostToDevice));
   const CUdeviceptr base = reinterpret_cast<CUdeviceptr>(g.dSbt);
-  for (int k = 0; k < 3; ++k) {
+  for (int k = 0; k < 4; ++k) {
     OptixShaderBindingTable& s = g.sbt[k];
     s.raygenRecord = base + k * sizeof(Rec);
-    s.missRecordBase = base + 3 * sizeof(Rec);     s.missRecordStrideInBytes = sizeof(Rec);     s.missRecordCount = 1;
-    s.hitgroupRecordBase = base + 4 * sizeof(Rec); s.hitgroupRecordStrideInBytes = sizeof(Rec); s.hitgroupRecordCount = unsigned(rec.size() - 4);
+    s.missRecordBase = base + 4 * sizeof(Rec);     s.missRecordStrideInBytes = sizeof(Rec);     s.missRecordCount = 1;
+    s.hitgroupRecordBase = base + 5 * sizeof(Rec); s.hitgroupRecordStrideInBytes = sizeof(Rec); s.hitgroupRecordCount = unsigned(rec.size() - 5);
   }
   return true;
 }
@@ -455,6 +508,48 @@ bool gpu_bounce(Gpu& g, size_t i0, size_t nc, unsigned rayFlags, const Bounce& b
   return true;
 }
 
+bool gpu_set_labels(Gpu& g, const std::vector<uint8_t>& label, std::string& err) { return upload(&g.dLabel, label.data(), label.size(), err); }
+
+bool gpu_view(Gpu& g, size_t i0, size_t nc, unsigned rayFlags, const ViewLaunch& v, size_t& launch, std::string& err) {
+  if (i0 + nc > g.nSensors) { err = "gpu_view: sensor range exceeds the scene"; return false; }
+  const size_t K = size_t(v.nAz) * v.nEl, nWords = (K + 31) / 32, sines = view_dist(nc * K) + view_dist(nc * K * sizeof(float));
+  if (!grow(&g.dView, &g.viewCap, sines + v.nEl * sizeof(float2), err)) return false;
+  g.viewN = nc; g.viewK = K; g.viewNAz = v.nAz;
+  char* b = static_cast<char*>(g.dView);
+  CU(cudaMemcpy(b + sines, v.rowSin, v.nEl * sizeof(float2), cudaMemcpyHostToDevice));
+  if (nc == 0 || K == 0) return true;
+  const double rad = v.north * 3.14159265358979323846 / 180;
+  Params p = {};
+  p.gas = g.gas; p.rayFlags = rayFlags; p.cosN = float(std::cos(rad)); p.sinN = float(std::sin(rad));
+  p.label = static_cast<const unsigned char*>(g.dLabel); p.rowSin = reinterpret_cast<const float2*>(b + sines);
+  p.nAz = v.nAz; p.nEl = v.nEl; p.az0 = v.az0; p.dAz = v.dAz;
+  p.world = v.world; p.cull = v.cull; p.jitter = v.jitter; p.nS = v.nS; p.back = v.back; p.vground = v.vground; p.groundZ = v.groundZ;
+  // Closest hits cost as varied as gpu_trace's byte mode (a street's rays end at the next facade, a roof's cross the
+  // city), so its policy: 2^13 threads first and at least, then ~40 ms, at most doubling.
+  // ponytail: the size carries across chunks, so sensors > ~50x costlier than the previous launch's (open views, then a
+  // box pile like daylight's --bench: 60-90x) can pass the 2 s TDR; cap a launch's rays if that shows up
+  const size_t nMin = std::max<size_t>(1, (size_t(1) << 13) / nWords);
+  size_t n = std::max(launch, nMin);
+  p.nc = unsigned(nc);   // the row stride: a sub-launch writes its slice cls[d*nc + done + i]
+  for (size_t done = 0; done < nc;) {
+    if (v.cancel && v.cancel->load()) { err = "cancelled"; return false; }
+    const size_t m = std::min(n, nc - done);
+    p.P = g.dP + i0 + done; p.N = g.dN + i0 + done; p.i0 = unsigned(i0 + done);
+    p.cls = reinterpret_cast<unsigned char*>(b) + done; p.dist = reinterpret_cast<float*>(b + view_dist(nc * K)) + done;
+    CU(cudaMemcpy(g.dParams, &p, sizeof p, cudaMemcpyHostToDevice));
+    CU(cudaEventRecord(g.ev[0]));
+    OX(optixLaunch(g.pipeline, 0, reinterpret_cast<CUdeviceptr>(g.dParams), sizeof(Params), &g.sbt[kView], (unsigned)m, (unsigned)nWords, 1));
+    CU(cudaEventRecord(g.ev[1])); CU(cudaEventSynchronize(g.ev[1]));
+    float ms = 0; CU(cudaEventElapsedTime(&ms, g.ev[0], g.ev[1]));
+    g.stats.traceMs += ms; g.stats.rays += m * K; g.stats.launches++;
+    done += m;
+    const double want = double(m) * 40 / std::max<double>(ms, 1e-3);
+    n = std::max(nMin, std::min(2 * n, want > 1e12 ? size_t(1) << 40 : size_t(want)));
+  }
+  launch = n;
+  return true;
+}
+
 bool gpu_reduce(Gpu& g, size_t nc, const float* W, bool useCos, double* out, std::string& err) {
   if (nc == 0) return true;
   if (!grow(&g.dScratch, &g.scratchCap, g.nDir * sizeof(float), err) || !grow(&g.dOut, &g.outCap, nc * sizeof(double), err)) return false;
@@ -514,6 +609,25 @@ bool gpu_series(Gpu& g, size_t nc, const SeriesIn& in, float* E, std::string& er
   return true;
 }
 
+bool gpu_reduce_view(Gpu& g, size_t nc, const std::vector<double>& wRow, unsigned nClass, double farDist, const std::vector<float>& reach,
+                     double* out, std::string& err) {
+  if (nc == 0) return true;
+  if (nc != g.viewN) { err = "gpu_reduce_view: no gpu_view for this chunk"; return false; }
+  if (nClass > kViewClasses || reach.size() > 8) { err = "gpu_reduce_view: at most 16 groups and 8 reach distances"; return false; }
+  const size_t NA = 3 * nClass + 1 + reach.size();
+  if (!grow(&g.dScratch, &g.scratchCap, wRow.size() * sizeof(double), err) || !grow(&g.dOut, &g.outCap, nc * NA * sizeof(double), err)) return false;
+  CU(cudaMemcpy(g.dScratch, wRow.data(), wRow.size() * sizeof(double), cudaMemcpyHostToDevice));
+  Reach r = {};
+  std::copy(reach.begin(), reach.end(), r.d);
+  const char* b = static_cast<const char*>(g.dView);
+  k_view<<<unsigned((nc + 7) / 8), 256>>>((unsigned)nc, (unsigned)g.viewK, (unsigned)g.viewNAz, reinterpret_cast<const unsigned char*>(b),
+                                         reinterpret_cast<const float*>(b + view_dist(nc * g.viewK)), static_cast<const double*>(g.dScratch),
+                                         nClass, float(farDist), std::log(farDist), (unsigned)reach.size(), r, static_cast<double*>(g.dOut));
+  CU(cudaGetLastError());
+  CU(cudaMemcpy(out, g.dOut, nc * NA * sizeof(double), cudaMemcpyDeviceToHost));
+  return true;
+}
+
 bool gpu_download_bits(Gpu& g, size_t nc, std::vector<uint32_t>& out, std::string& err) {
   if (g.bytes) { err = "gpu_download_bits: the last trace wrote bytes"; return false; }
   out.resize(g.nWords * nc);
@@ -532,6 +646,23 @@ bool gpu_download_dc(Gpu& g, size_t nc, std::vector<float>& out, std::string& er
   if (nc != g.dcN) { err = "gpu_download_dc: no gpu_bounce rows for this chunk"; return false; }
   out.resize(g.nBins * nc);
   if (!out.empty()) CU(cudaMemcpy(out.data(), g.dDc, out.size() * sizeof(float), cudaMemcpyDeviceToHost));
+  return true;
+}
+
+bool gpu_download_view(Gpu& g, size_t nc, std::vector<uint8_t>& cls, std::vector<float>& dist, std::string& err) {
+  if (nc != g.viewN) { err = "gpu_download_view: no gpu_view for this chunk"; return false; }
+  const size_t K = g.viewK;
+  std::vector<uint8_t> c(nc * K);   // the device's [K x nc]
+  std::vector<float> t(nc * K);
+  const char* b = static_cast<const char*>(g.dView);
+  if (!c.empty()) {
+    CU(cudaMemcpy(c.data(), b, c.size(), cudaMemcpyDeviceToHost));
+    CU(cudaMemcpy(t.data(), b + view_dist(c.size()), t.size() * sizeof(float), cudaMemcpyDeviceToHost));
+  }
+  cls.resize(nc * K);
+  dist.resize(nc * K);
+  for (size_t d = 0; d < K; ++d)
+    for (size_t i = 0; i < nc; ++i) { cls[i * K + d] = c[d * nc + i]; dist[i * K + d] = t[d * nc + i]; }
   return true;
 }
 

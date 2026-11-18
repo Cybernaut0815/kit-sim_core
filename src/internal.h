@@ -3,6 +3,7 @@
 #pragma once
 #include "daylight.h"
 #include "params.h"         // Slot
+#include "views.h"
 #include <cstdio>
 #include <functional>
 #include <vector_types.h>   // float3, uint3 (CUDA toolkit, header-only)
@@ -95,6 +96,13 @@ bool resolve_no_occlude(const std::vector<MeshView>& meshes, const std::vector<s
 inline bool resolve_no_occlude(const std::vector<Mesh>& meshes, const std::vector<std::string>& names, std::vector<char>& open, std::string& err) {
   return resolve_no_occlude(views_of(meshes), names, open, err);
 }
+// views::Options::targets: cls[k] = 3 + g when mesh k is a target of groups[g] (groups in order of first appearance), else
+// 2 (an obstruction). Errors: NAME/SLOT (face-slot targets are not supported), a GROUP not [A-Za-z0-9_-]+ or reserved (sky,
+// ground, obstruction, distance*, reach*, *_distance, *_distance_min: column names), an unknown or ambiguous name, a
+// mesh given twice, a mesh that blocks no rays (a sensor mesh under --no-self-occlude or open[k], --no-occlude), more
+// than 16 groups.
+bool resolve_targets(const std::vector<MeshView>& meshes, const std::vector<views::Target>& targets, bool selfOcclude,
+                     const std::vector<char>& open, std::vector<std::string>& groups, std::vector<uint8_t>& cls, std::string& err);
 // Faces of slot s in m (recentred by c) as one closed thin solid: positions welded on a 1e-5 m grid, every edge used
 // as often in each direction (closed, consistently wound), 2 |V| / S < 0.1 m -> kSlotThin, | kSlotInward when the signed
 // volume is negative, | kSlotTwin instead when 2 |V| / S is below the weld grid (faces repeated with the opposite
@@ -105,11 +113,9 @@ unsigned thin_solid(const Mesh& m, unsigned s, const double c[3]);
 // Sensor points/normals per face or per point per opt (mode rules, offset, sides). Appends to out: one entry per
 // element, or two consecutive entries (front, back) when sides == Both. Returns the element count (faces or points).
 size_t make_sensors(const Mesh& m, const Options& opt, const double c[3], Sensors& out, std::string& warn);
-// The same into caller ranges p / n of elements x sides entries (0 and the ladybug error in warn: nothing written).
-size_t make_sensors_into(const Mesh& m, const Options& opt, const double c[3], float3* p, float3* n, std::string& warn);
-
-// ------------------------------------------------------------------ run.cpp
-bool npy_write_header(std::FILE* f, size_t rows, size_t cols, const char* descr);   // .npy v1.0 [rows x cols] C order, descr "<f8" / "<f4" / "<u4" / "<u1"
+// The same into caller ranges p / n of elements x sides entries, by the ladybug mode's rules when ladybug (0 and the
+// ladybug error in warn: nothing written).
+size_t make_sensors_into(const Mesh& m, const RunOptions& opt, bool ladybug, const double c[3], float3* p, float3* n, std::string& warn);
 
 // ------------------------------------------------------------------ gpu.cu
 struct Gpu;
@@ -170,6 +176,31 @@ bool gpu_reduce_dc(Gpu& g, size_t nc, const float* W, double* out, std::string& 
 bool gpu_download_dc(Gpu& g, size_t nc, std::vector<float>& out, std::string& err);    // [(P+1) x nc] as on device
 bool gpu_download_bits(Gpu& g, size_t nc, std::vector<uint32_t>& out, std::string& err);   // [nWords x nc] as on device
 bool gpu_download_bytes(Gpu& g, size_t nc, std::vector<uint8_t>& out, std::string& err);   // byte mode: [nDir x nc]
+// Views (views.cpp, trace_dev.cu __raygen__view): a run's grid of K = nAz x nEl directions per sensor, rows top-down,
+// columns clockwise from az0, and how its rays end (see Params).
+struct ViewLaunch {
+  unsigned nAz = 1, nEl = 1;
+  float az0 = 0, dAz = 1;              // degrees: the first column's left edge (-H / 2 about the gaze; 360 mode: 0 = north)
+  const float* rowSin = nullptr;       // [2 nEl] host: sin of each row's bottom and top elevation
+  bool world = false, cull = false, jitter = true, back = false, vground = true;
+  unsigned nS = 1;                     // sides per element (sensor i is element i / nS: the seeds)
+  float groundZ = 0;                   // the virtual ground plane (recentred)
+  double north = 0;                    // degrees: true north of the 360 frame, a flat sensor's right (east turned)
+  const std::atomic<bool>* cancel = nullptr;
+};
+// Class per triangle of the GAS (build order), read at views' hits; empty: none, every hit an obstruction.
+bool gpu_set_labels(Gpu& g, const std::vector<uint8_t>& label, std::string& err);
+// Trace sensors [i0, i0+nc) over the grid; classes and distances stay on device, direction-major [K x nc]. Sub-launches
+// as gpu_trace's byte mode (2^13 threads first and at least, then ~40 ms, at most doubling), the size carried from chunk
+// to chunk in launch (0 = start over); v.cancel is checked between them.
+bool gpu_view(Gpu& g, size_t i0, size_t nc, unsigned rayFlags, const ViewLaunch& v, size_t& launch, std::string& err);
+// out (host, nc x NA doubles, NA = 3 nClass + 1 + reach.size()) for the last gpu_view: per sensor and class the weight,
+// weight x ln d and min d (d = the distance clamped to [0.1, farDist]; min +inf: the class is not in view), then the
+// own-surface weight, then per reach threshold the weight whose distance is at least it. wRow: weight per row.
+// Deterministic: the same bits for any chunking.
+bool gpu_reduce_view(Gpu& g, size_t nc, const std::vector<double>& wRow, unsigned nClass, double farDist, const std::vector<float>& reach,
+                     double* out, std::string& err);
+bool gpu_download_view(Gpu& g, size_t nc, std::vector<uint8_t>& cls, std::vector<float>& dist, std::string& err);   // [nc x K] each (transposed)
 struct GpuStats {
   double buildMs = 0, traceMs = 0, bounceMs = 0;
   size_t rays = 0, gasBytes = 0, launches = 0, paths = 0, bounceLaunches = 0;
@@ -180,5 +211,49 @@ GpuStats gpu_stats(const Gpu& g);
 unsigned gpu_ray_flags(bool cullBackfaces, bool translucent);
 // The bounce pass's closest hits: DISABLE_ANYHIT [| CULL_BACK_FACING_TRIANGLES] (it handles translucent slots itself)
 unsigned gpu_bounce_flags(bool cullBackfaces);
+
+// ------------------------------------------------------------------ run.cpp
+bool npy_write_header(std::FILE* f, size_t rows, size_t cols, const char* descr);   // .npy v1.0 [rows x cols] C order, descr "<f8" / "<f4" / "<u4" / "<u1"
+// An occluder scene as the process keeps it (installed in the Gpu, or parked in VRAM under its key) and a run sees it.
+struct SceneMesh {   // a mesh's triangles [tri0, tri0 + nTri) of the GAS, its name and Mesh as the building run had them
+  std::string name; size_t tri0 = 0, nTri = 0; const Mesh* mesh = nullptr;
+};
+struct Scene {
+  std::string key;
+  double c[3] = {0, 0, 0};          // bbox centre the scene's triangles were recentred by
+  size_t nTris = 0;
+  int skipped = 0;                  // faces left out (degenerate / fewer than 3 vertices)
+  std::vector<SceneMesh> order;     // build order: every blocking mesh in input order, named as the building run named it
+  std::vector<unsigned> thin;       // per global slot: thin_solid() of the transmitting slots, from the build (empty: none)
+  GasSlot gas;                      // parked scenes only
+};
+// A run's occluder scene, shared by the tools. A non-empty key (the caller's sceneKey plus whatever else its GAS depends
+// on) reuses the resident scene of that key, installed or parked (out.sceneReused). Else the meshes k with blocks(k) are
+// triangulated (recentred by the bbox centre of all meshes; a global slot per triangle when slotted) and built
+// (gpu_build(slots, slotted)) once the build's peak fits: the per-run buffers go, then parked scenes, oldest first, else
+// "out of memory: building the scene ...". The installed keyed scene is parked first when residentScenes > 1.
+// s = the scene's record (no gas). gpu null: a run without rays, the lookup only (no GPU, nothing built or moved); else
+// *gpu = the process's GPU (made on first use) with the scene installed. A set cancel fails with "cancelled" before any
+// GPU work; out.stats.prepMs / buildMs grow by the triangulation / build; stage names each step (run()'s out-of-memory text).
+bool scene_acquire(const std::vector<MeshView>& meshes, const std::function<bool(size_t)>& blocks, const std::vector<Slot>& slots,
+                   bool slotted, const std::string& key, int residentScenes, const std::atomic<bool>* cancel, Gpu** gpu, Scene& s,
+                   Result& out, const char*& stage, std::string& err);
+// Room on the GPU beside the scene for a run of nSens sensors (points and normals) traced in chunks of chunkBytes /
+// perSensor sensors (perSensor: the largest per-chunk buffer's bytes per sensor, chunkBytes caps each), chunkSensor
+// device bytes per sensor of a chunk, fixedBytes more per run (views' labels). The last run's buffers go (gpu_trim), then
+// parked scenes beyond residentScenes or in the way, then chunkBytes halves down to 32 MiB (no number depends on the
+// chunking); else "out of memory: ...".
+bool run_admission(Gpu& g, size_t nSens, size_t perSensor, size_t chunkSensor, size_t fixedBytes, int residentScenes, size_t& chunkBytes,
+                   std::string& err);
+// The --no-occlude part of a scene key ("\nopen k,k..."): the meshes left out of the GAS; none under --no-self-occlude,
+// which leaves every sensor mesh out anyway (the caller's key carries selfOcclude), so there another set reuses the scene.
+std::string open_key(const std::vector<char>& open, bool selfOcclude);
+// The resident scene of key goes (installed: kept in the Gpu without a key; parked: freed): the next scene_acquire of key
+// builds afresh.
+void scene_forget(const std::string& key);
+// The sensors of every sensor mesh (make_sensors_into, a task per mesh) into s, nSens entries in mesh order; out.ranges =
+// (name, elements) per sensor mesh; the meshes' warnings joined into warn. False with err on the ladybug error.
+bool sensors_of(const std::vector<MeshView>& meshes, const RunOptions& opt, bool ladybug, const double c[3], size_t nSens, Sensors& s,
+                Result& out, std::string& warn, std::string& err);
 
 }  // namespace daylight

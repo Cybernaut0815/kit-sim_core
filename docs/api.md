@@ -21,6 +21,9 @@ double roofRadiation = r.values[0], roofSunHours = r.values[1];
 // no weather file: daylight::clear_sky_weather(52.52, 13.41, 1, 3.0, 0.0, w, err) instead of read_epw (lat, lon, tz, TL, altitude)
 ```
 
+`daylight::Options` extends `daylight::RunOptions`, the fields every tool of the library takes alike (sensors,
+occluders, resident scenes, run control; see [C++: views](#c-views)), with the sky, optics, time and dump fields.
+
 Inputs from memory (uploads, no files): `read_dmesh(data, size, name, meshes, err)` parses one `.dmesh` image,
 `read_epw(istream, label, w, err)` parses EPW text. A long-lived process (a server) sets `Options::sceneKey` to an
 identity of its meshes + `selfOcclude`: when the key equals the previous run's, the occluder triangles and the OptiX
@@ -55,6 +58,55 @@ for (auto& m : meshes) m.sensor = m.name.rfind("/World/Bldg", 0) == 0;   // prim
 daylight::Weather w; daylight::Result r;
 if (!daylight::read_epw("site.epw", w, err) || !daylight::run(meshes, &w, daylight::Options{}, r, err)) throw std::runtime_error(err);
 ```
+
+## C++: views
+
+`src/views.h` (namespace `daylight::views`) runs the view analysis of [views.md](views.md) in-process, on the same
+library, GPU and resident scenes as `daylight::run`.
+
+```cpp
+#include "views.h"
+#include <stdexcept>
+daylight::Mesh facade, lake;                       // facade: a receiver (Mesh::sensor = true, the default)
+facade.name = "facade"; facade.points = {10,0,0, 0,0,0, 0,0,3, 10,0,3}; facade.counts = {4}; facade.indices = {0,1,2,3};
+lake.name = "lake"; lake.sensor = false;           // context: blocks only
+lake.points = {-20,15,0, 30,15,0, 30,35,0, -20,35,0}; lake.counts = {4}; lake.indices = {0,1,2,3};
+daylight::views::Options opt;                      // --fov 120,-70,50 --cell 2, jitter on, distance + distance_min
+opt.targets = {{"lake", "water"}};                 // rays ending on mesh "lake" count for group "water"
+opt.reach = {6, 20, 50};                           // --reach en17037
+daylight::Result r; std::string err;
+if (!daylight::views::run({facade, lake}, opt, r, err)) throw std::runtime_error(err);
+double water = r.values[3], distance = r.values[4];   // r.values: N x r.columns.size() row-major, as daylight::run
+// r.columns: sky_front ground_front obstruction_front water_front distance_front distance_min_front reach_6_front ...
+```
+
+`daylight::RunOptions` (`daylight.h`) holds what every mesh-sensor tool of the library takes alike: `sides`,
+`cullBackfaces`, `onVertices`, `selfOcclude`, `noOcclude`, `north`, `offset`, `virtualGround`, `sceneKey`,
+`residentScenes`, `cancel`, `verbose`, `chunkBytes`, `f32Columns` and `progress`. `daylight::Options` and
+`daylight::views::Options` both derive from it, so these fields mean the same in both runs (`virtualGround` is
+daylight's ground light and views' ground plane). `views::Options` adds the field (`fovH`, `elevLo`, `elevHi`, `cell`,
+`jitter`), `targets` (`views::Target {mesh, group}`, mesh = `Mesh::name` as in `noOcclude`), the distance columns
+(`distMean`, `distMin`, `distGroup`), `farDist` (`--far`; `far` itself is a macro of `windef.h`), `groundZ` (NAN = the
+meshes' lowest point), `reach` and `dumpPath` (`--dump-rays`), with the CLI's defaults.
+
+`views::run(meshes, opt, out, err)`, over `Mesh` or `MeshView` (a view's name and role count) as `daylight::run`, fills
+`Result::values` (or `Result::f32` with `f32Columns`), `columns` and `ranges` as daylight does
+([views.md](views.md#output)); `nSky`, `nSun` and `durationHours` stay 0, `stats.rays` is sensors x rays per sensor.
+It fails on bad options, on target or `noOcclude` names the meshes do not resolve, and when memory runs out ("out of
+memory: ...", never the process); `cancel` stops it at its next check (before the GPU, per chunk, between launches)
+with "cancelled", and `progress` goes to 1 chunk by chunk. One call at a time per process, shared with `daylight::run`
+(one GPU). `views::field(meshes, opt, f, err)` is what `run()` derives before tracing: the option checks (false with
+err), the grid (`f.nEl` rows x `f.nAz` columns of rays per sensor) and the virtual ground's height `f.groundZ`
+(`opt.groundZ`, else the lowest point of `meshes`; an empty list checks the options only); the CLI writes its manifest
+from it.
+
+Resident scenes: a views run builds daylight's opaque scene under daylight's key (`sceneKey` + the `noOcclude` set), so
+under one `sceneKey` it reuses a scene a daylight run built (one without transmitting slots or a hit record per slot)
+and the other way round (`Result::sceneReused`). Targets are labels per run, taken from the scene's build order by mesh
+(the same `Mesh` object under the same name): changing them never rebuilds the scene, unless the scene lacks a target
+so (built under other names, or the name now on another mesh), which rebuilds it under the key. A failed run removes
+its `dumpPath` files. `src/cli.h` (`daylight::views::cli::parse` / `manifest_json` / `kUsage`)
+exposes the views CLI's flag parsing and manifest for front ends that accept its flags verbatim.
 
 ## Python
 

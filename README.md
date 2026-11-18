@@ -4,6 +4,11 @@ GPU annual daylight / solar simulation for meshes. Generic face-vertex meshes in
 face or per vertex, input order). Ray casting on NVIDIA RT cores via OptiX 9; sky model is a port of Radiance
 `gendaymtx` (Perez all-weather); results validated against Ladybug Tools, Radiance and pvlib.
 
+The repository holds two tools on one core library (`daylightcore`: mesh readers, sensors, mesh roles, the OptiX
+pipeline and the resident scenes): `daylight.exe`, the simulation this page describes, and `views.exe`, view analysis
+from the same meshes: which share of a field of view ends on sky, ground, obstructions or target groups, and how far
+each face sees ([Views](#views), [docs/views.md](docs/views.md)).
+
 The core is a format-agnostic CLI (and a C++ library) that takes raw vertex / face-vertex-index arrays: `.dmesh`
 files (one `fread`, no library semantics) are the native input, `.obj` is text interop, `.usd*` is interop when the
 CLI is built with `-DDAYLIGHT_USD=ON`. USD, glTF and three.js scenes otherwise go through the bindings
@@ -73,6 +78,22 @@ await applyToThree(roofMesh, values.map((v) => v[0]));               // viridis 
 USD from C++, writing results back onto meshes and the full binding APIs: [docs/api.md](docs/api.md),
 [docs/results-on-meshes.md](docs/results-on-meshes.md).
 
+## Views
+
+`views.exe` is built beside `daylight.exe` from the same `src/main.cpp` and library. From every face or point of the
+receiver meshes it traces one ray per 2 deg cell of a field of view, about the normal (default 120 deg wide, from
+70 deg down to 50 deg up) or all around (`--fov 360`), and gives per element the shares of the field that end on sky,
+ground, an obstruction or each target group (`--target NAME=GROUP`), the log-mean and the nearest distance (open rays
+count as `--far`, 1000 m) and, with `--reach en17037`, the shares that see at least 6, 20 and 50 m. Mesh files, roles,
+rows and the manifest work as in daylight; C++: `daylight::views::run` (`src/views.h`,
+[docs/api.md](docs/api.md#c-views)). Every flag, the semantics and worked examples: [docs/views.md](docs/views.md).
+
+```
+views facade.obj --context city.obj --context lake.obj --target lake=water --reach en17037 --out v.txt   # 120 deg about each face's normal
+views floor.obj --context city.obj --no-occlude floor --fov 360 --offset 1.6 --out v.npy                  # a standing eye, all around (flat floor)
+views --bench
+```
+
 ## Build
 
 Core: VS 2022 (MSVC 14.44), CUDA 12.6, OptiX SDK 9.0 headers (`OPTIX_INSTALL_DIR`; runtime in the driver
@@ -85,8 +106,8 @@ and OptiX ships in the driver. The same exe runs on every such card without a re
 [docs/performance.md](docs/performance.md#other-gpus)).
 
 ```
-cmake --preset vs2022 && cmake --build --preset release && ctest --preset release                 # build/RelWithDebInfo/daylight.exe
-cmake --preset vs2022-usd && cmake --build --preset release-usd && ctest --preset release-usd     # same exe + USD input
+cmake --preset vs2022 && cmake --build --preset release && ctest --preset release                 # build/RelWithDebInfo/daylight.exe, views.exe
+cmake --preset vs2022-usd && cmake --build --preset release-usd && ctest --preset release-usd     # same exes + USD input
 cd bindings/python && uv sync && uv run python -m daylight.check                                  # Python (usd-core, numpy)
 cd bindings/ts && npm install && npm run build && npm test                                        # TypeScript (vitest)
 ```
@@ -106,6 +127,7 @@ service, note that the OptiX SDK licence restricts hosted / internet use and ask
 ## Documentation
 
 - [CLI reference](docs/cli.md): every flag, exit codes, output rows / columns / manifest / units
+- [View analysis](docs/views.md): `views.exe`: field of view, ray classes, distances, roles, flags, outputs, examples
 - [Library and bindings](docs/api.md): C++ API, C++ + USD, Python, TypeScript, bindings overview
 - [Results on meshes](docs/results-on-meshes.md): writing values back to USD primvars, three.js colours, colormaps
 - [Input and semantics](docs/input.md): `.dmesh` / `.obj` / `.usd*` formats, sensor vs context, culling, faces vs vertices

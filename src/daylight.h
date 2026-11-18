@@ -57,30 +57,17 @@ enum class Sides { Front, Back, Both };
 // 0.2 tau 0.
 struct Optics { std::string mesh; int slot = -1; double rho = 0.2, tau = 0; bool glass = false; };
 
-struct Options {
-  Mode mode = Mode::Physical;
-  std::vector<Quantity> quantities = {Quantity::Radiation};
+// What every mesh-sensor ray tool of this library takes alike: sensors, occluders, the resident scene, run control.
+struct RunOptions {
   Sides sides = Sides::Front;
   bool cullBackfaces = false;         // occluders one-sided (winding); default two-sided like Radiance
   bool onVertices = false;            // sensors on points instead of faces
   bool selfOcclude = true;            // sensor meshes also block rays
   std::vector<std::string> noOcclude; // ... but not these (Mesh::name, as in --optics): analysed, invisible to rays (no shade, no reflection)
-  int mf = 1;                        // sky density: 1 (145 patches), 2 (577), 4 (2305)
-  int patchSamples = 1;               // physical: K = m*m stratified rays per patch
-  double ground = 0.2;                // ground reflectance
-  std::vector<Optics> optics;         // per mesh / face slot (--optics); names = Mesh::name
-  bool transmission = false;          // tau lets light through glass / porous slots; false = every slot opaque (as before)
-  bool fresnel = true;                // glass by angle; false = glass passes tau at every angle
-  int bounces = 0;                    // reflected light: diffuse reflections per path, 0..20 (0 = none, as before; physical mode)
-  int bounceSamples = 1024;           // paths per sensor for it, 64..65536
   double north = 0;                   // degrees, counterclockwise from +Y (ladybug convention; 90 = west)
   double offset = 0;                  // sensor offset along the normal, metres
-  double lat = NAN, lon = NAN, tz = NAN;        // override EPW header / no-EPW runs
-  double t0 = NAN, t1 = NAN;          // hour-of-year range [t0, t1); NAN = annual over EPW rows (midpoints)
-  int stepMin = 60;                   // step for ranges, minutes
-  double dayFrom = 0, dayTo = 1440;   // ranges: only steps whose time of day (minutes) is in [dayFrom, dayTo) (--hours)
-  std::string seriesPath;             // .npy time series sink (+ .hoys.txt); empty = off
-  std::string dumpBitsPath, dumpSky, dumpSun;   // validation dumps; empty = off (GPU selection: CUDA_VISIBLE_DEVICES)
+  bool virtualGround = true;          // the virtual ground below the horizon; daylight: its Lambertian reflection of
+                                      // Options::ground (false: black, the numbers of ground 0); views: a plane that ends downward rays
   // Scene identity for long-lived callers (a server). Non-empty and equal to the previous run's key: the occluder
   // triangles and the acceleration structure of that run stay resident and are reused (the caller guarantees the
   // meshes and selfOcclude are unchanged; optics values may change; the noOcclude meshes (with selfOcclude), the set of
@@ -95,6 +82,26 @@ struct Options {
   size_t chunkBytes = size_t(256) << 20;
   bool f32Columns = false;            // Result::f32 (float32, column-major) instead of Result::values: half the memory
   std::atomic<double>* progress = nullptr;   // set by run() after each trace chunk: the share of sensors done, 0..1
+};
+
+// A daylight run: the shared options plus quantities, sky, optics, time span and dumps.
+struct Options : RunOptions {
+  Mode mode = Mode::Physical;
+  std::vector<Quantity> quantities = {Quantity::Radiation};
+  int mf = 1;                        // sky density: 1 (145 patches), 2 (577), 4 (2305)
+  int patchSamples = 1;               // physical: K = m*m stratified rays per patch
+  double ground = 0.2;                // ground reflectance
+  std::vector<Optics> optics;         // per mesh / face slot (--optics); names = Mesh::name
+  bool transmission = false;          // tau lets light through glass / porous slots; false = every slot opaque (as before)
+  bool fresnel = true;                // glass by angle; false = glass passes tau at every angle
+  int bounces = 0;                    // reflected light: diffuse reflections per path, 0..20 (0 = none, as before; physical mode)
+  int bounceSamples = 1024;           // paths per sensor for it, 64..65536
+  double lat = NAN, lon = NAN, tz = NAN;        // override EPW header / no-EPW runs
+  double t0 = NAN, t1 = NAN;          // hour-of-year range [t0, t1); NAN = annual over EPW rows (midpoints)
+  int stepMin = 60;                   // step for ranges, minutes
+  double dayFrom = 0, dayTo = 1440;   // ranges: only steps whose time of day (minutes) is in [dayFrom, dayTo) (--hours)
+  std::string seriesPath;             // .npy time series sink (+ .hoys.txt); empty = off
+  std::string dumpBitsPath, dumpSky, dumpSun;   // validation dumps; empty = off (GPU selection: CUDA_VISIBLE_DEVICES)
 };
 
 // Where one run's time went (milliseconds) and what the GPU did. Host wall time for prep (triangles, sensors), sky

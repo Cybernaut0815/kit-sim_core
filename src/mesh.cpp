@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0 AND LicenseRef-Commons-Clause-1.0
 // OBJ / .dmesh readers, triangulation (earcut for n-gons), sensor derivation (ladybug / physical rules), optics slots
-// (row checks, resolution per global slot, thin solids), --no-occlude names.
+// (row checks, resolution per global slot, thin solids), --no-occlude names, views' targets.
 #include "internal.h"
 #include "glass.h"
 #include <algorithm>
@@ -234,6 +234,39 @@ bool resolve_no_occlude(const std::vector<MeshView>& meshes, const std::vector<s
   return true;
 }
 
+bool resolve_targets(const std::vector<MeshView>& meshes, const std::vector<views::Target>& targets, bool selfOcclude,
+                     const std::vector<char>& open, std::vector<std::string>& groups, std::vector<uint8_t>& cls, std::string& err) {
+  groups.clear();
+  cls.assign(meshes.size(), 2);
+  if (targets.empty()) return true;
+  const Names byName = mesh_names(meshes);
+  for (const views::Target& t : targets) {
+    const std::string row = "--target " + t.mesh + "=" + t.group + ": ";
+    const std::string& g = t.group;
+    const size_t sl = t.mesh.rfind('/');   // NAME/SLOT as --optics reads it
+    if (sl != std::string::npos && sl + 1 < t.mesh.size() && t.mesh.find_first_not_of("0123456789", sl + 1) == std::string::npos) {
+      err = row + "face-slot targets (NAME/SLOT) are not supported, target the whole mesh"; return false;
+    }
+    if (g.empty() || g.find_first_not_of("ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789_-") != std::string::npos) {
+      err = row + "GROUP takes letters, digits, _ and - only"; return false;
+    }
+    const auto ends = [&](const char* s) { const size_t n = std::strlen(s); return g.size() >= n && g.compare(g.size() - n, n, s) == 0; };
+    if (g == "sky" || g == "ground" || g == "obstruction" || g.rfind("distance", 0) == 0 || g.rfind("reach", 0) == 0 || ends("_distance") ||
+        ends("_distance_min")) {   // column names: another group's distances
+      err = row + "GROUP is reserved (sky, ground, obstruction, distance*, reach*, *_distance, *_distance_min)"; return false;
+    }
+    const size_t k = find_mesh(byName, t.mesh, row, err);
+    if (k == SIZE_MAX) return false;
+    if (cls[k] != 2) { err = row + "the mesh is a target twice"; return false; }
+    if (meshes[k].sensor && (!selfOcclude || open[k])) { err = row + "the mesh blocks no rays (--no-self-occlude or --no-occlude): none can end on it"; return false; }
+    const size_t gi = size_t(std::find(groups.begin(), groups.end(), g) - groups.begin());
+    if (gi == groups.size() && groups.size() == 16) { err = row + "more than 16 target groups"; return false; }
+    if (gi == groups.size()) groups.push_back(g);
+    cls[k] = uint8_t(3 + gi);
+  }
+  return true;
+}
+
 unsigned thin_solid(const Mesh& m, unsigned s, const double c[3]) {
   using Key = std::array<long long, 3>;
   const V C{c[0], c[1], c[2]};
@@ -269,13 +302,12 @@ size_t make_sensors(const Mesh& m, const Options& opt, const double c[3], Sensor
   const size_t at = out.p.size(), n = (opt.onVertices ? m.numPoints() : m.numFaces()) * (opt.sides == Sides::Both ? 2 : 1);
   out.p.resize(at + n);
   out.n.resize(at + n);
-  const size_t made = make_sensors_into(m, opt, c, out.p.data() + at, out.n.data() + at, warn);
+  const size_t made = make_sensors_into(m, opt, opt.mode == Mode::Ladybug, c, out.p.data() + at, out.n.data() + at, warn);
   if (!made) { out.p.resize(at); out.n.resize(at); }   // the ladybug error: nothing made
   return made;
 }
 
-size_t make_sensors_into(const Mesh& m, const Options& opt, const double c[3], float3* pOut, float3* nOut, std::string& warn) {
-  const bool ladybug = opt.mode == Mode::Ladybug;
+size_t make_sensors_into(const Mesh& m, const RunOptions& opt, bool ladybug, const double c[3], float3* pOut, float3* nOut, std::string& warn) {
   const V C{c[0], c[1], c[2]};
   int degenerate = 0, zeroVn = 0;
   std::vector<V> vn;

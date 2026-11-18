@@ -66,6 +66,8 @@ struct RunOptions {
   std::vector<std::string> noOcclude; // ... but not these (Mesh::name, as in --optics): analysed, invisible to rays (no shade, no reflection)
   double north = 0;                   // degrees, counterclockwise from +Y (ladybug convention; 90 = west)
   double offset = 0;                  // sensor offset along the normal, metres
+  bool virtualGround = true;          // the virtual ground below the horizon; daylight: its Lambertian reflection of
+                                      // Options::ground (false: black, the numbers of ground 0); views: a plane that ends downward rays
   // Scene identity for long-lived callers (a server). Non-empty and equal to the previous run's key: the occluder
   // triangles and the acceleration structure of that run stay resident and are reused (the caller guarantees the
   // meshes and selfOcclude are unchanged; optics values may change; the noOcclude meshes (with selfOcclude), the set of

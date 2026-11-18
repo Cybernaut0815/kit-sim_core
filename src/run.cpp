@@ -318,6 +318,7 @@ static bool run_daylight(const std::vector<MeshView>& meshes, const Weather* w, 
   // per-direction cumulative weights (double): sky radiometric/visible, ground scalar, sun per direction
   std::vector<double> skyRad(Pz, 0.0), skyVis(Pz, 0.0), skyDirLB(Pz, 0.0), skyDifLB(Pz, 0.0);
   double gndRad = 0, gndVis = 0, gndLB = 0;
+  const double grefl = opt.virtualGround ? opt.ground : 0;   // --virtual-ground off: no ground light, the bytes of --ground 0
   std::vector<double> sunRad(nSun, 0.0), sunVis(nSun, 0.0);
   std::vector<double> sunBinRad(reflect ? Pz : 0, 0.0), sunBinVis(reflect ? Pz : 0, 0.0);   // the sun binned as gendaymtx -d
   std::vector<float> buf(3 * (Pz + 1)), buf2(3 * (Pz + 1)), buf3(reflect ? 3 * (Pz + 1) : 0);
@@ -341,8 +342,8 @@ static bool run_daylight(const std::vector<MeshView>& meshes, const Weather* w, 
         double altS, aziS;
         sun_radiance(latW, lonWestW, meridW, s.jd, s.hour, altS, aziS);
         const double dniW = static_cast<double>(static_cast<int>(s.dni)), dhiW = static_cast<double>(static_cast<int>(s.dhi));
-        gendaymtx_step(pa, s.jd, altS, aziS, dniW, dhiW, opt.ground, true, false, false, buf.data());    // -d
-        gendaymtx_step(pa, s.jd, altS, aziS, dniW, dhiW, opt.ground, false, true, false, buf2.data());   // -s
+        gendaymtx_step(pa, s.jd, altS, aziS, dniW, dhiW, grefl, true, false, false, buf.data());    // -d
+        gendaymtx_step(pa, s.jd, altS, aziS, dniW, dhiW, grefl, false, true, false, buf2.data());   // -s
         for (int ch = 0; ch < 3; ++ch) { lbGroundDir[static_cast<size_t>(ch)] += buf[static_cast<size_t>(ch)]; lbGroundDif[static_cast<size_t>(ch)] += buf2[static_cast<size_t>(ch)]; }
         double meanPatch = 0;
         for (size_t p = 0; p < Pz; ++p) {
@@ -356,13 +357,13 @@ static bool run_daylight(const std::vector<MeshView>& meshes, const Weather* w, 
             meanPatch += Lp * pa.omega[p];
           }
         }
-        if (col >= 0) gSeries[static_cast<size_t>(col)] = static_cast<float>(opt.ground * meanPatch / static_cast<double>(P));
+        if (col >= 0) gSeries[static_cast<size_t>(col)] = static_cast<float>(grefl * meanPatch / static_cast<double>(P));
         continue;
       }
       // physical: Perez sky at the NOAA sun; sun kept exact (not binned)
       const double alt = suns[t].alt * kDeg, azi = suns[t].azi * kDeg;
       if (wantRad || (series && !seriesVis)) {
-        gendaymtx_step(pa, s.jd, alt, azi, s.dni, s.dhi, opt.ground, false, true, false, buf.data());
+        gendaymtx_step(pa, s.jd, alt, azi, s.dni, s.dhi, grefl, false, true, false, buf.data());
         const double g = bright(buf.data());                        // ground radiance W/m2/sr (incl. direct on ground)
         gndRad += g * dt / 1000.0;
         for (size_t p = 0; p < Pz; ++p) {
@@ -372,7 +373,7 @@ static bool run_daylight(const std::vector<MeshView>& meshes, const Weather* w, 
         }
         if (col >= 0 && !seriesVis) gSeries[static_cast<size_t>(col)] = static_cast<float>(g);
         if (reflect) {   // reflected light sees the sun as gendaymtx bins it (AddDirect), like rcontrib daylight coefficients
-          gendaymtx_step(pa, s.jd, alt, azi, s.dni, s.dhi, opt.ground, true, false, false, buf3.data());
+          gendaymtx_step(pa, s.jd, alt, azi, s.dni, s.dhi, grefl, true, false, false, buf3.data());
           for (size_t p = 0; p < Pz; ++p) {
             const double Ls = bright(&buf3[3 * (p + 1)]);
             sunBinRad[p] += Ls * dt / 1000.0;
@@ -382,7 +383,7 @@ static bool run_daylight(const std::vector<MeshView>& meshes, const Weather* w, 
         }
       }
       if (wantVis || seriesVis) {
-        gendaymtx_step(pa, s.jd, alt, azi, s.dni, s.dhi, opt.ground, false, true, true, buf.data());
+        gendaymtx_step(pa, s.jd, alt, azi, s.dni, s.dhi, grefl, false, true, true, buf.data());
         const double g = kWhtEfficacy * bright(buf.data());        // ground luminance-equivalent lux/sr
         gndVis += g * dt;
         for (size_t p = 0; p < Pz; ++p) {
@@ -392,7 +393,7 @@ static bool run_daylight(const std::vector<MeshView>& meshes, const Weather* w, 
         }
         if (col >= 0 && seriesVis) gSeries[static_cast<size_t>(col)] = static_cast<float>(g);
         // direct illuminance: AddDirect conserves energy, sum_p out*omega = dir_illum/179
-        gendaymtx_step(pa, s.jd, alt, azi, s.dni, s.dhi, opt.ground, true, false, true, buf2.data());
+        gendaymtx_step(pa, s.jd, alt, azi, s.dni, s.dhi, grefl, true, false, true, buf2.data());
         double dirIll = 0;
         for (size_t p = 0; p < Pz; ++p) dirIll += buf2[3 * (p + 1) + 1] * pa.omega[p];
         if (sunIdxOfStep[t] != SIZE_MAX) sunVis[sunIdxOfStep[t]] = kWhtEfficacy * dirIll * dt;
@@ -428,7 +429,7 @@ static bool run_daylight(const std::vector<MeshView>& meshes, const Weather* w, 
       }
       double mean = 0;
       for (size_t p = 0; p < Pz; ++p) mean += skyRad[p];
-      gndLB = opt.ground * mean / static_cast<double>(P);
+      gndLB = grefl * mean / static_cast<double>(P);
     }
     if (opt.verbose && droppedDni > 0)
       std::fprintf(stderr, "warn: %.1f Wh/m2 of DNI at steps with the sun below the horizon dropped (gendaymtx would bin it)\n", droppedDni);

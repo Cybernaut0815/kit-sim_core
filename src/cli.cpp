@@ -32,6 +32,7 @@ const char* const kUsage =
     "  --hours HH:MM-HH:MM      with --from/--to: only these hours of every day (analysis period)\n"
     "  --sky-density 1|2|4  --patch-samples K  --ground RHO  --north DEG  --offset M  --no-self-occlude\n"
     "  --no-occlude NAME[;NAME...]  these sensor meshes are analysed but cast no shade (NAME as in --optics; repeatable)\n"
+    "  --virtual-ground on|off  ground below the horizon reflecting --ground RHO (default on; off: black, as --ground 0)\n"
     "  --optics SPEC[;SPEC...]  NAME[/SLOT]=RHO[,TAU[,glass|porous]] per mesh / face slot, * = every mesh (repeatable;\n"
     "                           default rho 0.2, tau 0)\n"
     "  --transmission off|on    light through glass / porous slots (default off: every surface opaque)\n"
@@ -139,6 +140,7 @@ int parse_common(int argc, char** argv, CommonArgs& a, RunOptions& o, std::strin
     }
     else if (f == "--north") { if (!(v = need(i, "--north"))) return 1; o.north = std::atof(v); }
     else if (f == "--offset") { if (!(v = need(i, "--offset"))) return 1; o.offset = std::atof(v); }
+    else if (f == "--virtual-ground") { if (!(v = need(i, "--virtual-ground"))) return 1; if (!std::strcmp(v, "on")) o.virtualGround = true; else if (!std::strcmp(v, "off")) o.virtualGround = false; else { err = "--virtual-ground on|off"; return 1; } }
     else if (f == "--out") { if (!(v = need(i, "--out"))) return 1; a.out = v; }
     else if (f == "--bench") {
       a.bench = true;

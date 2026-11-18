@@ -44,7 +44,7 @@ the same command a user runs on their own stage (see `bindings/python/README.md`
 | `_out/ref/scene/{canopy,glass_canopy,canopy_ground,glass_canopy_ground,canyon,plane}/` | `scene.rad` / `scene.oct` (sky glow + context polygons with their materials), `dc_ab{1,2,3}_ad{8192,32768}.npy` (rcontrib coefficients float32 `[N x 146 bins x RGB]`) |
 | `_out/ref/index.json` | file index with timings |
 | `_out/run/<case>/` | CLI outputs per compare case (`out.txt`, `out.txt.json`, `bits.npy`, `sky.txt`, `sun.txt`) |
-| `_out/golden/<case>/` | golden.py byte goldens: `out.npy` + `out.npy.json`, `series.npy` + `series.npy.hoys.txt`, `bits.npy` where the case asks; `recorded.txt` = commit + exe they came from. Variants (slot-block `.dmesh`, opaque `--optics` with `--transmission` off and on, translucent rows with `--transmission off`, `--bounces 0`) are compared to their base case's files and run once `daylight --help` lists their flags |
+| `_out/golden/<case>/` | golden.py byte goldens: `out.npy` + `out.npy.json`, `series.npy` + `series.npy.hoys.txt`, `bits.npy` where the case asks; `recorded.txt` = commit + exe they came from. Variants (slot-block `.dmesh`, opaque `--optics` with `--transmission` off and on, translucent rows with `--transmission off`, `--bounces 0`, `--virtual-ground off` against `--ground 0`) are compared to their base case's files and run once `daylight --help` lists their flags |
 
 Scenes (tri/quad only): `flat` 10x10 m, 1 m quads; `flat_tri`; `walls` N/E/S/W 10x3 m, 0.5 m cells, outward normals,
 mesh order north, east, south, west; `box` = flat + two open 4x4x6 m boxes (no bottom face) at (0,6) and (-8,0);

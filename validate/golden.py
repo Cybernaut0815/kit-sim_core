@@ -60,6 +60,7 @@ CASES = {**{f'{s}_phys': (s, f, PHYS + (DUMPS if s == 'box' else [])) for s, f i
          'box_patch_samples4': ('box', 'obj', PHYS + ['--patch-samples', '4']),
          'box_sky_density2': ('box', 'obj', PHYS + ['--sky-density', '2']),
          'walls_north90': ('walls', 'obj', PHYS + ['--north', '90']),
+         'walls_ground0': ('walls', 'obj', PHYS + ['--ground', '0']),   # walls: box's sensors face up, never see the ground
          'box_lb_sky_density2': ('box', 'obj', ladybug('box') + ['--sky-density', '2']),
          'box_lb_north30': ('box', 'obj', ladybug('box') + ['--north', '30']),
          'box_lb_vertices': ('box', 'obj', ladybug('box') + ['--on', 'vertices']),
@@ -77,7 +78,8 @@ VARIANTS = [('box_dmesh_slots', 'box_dmesh', 'slots', [], []),
              ['--optics', 'box_a/1=0.1,0.5,porous;box_b=0,0.64,glass;flat/2=0.3,0.2', '--transmission', 'off'],
              ['--optics', '--transmission']),
             ('box_phys_bounces0', 'box_phys', None, ['--bounces', '0'], ['--bounces']),
-            ('walls_lb_bounces0', 'walls_lb', None, ['--bounces', '0'], ['--bounces'])]
+            ('walls_lb_bounces0', 'walls_lb', None, ['--bounces', '0'], ['--bounces']),
+            ('walls_virtual_ground_off', 'walls_ground0', None, ['--virtual-ground', 'off'], ['--virtual-ground'])]
 
 
 def write_dmesh(path, m, slots):

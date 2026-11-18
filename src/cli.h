@@ -27,9 +27,9 @@ struct Args : CommonArgs {
 };
 
 // argv[1..argc): the shared flags (-v --context --on --sides --cull-backfaces --no-self-occlude --no-occlude --offset
-// --north --out --bench [NSENS NTRIS]) into a and o, -h/--help sets a.help and stops, other arguments that do not start
-// with '-' + a non-digit into a.sensors. Every other flag goes to tool(i, flag): 0 taken (i moved past its value), 1 usage
-// error (err set), -1 not its flag ("unknown flag"). 0 ok, 1 usage error with err set.
+// --north --virtual-ground --out --bench [NSENS NTRIS]) into a and o, -h/--help sets a.help and stops, other arguments
+// that do not start with '-' + a non-digit into a.sensors. Every other flag goes to tool(i, flag): 0 taken (i moved past
+// its value), 1 usage error (err set), -1 not its flag ("unknown flag"). 0 ok, 1 usage error with err set.
 int parse_common(int argc, char** argv, CommonArgs& a, RunOptions& o, std::string& err,
                  const std::function<int(int& i, const std::string& flag)>& tool);
 // argv[1..argc) -> a. 0 ok (-h/--help sets a.help and stops), 1 usage error with err set (the caller prints kUsage),

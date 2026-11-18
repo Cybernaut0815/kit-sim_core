@@ -269,13 +269,12 @@ size_t make_sensors(const Mesh& m, const Options& opt, const double c[3], Sensor
   const size_t at = out.p.size(), n = (opt.onVertices ? m.numPoints() : m.numFaces()) * (opt.sides == Sides::Both ? 2 : 1);
   out.p.resize(at + n);
   out.n.resize(at + n);
-  const size_t made = make_sensors_into(m, opt, c, out.p.data() + at, out.n.data() + at, warn);
+  const size_t made = make_sensors_into(m, opt, opt.mode == Mode::Ladybug, c, out.p.data() + at, out.n.data() + at, warn);
   if (!made) { out.p.resize(at); out.n.resize(at); }   // the ladybug error: nothing made
   return made;
 }
 
-size_t make_sensors_into(const Mesh& m, const Options& opt, const double c[3], float3* pOut, float3* nOut, std::string& warn) {
-  const bool ladybug = opt.mode == Mode::Ladybug;
+size_t make_sensors_into(const Mesh& m, const RunOptions& opt, bool ladybug, const double c[3], float3* pOut, float3* nOut, std::string& warn) {
   const V C{c[0], c[1], c[2]};
   int degenerate = 0, zeroVn = 0;
   std::vector<V> vn;

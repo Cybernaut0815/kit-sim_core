@@ -15,6 +15,8 @@ namespace daylight {
 namespace {
 
 using File = std::unique_ptr<std::FILE, decltype(&std::fclose)>;
+using Clk = std::chrono::steady_clock;
+double ms(Clk::time_point t0) { return std::chrono::duration<double, std::milli>(Clk::now() - t0).count(); }
 
 constexpr double kPi = 3.14159265358979323846;
 constexpr double kDeg = kPi / 180.0;
@@ -28,19 +30,11 @@ inline float3 neg(float3 v) { return float3{-v.x, -v.y, -v.z}; }
 // Process-lifetime GPU state. Created on first use and never destroyed: CUDA / OptiX teardown from a static
 // destructor runs after the runtime has unloaded and can crash at exit, and the OS reclaims the device anyway.
 // gpu_build / upload / grow free or reuse their previous buffers, so one Gpu serves every run of the process.
-// `key` is the Options::sceneKey (+ the transmitting slots, or that the bounce pass needs a hit record per slot, + the
-// --no-occlude meshes) whose occluder triangles / GAS are resident (empty = none).
+// A Scene's `key` is the Options::sceneKey (+ the transmitting slots, or that the bounce pass needs a hit record per
+// slot, + the --no-occlude meshes) whose occluder triangles / GAS are resident (empty = none).
 // Not thread-safe: run() is one-at-a-time, as the CLI and the server (one GPU, a mutex) use it.
 // `cur` is the scene installed in the Gpu; `parked` holds up to Options::residentScenes - 1 other scenes' GAS in VRAM,
 // most recent first, so users who alternate between scenes do not rebuild each other's.
-struct Scene {
-  std::string key;
-  double c[3] = {0, 0, 0};   // bbox centre the scene's triangles were recentred by
-  size_t nTris = 0;
-  int skipped = 0;
-  std::vector<unsigned> thin;   // per global slot: thin_solid() of the transmitting slots, from the build (empty: none)
-  GasSlot gas;               // parked scenes only
-};
 struct Resident {
   Gpu* gpu = nullptr;
   Scene cur;
@@ -71,11 +65,117 @@ bool npy_write_header(std::FILE* f, size_t rows, size_t cols, const char* descr)
   return true;
 }
 
+bool scene_acquire(const std::vector<MeshView>& meshes, const std::function<bool(size_t)>& blocks, const std::vector<Slot>& slots,
+                   bool slotted, const std::string& key, int residentScenes, const std::atomic<bool>* cancel, Gpu** gpu, Scene& s,
+                   Result& out, const char*& stage, std::string& err) {
+  Resident& R = resident();
+  const bool installed = !key.empty() && R.gpu && key == R.cur.key;   // same meshes + selfOcclude as the scene in the Gpu
+  const auto parkedAt = [&] { return std::find_if(R.parked.begin(), R.parked.end(), [&](const Scene& p) { return p.key == key; }); };
+  const bool reuse = installed || (!key.empty() && R.gpu && parkedAt() != R.parked.end());
+  out.sceneReused = reuse;
+  s = Scene{};
+  if (reuse) { s = installed ? R.cur : *parkedAt(); s.gas = GasSlot{}; }
+  if (!gpu) return true;   // a run without rays: no GPU, nothing to install
+  if (cancel && cancel->load()) { err = "cancelled"; return false; }
+  if (!R.gpu && !(R.gpu = gpu_init(err))) return false;
+  Gpu* g = *gpu = R.gpu;
+  if (installed) return true;
+  // park the installed keyed scene when more than one may stay resident; an unparked GAS is freed by attach / build
+  if (!R.cur.key.empty() && residentScenes > 1) { Scene p = R.cur; p.gas = gpu_detach(*g); R.parked.insert(R.parked.begin(), p); }
+  R.cur = Scene{};   // a failed build leaves nothing installed
+  if (auto it = parkedAt(); reuse && it != R.parked.end()) {
+    Scene p = *it;
+    R.parked.erase(it);
+    gpu_attach(*g, p.gas);
+    p.gas = GasSlot{};
+    R.cur = p;
+    return true;
+  }
+  stage = "triangulating the scene";
+  const auto tPrep = Clk::now();
+  bbox_centre(meshes, s.c);
+  // Each blocking mesh gets its own ranges (exact sizes up front: growing would hold the old and the new array at
+  // once): its points at vBase[k], at most tri_cap triangles at tBase[k], its slots from sBase[k].
+  std::vector<size_t> vBase(meshes.size() + 1, 0), tBase(meshes.size() + 1, 0), sBase(meshes.size() + 1, 0);
+  for (size_t k = 0; k < meshes.size(); ++k) {
+    vBase[k + 1] = vBase[k] + (blocks(k) ? meshes[k].mesh->numPoints() : 0);
+    tBase[k + 1] = tBase[k] + (blocks(k) ? tri_cap(*meshes[k].mesh) : 0);
+    sBase[k + 1] = sBase[k] + slot_count(*meshes[k].mesh);
+  }
+  const size_t nPts = vBase.back(), nTri = tBase.back();
+  // the build's peak must fit: the per-run buffers go, then parked scenes (oldest first) until OptiX's estimate does;
+  // a scene too big for the free GPU memory fails here, at once and with its numbers, not in a cudaMalloc later
+  stage = "making room on the GPU";
+  gpu_trim(*g, true);
+  const size_t need = gpu_build_bytes(*g, nPts, nTri, slotted, err) + kVramMargin;
+  if (need < kVramMargin) return false;   // SIZE_MAX + margin wrapped: OptiX could not estimate (err says why)
+  while (!R.parked.empty() && gpu_free_bytes() < need) { gpu_free(R.parked.back().gas); R.parked.pop_back(); }
+  if (const size_t free = gpu_free_bytes(); free < need) {
+    err = "out of memory: building the scene (" + std::to_string(nTri) + " triangles) needs " + gib(need) + " of GPU memory, " + gib(free) +
+          " free (close other programs that use the GPU, or run fewer meshes)";
+    return false;
+  }
+  stage = "triangulating the scene";
+  Tris tris;
+  tris.v.resize(nPts);
+  tris.i.resize(nTri);
+  if (slotted) tris.slot.resize(nTri);   // only per-slot records read a triangle's slot
+  std::vector<size_t> made(meshes.size(), 0);
+  std::vector<int> skip(meshes.size(), 0);
+  // ponytail: one mesh per task, so a single giant mesh runs on one core; split its faces into blocks if
+  // one-mesh models matter
+  par_for(meshes.size(), [&](size_t k) {
+    if (!blocks(k)) return;
+    const Mesh& m = *meshes[k].mesh;
+    made[k] = triangulate_into(m, s.c, tris.v.data() + vBase[k], tris.i.data() + tBase[k], slotted ? tris.slot.data() + tBase[k] : nullptr,
+                               static_cast<unsigned>(vBase[k]), static_cast<uint32_t>(sBase[k]), skip[k]);
+  });
+  size_t at = 0;   // close the gaps faces left that drew fewer than n - 2 triangles (none in all-triangle meshes)
+  for (size_t k = 0; k < meshes.size(); ++k) {
+    if (at != tBase[k] && made[k]) {
+      std::memmove(tris.i.data() + at, tris.i.data() + tBase[k], made[k] * sizeof(uint3));
+      if (slotted) std::memmove(tris.slot.data() + at, tris.slot.data() + tBase[k], made[k] * sizeof(uint32_t));
+    }
+    if (blocks(k)) s.order.push_back({meshes[k].name, at, made[k]});
+    at += made[k];
+    s.skipped += skip[k];
+  }
+  tris.i.resize(at);
+  if (slotted) tris.slot.resize(at);
+  out.stats.prepMs += ms(tPrep);
+  stage = "building the scene";
+  const auto tBuild = Clk::now();
+  if (!gpu_build(*g, tris, slots, err, slotted)) return false;
+  out.stats.buildMs += ms(tBuild);
+  s.nTris = tris.i.size();
+  s.key = key;
+  R.cur = s;
+  return true;   // the triangles go here, before the sensors are made
+}
+
+bool run_admission(Gpu& g, size_t nSens, size_t perSensor, size_t chunkSensor, int residentScenes, size_t& chunkBytes, std::string& err) {
+  Resident& R = resident();
+  gpu_trim(g, true);
+  const auto runNeed = [&] {
+    const size_t nc = std::min(nSens, std::max<size_t>(1, chunkBytes / perSensor));
+    return nSens * 2 * sizeof(float3) + nc * chunkSensor + kVramMargin;
+  };
+  while (!R.parked.empty() && (R.parked.size() + 1 > size_t(std::max(1, residentScenes)) || gpu_free_bytes() < runNeed())) {
+    gpu_free(R.parked.back().gas);
+    R.parked.pop_back();
+  }
+  while (gpu_free_bytes() < runNeed() && chunkBytes > (size_t(32) << 20)) chunkBytes /= 2;
+  if (const size_t free = gpu_free_bytes(); free < runNeed()) {
+    err = "out of memory: the run's " + std::to_string(nSens) + " sensors need " + gib(runNeed()) + " of GPU memory beside the scene, " +
+          gib(free) + " free (close other programs that use the GPU, or use fewer receivers)";
+    return false;
+  }
+  return true;
+}
+
 // The run itself; `stage` names what it is doing, for the out-of-memory message of run() below.
-static bool run_views(const std::vector<MeshView>& meshes, const Weather* w, const Options& opt, Result& out, std::string& err, const char*& stage) {
+static bool run_daylight(const std::vector<MeshView>& meshes, const Weather* w, const Options& opt, Result& out, std::string& err, const char*& stage) {
   const auto cancelled = [&] { if (opt.cancel && opt.cancel->load()) { err = "cancelled"; return true; } return false; };
-  using Clk = std::chrono::steady_clock;
-  const auto ms = [](Clk::time_point t0) { return std::chrono::duration<double, std::milli>(Clk::now() - t0).count(); };
   out.stats = RunStats{};
   // ---- validation --------------------------------------------------------------------------------------------
   if (!optics_ok(opt, err)) return false;
@@ -156,17 +256,7 @@ static bool run_views(const std::vector<MeshView>& meshes, const Weather* w, con
   // anyway (the caller's key carries selfOcclude), so there the set keys nothing and another set reuses the scene
   std::string openSet;
   for (size_t k = 0; opt.selfOcclude && k < open.size(); ++k) if (open[k]) openSet += (openSet.empty() ? "\nopen " : ",") + std::to_string(k);
-  Resident& R = resident();
   const std::string key = opt.sceneKey.empty() ? "" : opt.sceneKey + (translucent ? "\ntransmitting " + lit : slotted ? "\nslot records" : "") + openSet;
-  const bool installed = !key.empty() && R.gpu && key == R.cur.key;   // same meshes + selfOcclude as the scene in the Gpu
-  const auto parkedAt = [&] { return std::find_if(R.parked.begin(), R.parked.end(), [&](const Scene& s) { return s.key == key; }); };
-  const bool reuse = installed || (!key.empty() && R.gpu && parkedAt() != R.parked.end());
-  out.sceneReused = reuse;
-  double c[3] = {0, 0, 0};
-  int skipped = 0;
-  std::vector<unsigned> thin;
-  size_t nTris = 0;
-  if (reuse) { const Scene& s = installed ? R.cur : *parkedAt(); std::copy(s.c, s.c + 3, c); skipped = s.skipped; thin = s.thin; nTris = s.nTris; }
   // The sensor elements follow from the counts (one per face, or per point), so the result's size is known before any
   // geometry is built; the occluder triangles and the sensors are made later, one after the other (see the GPU block).
   const int nS = opt.sides == Sides::Both ? 2 : 1;
@@ -413,105 +503,36 @@ static bool run_views(const std::vector<MeshView>& meshes, const Weather* w, con
     if (!bf || !npy_write_header(bf.get(), nSens, translucent ? nDir : nWords, translucent ? "<u1" : "<u4")) { err = "cannot write " + opt.dumpBitsPath; return false; }
   }
   Gpu* g = nullptr;   // none without directions: no rays, the values stay 0
+  Scene sc;           // the run's scene: its centre (the sensors' too), triangles and thin solids
+  if (!scene_acquire(meshes, blocks, slots, slotted, key, opt.residentScenes, opt.cancel, nDir > 0 ? &g : nullptr, sc, out, stage, err)) return false;
+  std::vector<unsigned>& thin = sc.thin;
   GpuStats st0;       // the GPU's counters before this run (they add up over the process)
-  if (nDir > 0) {
-    if (cancelled()) return false;
-    if (!R.gpu && !(R.gpu = gpu_init(err))) return false;
-    g = R.gpu;
+  if (g) {
     st0 = gpu_stats(*g);
-    if (!installed) {
-      // park the installed keyed scene when more than one may stay resident; an unparked GAS is freed by attach / build
-      if (!R.cur.key.empty() && opt.residentScenes > 1) { Scene s = R.cur; s.gas = gpu_detach(*g); R.parked.insert(R.parked.begin(), s); }
-      R.cur = Scene{};   // a failed build leaves nothing installed
-      if (auto it = parkedAt(); reuse && it != R.parked.end()) {
-        Scene s = *it;
-        R.parked.erase(it);
-        gpu_attach(*g, s.gas);
-        s.gas = GasSlot{};
-        R.cur = s;
-      } else {
-        stage = "triangulating the scene";
-        const auto tPrep = Clk::now();
-        bbox_centre(meshes, c);
-        // Each blocking mesh gets its own ranges (exact sizes up front: growing would hold the old and the new array at
-        // once): its points at vBase[k], at most tri_cap triangles at tBase[k], its slots from sBase[k].
-        std::vector<size_t> vBase(meshes.size() + 1, 0), tBase(meshes.size() + 1, 0), sBase(meshes.size() + 1, 0);
-        for (size_t k = 0; k < meshes.size(); ++k) {
-          vBase[k + 1] = vBase[k] + (blocks(k) ? meshes[k].mesh->numPoints() : 0);
-          tBase[k + 1] = tBase[k] + (blocks(k) ? tri_cap(*meshes[k].mesh) : 0);
-          sBase[k + 1] = sBase[k] + slot_count(*meshes[k].mesh);
-        }
-        const size_t nPts = vBase.back(), nTri = tBase.back();
-        // the build's peak must fit: the per-run buffers go, then parked scenes (oldest first) until OptiX's estimate does;
-        // a scene too big for the free GPU memory fails here, at once and with its numbers, not in a cudaMalloc later
-        stage = "making room on the GPU";
-        gpu_trim(*g, true);
-        const size_t need = gpu_build_bytes(*g, nPts, nTri, slotted, err) + kVramMargin;
-        if (need < kVramMargin) return false;   // SIZE_MAX + margin wrapped: OptiX could not estimate (err says why)
-        while (!R.parked.empty() && gpu_free_bytes() < need) { gpu_free(R.parked.back().gas); R.parked.pop_back(); }
-        if (const size_t free = gpu_free_bytes(); free < need) {
-          err = "out of memory: building the scene (" + std::to_string(nTri) + " triangles) needs " + gib(need) + " of GPU memory, " + gib(free) +
-                " free (close other programs that use the GPU, or run fewer meshes)";
-          return false;
-        }
-        stage = "triangulating the scene";
-        Tris tris;
-        tris.v.resize(nPts);
-        tris.i.resize(nTri);
-        if (slotted) tris.slot.resize(nTri);   // only per-slot records read a triangle's slot
-        if (translucent) thin.assign(slots.size(), 0);
-        std::vector<size_t> made(meshes.size(), 0);
-        std::vector<int> skip(meshes.size(), 0);
-        // ponytail: one mesh per task, so a single giant mesh runs on one core; split its faces into blocks if
-        // one-mesh models matter
-        par_for(meshes.size(), [&](size_t k) {
-          if (!blocks(k)) return;
-          const Mesh& m = *meshes[k].mesh;
-          made[k] = triangulate_into(m, c, tris.v.data() + vBase[k], tris.i.data() + tBase[k], slotted ? tris.slot.data() + tBase[k] : nullptr,
-                                     static_cast<unsigned>(vBase[k]), static_cast<uint32_t>(sBase[k]), skip[k]);
-          // ponytail: one pass over the mesh per transmitting slot; bucket the faces by slot if meshes with hundreds appear
-          for (size_t s = 0; translucent && s < slot_count(m); ++s)
-            if (slots[sBase[k] + s].tau > 0) thin[sBase[k] + s] = thin_solid(m, static_cast<unsigned>(s), c);
-        });
-        size_t at = 0;   // close the gaps faces left that drew fewer than n - 2 triangles (none in all-triangle meshes)
-        for (size_t k = 0; k < meshes.size(); ++k) {
-          if (at != tBase[k] && made[k]) {
-            std::memmove(tris.i.data() + at, tris.i.data() + tBase[k], made[k] * sizeof(uint3));
-            if (slotted) std::memmove(tris.slot.data() + at, tris.slot.data() + tBase[k], made[k] * sizeof(uint32_t));
-          }
-          at += made[k];
-          skipped += skip[k];
-        }
-        tris.i.resize(at);
-        if (slotted) tris.slot.resize(at);
-        out.stats.prepMs += ms(tPrep);
-        stage = "building the scene";
-        const auto tBuild = Clk::now();
-        if (!gpu_build(*g, tris, slots, err, slotted)) return false;
-        out.stats.buildMs += ms(tBuild);
-        nTris = tris.i.size();
-        R.cur.key = key; std::copy(c, c + 3, R.cur.c); R.cur.nTris = nTris; R.cur.skipped = skipped; R.cur.thin = thin;
-      }   // the triangles go here, before the sensors are made
+    if (translucent && !out.sceneReused) {   // a fresh build's thin solids, from the same meshes and centre, kept with it
+      stage = "triangulating the scene";
+      const auto tThin = Clk::now();
+      Scene& cur = resident().cur;
+      cur.key.clear();   // no run reuses the scene before they are known
+      thin.assign(slots.size(), 0);
+      std::vector<size_t> sBase(meshes.size() + 1, 0);
+      for (size_t k = 0; k < meshes.size(); ++k) sBase[k + 1] = sBase[k] + slot_count(*meshes[k].mesh);
+      par_for(meshes.size(), [&](size_t k) {
+        if (!blocks(k)) return;
+        const Mesh& m = *meshes[k].mesh;
+        // ponytail: one pass over the mesh per transmitting slot; bucket the faces by slot if meshes with hundreds appear
+        for (size_t s = 0; s < slot_count(m); ++s)
+          if (slots[sBase[k] + s].tau > 0) thin[sBase[k] + s] = thin_solid(m, static_cast<unsigned>(s), sc.c);
+      });
+      cur.thin = thin;
+      cur.key = key;
+      out.stats.prepMs += ms(tThin);
     }
     // Beside the scene, this run needs its sensors and one chunk's buffers (visibility, and the reflected-light rows and
     // the series tile when asked for). The last run's go first; then parked scenes beyond --gpu-scenes or in the way;
     // then chunks shrink down to 32 MiB (the numbers do not depend on the chunking); else the run fails with its numbers.
-    gpu_trim(*g, true);
     const size_t buffers = 1 + (reflect ? 1 : 0) + (series ? 1 : 0);
-    const auto runNeed = [&] {
-      const size_t nc = std::min(nSens, std::max<size_t>(1, chunkBytes / perSensor));
-      return nSens * 2 * sizeof(float3) + buffers * nc * perSensor + nc * sizeof(double) + kVramMargin;
-    };
-    while (!R.parked.empty() && (R.parked.size() + 1 > size_t(std::max(1, opt.residentScenes)) || gpu_free_bytes() < runNeed())) {
-      gpu_free(R.parked.back().gas);
-      R.parked.pop_back();
-    }
-    while (gpu_free_bytes() < runNeed() && chunkBytes > (size_t(32) << 20)) chunkBytes /= 2;
-    if (const size_t free = gpu_free_bytes(); free < runNeed()) {
-      err = "out of memory: the run's " + std::to_string(nSens) + " sensors need " + gib(runNeed()) + " of GPU memory beside the scene, " +
-            gib(free) + " free (close other programs that use the GPU, or use fewer receivers)";
-      return false;
-    }
+    if (!run_admission(*g, nSens, perSensor, buffers * perSensor + sizeof(double), opt.residentScenes, chunkBytes, err)) return false;
   }
   // A thin solid's exit face passes everything. With --cull-backfaces a closed solid is crossed through one front face
   // anyway (the other is culled): tau once without the rule, whichever way it is wound.
@@ -527,7 +548,7 @@ static bool run_views(const std::vector<MeshView>& meshes, const Weather* w, con
     sAt[k + 1] = sAt[k] + (meshes[k].sensor ? (opt.onVertices ? meshes[k].mesh->numPoints() : meshes[k].mesh->numFaces()) * size_t(nS) : 0);
   std::vector<std::string> warns(meshes.size());
   par_for(meshes.size(), [&](size_t k) {
-    if (meshes[k].sensor) elems[k] = make_sensors_into(*meshes[k].mesh, opt, c, sens.p.data() + sAt[k], sens.n.data() + sAt[k], warns[k]);
+    if (meshes[k].sensor) elems[k] = make_sensors_into(*meshes[k].mesh, opt, ladybug, sc.c, sens.p.data() + sAt[k], sens.n.data() + sAt[k], warns[k]);
   });
   std::string warn;
   out.ranges.clear();
@@ -540,8 +561,8 @@ static bool run_views(const std::vector<MeshView>& meshes, const Weather* w, con
   if (sAt.back() != nSens) { err = "internal: " + std::to_string(sAt.back()) + " sensors made for " + std::to_string(nSens); return false; }
   out.stats.prepMs += ms(tSens);
   if (opt.verbose) {
-    std::fprintf(stderr, "info: %zu sensors, %zu triangles%s, %zu steps (%.1f h)\n", nSens, nTris, reuse ? " (scene reused)" : "", T, durationHours);
-    if (skipped) std::fprintf(stderr, "warn: %d degenerate faces skipped in occluders\n", skipped);
+    std::fprintf(stderr, "info: %zu sensors, %zu triangles%s, %zu steps (%.1f h)\n", nSens, sc.nTris, out.sceneReused ? " (scene reused)" : "", T, durationHours);
+    if (sc.skipped) std::fprintf(stderr, "warn: %d degenerate faces skipped in occluders\n", sc.skipped);
     if (!warn.empty()) std::fprintf(stderr, "warn: %s\n", warn.c_str());
     if (translucent) {
       size_t nLit = 0, nThin = 0;
@@ -699,7 +720,7 @@ bool run(const std::vector<MeshView>& meshes, const Weather* w, const Options& o
   // is freed by the unwinding, the GPU state keeps whatever scene it had installed (a build that failed installed none).
   const char* stage = "preparing the run";
   try {
-    return run_views(meshes, w, opt, out, err, stage);
+    return run_daylight(meshes, w, opt, out, err, stage);
   } catch (const std::bad_alloc&) {
     out = Result{};
     err = std::string("out of memory: host memory ran out while ") + stage;

@@ -105,11 +105,9 @@ unsigned thin_solid(const Mesh& m, unsigned s, const double c[3]);
 // Sensor points/normals per face or per point per opt (mode rules, offset, sides). Appends to out: one entry per
 // element, or two consecutive entries (front, back) when sides == Both. Returns the element count (faces or points).
 size_t make_sensors(const Mesh& m, const Options& opt, const double c[3], Sensors& out, std::string& warn);
-// The same into caller ranges p / n of elements x sides entries (0 and the ladybug error in warn: nothing written).
-size_t make_sensors_into(const Mesh& m, const Options& opt, const double c[3], float3* p, float3* n, std::string& warn);
-
-// ------------------------------------------------------------------ run.cpp
-bool npy_write_header(std::FILE* f, size_t rows, size_t cols, const char* descr);   // .npy v1.0 [rows x cols] C order, descr "<f8" / "<f4" / "<u4" / "<u1"
+// The same into caller ranges p / n of elements x sides entries, by the ladybug mode's rules when ladybug (0 and the
+// ladybug error in warn: nothing written).
+size_t make_sensors_into(const Mesh& m, const RunOptions& opt, bool ladybug, const double c[3], float3* p, float3* n, std::string& warn);
 
 // ------------------------------------------------------------------ gpu.cu
 struct Gpu;
@@ -180,5 +178,35 @@ GpuStats gpu_stats(const Gpu& g);
 unsigned gpu_ray_flags(bool cullBackfaces, bool translucent);
 // The bounce pass's closest hits: DISABLE_ANYHIT [| CULL_BACK_FACING_TRIANGLES] (it handles translucent slots itself)
 unsigned gpu_bounce_flags(bool cullBackfaces);
+
+// ------------------------------------------------------------------ run.cpp
+bool npy_write_header(std::FILE* f, size_t rows, size_t cols, const char* descr);   // .npy v1.0 [rows x cols] C order, descr "<f8" / "<f4" / "<u4" / "<u1"
+// An occluder scene as the process keeps it (installed in the Gpu, or parked in VRAM under its key) and a run sees it.
+struct SceneMesh { std::string name; size_t tri0 = 0, nTri = 0; };   // a mesh's triangles [tri0, tri0 + nTri) of the GAS
+struct Scene {
+  std::string key;
+  double c[3] = {0, 0, 0};          // bbox centre the scene's triangles were recentred by
+  size_t nTris = 0;
+  int skipped = 0;                  // faces left out (degenerate / fewer than 3 vertices)
+  std::vector<SceneMesh> order;     // build order: every blocking mesh in input order, named as the building run named it
+  std::vector<unsigned> thin;       // per global slot: thin_solid() of the transmitting slots, from the build (empty: none)
+  GasSlot gas;                      // parked scenes only
+};
+// A run's occluder scene, shared by the tools. A non-empty key (the caller's sceneKey plus whatever else its GAS depends
+// on) reuses the resident scene of that key, installed or parked (out.sceneReused). Else the meshes k with blocks(k) are
+// triangulated (recentred by the bbox centre of all meshes; a global slot per triangle when slotted) and built
+// (gpu_build(slots, slotted)) once the build's peak fits: the per-run buffers go, then parked scenes, oldest first, else
+// "out of memory: building the scene ...". The installed keyed scene is parked first when residentScenes > 1.
+// s = the scene's record (no gas). gpu null: a run without rays, the lookup only (no GPU, nothing built or moved); else
+// *gpu = the process's GPU (made on first use) with the scene installed. A set cancel fails with "cancelled" before any
+// GPU work; out.stats.prepMs / buildMs grow by the triangulation / build; stage names each step (run()'s out-of-memory text).
+bool scene_acquire(const std::vector<MeshView>& meshes, const std::function<bool(size_t)>& blocks, const std::vector<Slot>& slots,
+                   bool slotted, const std::string& key, int residentScenes, const std::atomic<bool>* cancel, Gpu** gpu, Scene& s,
+                   Result& out, const char*& stage, std::string& err);
+// Room on the GPU beside the scene for a run of nSens sensors (points and normals) traced in chunks of chunkBytes /
+// perSensor sensors (perSensor: the largest per-chunk buffer's bytes per sensor, chunkBytes caps each), chunkSensor
+// device bytes per sensor of a chunk. The last run's buffers go (gpu_trim), then parked scenes beyond residentScenes or
+// in the way, then chunkBytes halves down to 32 MiB (no number depends on the chunking); else "out of memory: ...".
+bool run_admission(Gpu& g, size_t nSens, size_t perSensor, size_t chunkSensor, int residentScenes, size_t& chunkBytes, std::string& err);
 
 }  // namespace daylight

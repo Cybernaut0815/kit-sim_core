@@ -94,34 +94,75 @@ bool parse_optics(const std::string& s, std::vector<Optics>& out, std::string& e
   return true;
 }
 
+// The value of the flag at argv[i] (i moves to it), else null with err = "missing value for FLAG".
+const char* value(int argc, char** argv, int& i, const char* flag, std::string& err) {
+  if (i + 1 >= argc) { err = std::string("missing value for ") + flag; return nullptr; }
+  return argv[++i];
+}
+
+// The manifest's "meshes" array: {name, first row, row count} per sensor mesh, in input order.
+std::string manifest_meshes(const Result& r) {
+  std::string m = "[";
+  char buf[160];
+  size_t first = 0;
+  for (size_t i = 0; i < r.ranges.size(); ++i) {
+    std::snprintf(buf, sizeof buf, ", \"first\": %zu, \"count\": %zu}", first, r.ranges[i].second);
+    m += std::string(i ? ",\n    {\"name\": \"" : "\n    {\"name\": \"") + r.ranges[i].first + "\"" + buf;
+    first += r.ranges[i].second;
+  }
+  return m + "\n  ]";
+}
+
 }  // namespace
 
-int parse(int argc, char** argv, Args& a, std::string& err) {
-  auto need = [&](int& i, const char* flag) -> const char* {
-    if (i + 1 >= argc) { err = std::string("missing value for ") + flag; return nullptr; }
-    return argv[++i];
-  };
+int parse_common(int argc, char** argv, CommonArgs& a, RunOptions& o, std::string& err,
+                 const std::function<int(int& i, const std::string& flag)>& tool) {
+  const auto need = [&](int& i, const char* flag) { return value(argc, argv, i, flag, err); };
   for (int i = 1; i < argc; ++i) {
     std::string f = argv[i];
     const char* v = nullptr;
     if (f == "-h" || f == "--help") { a.help = true; return 0; }
-    else if (f == "-v") a.opt.verbose = true;
+    else if (f == "-v") o.verbose = true;
     else if (f == "--context") { if (!(v = need(i, "--context"))) return 1; a.context.push_back(v); }
-    else if (f == "--on") { if (!(v = need(i, "--on"))) return 1; if (!std::strcmp(v, "faces")) a.opt.onVertices = false; else if (!std::strcmp(v, "vertices")) a.opt.onVertices = true; else { err = "--on faces|vertices"; return 1; } }
-    else if (f == "--mode") { if (!(v = need(i, "--mode"))) return 1; if (!std::strcmp(v, "physical")) a.opt.mode = Mode::Physical; else if (!std::strcmp(v, "ladybug")) a.opt.mode = Mode::Ladybug; else { err = "--mode physical|ladybug"; return 1; } }
-    else if (f == "--quantity") { if (!(v = need(i, "--quantity"))) return 1; if (!parse_quantities(v, a.opt.quantities)) { err = "unknown quantity"; return 1; } }
-    else if (f == "--sides") { if (!(v = need(i, "--sides"))) return 1; if (!std::strcmp(v, "front")) a.opt.sides = Sides::Front; else if (!std::strcmp(v, "back")) a.opt.sides = Sides::Back; else if (!std::strcmp(v, "both")) a.opt.sides = Sides::Both; else { err = "--sides front|back|both"; return 1; } }
-    else if (f == "--cull-backfaces") a.opt.cullBackfaces = true;
-    else if (f == "--no-self-occlude") a.opt.selfOcclude = false;
+    else if (f == "--on") { if (!(v = need(i, "--on"))) return 1; if (!std::strcmp(v, "faces")) o.onVertices = false; else if (!std::strcmp(v, "vertices")) o.onVertices = true; else { err = "--on faces|vertices"; return 1; } }
+    else if (f == "--sides") { if (!(v = need(i, "--sides"))) return 1; if (!std::strcmp(v, "front")) o.sides = Sides::Front; else if (!std::strcmp(v, "back")) o.sides = Sides::Back; else if (!std::strcmp(v, "both")) o.sides = Sides::Both; else { err = "--sides front|back|both"; return 1; } }
+    else if (f == "--cull-backfaces") o.cullBackfaces = true;
+    else if (f == "--no-self-occlude") o.selfOcclude = false;
     else if (f == "--no-occlude") {   // NAME[;NAME...]; the names are checked by run()
       if (!(v = need(i, "--no-occlude"))) return 1;
       const std::string s = v;
       for (size_t b = 0, e; b <= s.size(); b = e + 1) {
         e = std::min(s.find(';', b), s.size());
         if (e == b) { err = "--no-occlude " + s + ": empty NAME"; return 1; }
-        a.opt.noOcclude.push_back(s.substr(b, e - b));
+        o.noOcclude.push_back(s.substr(b, e - b));
       }
     }
+    else if (f == "--north") { if (!(v = need(i, "--north"))) return 1; o.north = std::atof(v); }
+    else if (f == "--offset") { if (!(v = need(i, "--offset"))) return 1; o.offset = std::atof(v); }
+    else if (f == "--out") { if (!(v = need(i, "--out"))) return 1; a.out = v; }
+    else if (f == "--bench") {
+      a.bench = true;
+      if (i + 2 < argc && std::isdigit(static_cast<unsigned char>(argv[i + 1][0])) && std::isdigit(static_cast<unsigned char>(argv[i + 2][0]))) {
+        a.benchSens = static_cast<size_t>(std::atoll(argv[++i]));
+        a.benchTris = static_cast<size_t>(std::atoll(argv[++i]));
+      }
+    }
+    else if (f.size() > 1 && f[0] == '-' && !std::isdigit(static_cast<unsigned char>(f[1]))) {
+      const int rc = tool(i, f);
+      if (rc < 0) { err = "unknown flag " + f; return 1; }
+      if (rc) return rc;
+    }
+    else a.sensors.push_back(f);
+  }
+  return 0;
+}
+
+int parse(int argc, char** argv, Args& a, std::string& err) {
+  const auto need = [&](int& i, const char* flag) { return value(argc, argv, i, flag, err); };
+  const int rc = parse_common(argc, argv, a, a.opt, err, [&](int& i, const std::string& f) {
+    const char* v = nullptr;
+    if (f == "--mode") { if (!(v = need(i, "--mode"))) return 1; if (!std::strcmp(v, "physical")) a.opt.mode = Mode::Physical; else if (!std::strcmp(v, "ladybug")) a.opt.mode = Mode::Ladybug; else { err = "--mode physical|ladybug"; return 1; } }
+    else if (f == "--quantity") { if (!(v = need(i, "--quantity"))) return 1; if (!parse_quantities(v, a.opt.quantities)) { err = "unknown quantity"; return 1; } }
     else if (f == "--epw") { if (!(v = need(i, "--epw"))) return 1; a.epw = v; }
     else if (f == "--clear-sky") a.clearSky = true;
     else if (f == "--turbidity") { if (!(v = need(i, "--turbidity"))) return 1; a.turbidity = std::atof(v); }
@@ -154,23 +195,14 @@ int parse(int argc, char** argv, Args& a, std::string& err) {
       const char* e = v + std::strlen(v);
       if (const auto r = std::from_chars(v, e, n); r.ec != std::errc() || r.ptr != e) { err = f + " needs a whole number"; return 1; }
     }
-    else if (f == "--north") { if (!(v = need(i, "--north"))) return 1; a.opt.north = std::atof(v); }
-    else if (f == "--offset") { if (!(v = need(i, "--offset"))) return 1; a.opt.offset = std::atof(v); }
-    else if (f == "--out") { if (!(v = need(i, "--out"))) return 1; a.out = v; }
     else if (f == "--timeseries") { if (!(v = need(i, "--timeseries"))) return 1; a.opt.seriesPath = v; }
     else if (f == "--dump-bits") { if (!(v = need(i, "--dump-bits"))) return 1; a.opt.dumpBitsPath = v; }
     else if (f == "--dump-sky") { if (!(v = need(i, "--dump-sky"))) return 1; a.opt.dumpSky = v; }
     else if (f == "--dump-sun") { if (!(v = need(i, "--dump-sun"))) return 1; a.opt.dumpSun = v; }
-    else if (f == "--bench") {
-      a.bench = true;
-      if (i + 2 < argc && std::isdigit(static_cast<unsigned char>(argv[i + 1][0])) && std::isdigit(static_cast<unsigned char>(argv[i + 2][0]))) {
-        a.benchSens = static_cast<size_t>(std::atoll(argv[++i]));
-        a.benchTris = static_cast<size_t>(std::atoll(argv[++i]));
-      }
-    }
-    else if (f.size() > 1 && f[0] == '-' && !std::isdigit(static_cast<unsigned char>(f[1]))) { err = "unknown flag " + f; return 1; }
-    else a.sensors.push_back(f);
-  }
+    else return -1;
+    return 0;
+  });
+  if (rc || a.help) return rc;
   return optics_ok(a.opt, err) ? 0 : 1;
 }
 
@@ -208,16 +240,9 @@ std::string manifest_json(const Result& r, const std::string& extraFields) {
   std::string m = "{\n  \"columns\": [";
   for (size_t c = 0; c < r.columns.size(); ++c) m += (c ? ", \"" : "\"") + r.columns[c] + "\"";
   char buf[160];
-  std::snprintf(buf, sizeof buf, "],\n  \"duration_h\": %.6f,\n  \"dirs\": {\"sky\": %zu, \"ground\": %zu, \"sun\": %zu},\n  \"meshes\": [",
+  std::snprintf(buf, sizeof buf, "],\n  \"duration_h\": %.6f,\n  \"dirs\": {\"sky\": %zu, \"ground\": %zu, \"sun\": %zu},\n  \"meshes\": ",
                 r.durationHours, r.nSky, r.nSky, r.nSun);
-  m += buf;
-  size_t first = 0;
-  for (size_t i = 0; i < r.ranges.size(); ++i) {
-    std::snprintf(buf, sizeof buf, ", \"first\": %zu, \"count\": %zu}", first, r.ranges[i].second);
-    m += std::string(i ? ",\n    {\"name\": \"" : "\n    {\"name\": \"") + r.ranges[i].first + "\"" + buf;
-    first += r.ranges[i].second;
-  }
-  m += "\n  ]";
+  m += buf + manifest_meshes(r);
   if (!extraFields.empty()) m += ",\n  " + extraFields;
   m += "\n}\n";
   return m;

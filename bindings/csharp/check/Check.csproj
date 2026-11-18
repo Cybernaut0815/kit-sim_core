@@ -1,0 +1,17 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!-- The binding's check on .NET 9 and .NET Framework 4.8 (its reference assemblies come from NuGet). daylight_c.dll
+       comes from the CMake build through DAYLIGHT_DLL, so none is copied here. -->
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFrameworks>net9.0;net48</TargetFrameworks>
+    <PlatformTarget>x64</PlatformTarget>
+    <ImplicitUsings>disable</ImplicitUsings>
+    <Nullable>disable</Nullable>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="../Daylight.csproj" />
+  </ItemGroup>
+
+</Project>

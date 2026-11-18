@@ -175,8 +175,9 @@ blocking meshes (context, receivers unless `--no-self-occlude` / `--no-occlude`)
 positions, one modifier per class (`c2` obstruction, `c3` + g target group g), with `rtrace -ab 0 -oLmN` from a frozen
 octree. The virtual ground is applied on the host, not in the Radiance scene: a downward ray whose hit lies past the
 core's ray end (1 cm under the plane) or that hits nothing is `ground` at its plane distance; an eye on or below the
-plane gives `ground` at 0.1 m (untraced); with `--virtual-ground off` a downward miss is `ground` at +inf. Own-surface
-rays (360 mode, `--offset 0`, n.d <= 0) must be class 254.
+plane gives `ground` at 0.1 m (untraced); with `--virtual-ground off` a downward miss is `ground` at +inf; a miss on or
+above the horizon (dir.z >= 0, so `box_360_own`'s level row) is `sky`. Own-surface rays (360 mode, `--offset 0`,
+n.d <= 0) must be class 254.
 
 | check | reference | metric | limit | hard |
 |---|---|---|---|---|

@@ -97,11 +97,12 @@ seed 42), whose four facades, split into quads of about 2 m, are the receivers: 
 at the defaults (`120,-70,50`, 2 deg cells: 3,600 rays each). Everything else is context: the roofs, the parks, street
 trees every 15 m along the middle of every street (4 x 4 m boxes from 2 to 8 m up), a 50 m water strip along the south
 edge (5 cm up, target `water`) and a ground plane at z 0 split into quads until the scene has about NTRIS triangles,
-9,995,852 in all. Measured at 732ca41 on the RTX 2060, which throttles at 85-90 C during the run:
+9,995,852 in all. Measured at 1e82c40 on the RTX 2060, two runs, each started at 81 C (the coolest the GPU idled at,
+another application on it) and ended at 86 C:
 
 | sensors | triangles | rays / sensor | closest-hit rays | GAS | trace | G rays/s | reduce | run total |
 |---|---|---|---|---|---|---|---|---|
-| 1,016,560 facade quads | 9,995,852 | 3,600 | 3.66 G | 190 MB | 4.9-5.1 s | 0.72-0.75 | 0.39-0.43 s | 6.45-6.7 s |
+| 1,016,560 facade quads | 9,995,852 | 3,600 | 3.66 G | 190 MB | 1.84 s | 1.98-1.99 | 0.66 s | 3.58-3.66 s |
 
 Run total is `views::run` (triangulation, GAS build, sensors, trace, reduce, columns); the city is built before it and
 no file is written. Closest hits have no first-hit exit, so the trace depends on the scene far more than daylight's
@@ -110,6 +111,13 @@ mode (2^13 threads first, then ~40 ms each, at most doubling), well under the Wi
 ray (a class byte, a float distance) and sums every sensor's rays in double in a fixed order, so no chunking changes a
 bit; it takes ln d in float, as a double logarithm costs 4x the reduce (+18 % of a `views --bench` run on the 2060's
 1/32-rate FP64).
+
+The ray buffer is direction-major (a warp's 32 neighbouring sensors store each ray side by side, as daylight's byte
+mode does). At 732ca41 it held each sensor's rays in a row, so every store touched 32 sectors: the same rays and bits,
+but a 4.9-5.1 s trace (0.72-0.75 G rays/s) and a 6.45-6.7 s run; the reduce, reading those rows contiguously, took
+0.39-0.43 s (it now reads strided rows). On smaller city-like scenes the trace runs 3-7x faster and the reduce
+~8-11 ms slower: 31,920 facade quads in a 244k-triangle street grid 159 -> 41 ms trace, 13 -> 21 ms reduce; 40k facade
+quads, 80k triangles 119 -> 32 ms, 15 -> 26 ms; an empty scene 114 -> 17 ms (interleaved best of 3-5, `-v`).
 
 ## Other GPUs
 

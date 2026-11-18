@@ -10,7 +10,7 @@ open ones good; an open ray counts as `--far` (1000 m), good but bounded.
 ```
 views facade.obj --context city.obj --out v.txt                                    # view mode: 120 x 120 deg about each face's normal
 views facade.obj --context city.obj --context lake.obj --target lake=water --reach en17037 --out v.npy
-views floor.obj --context city.obj --no-occlude floor --fov 360 --offset 1.6 --out v.txt   # a standing eye, all around
+views floor.obj --context city.obj --no-occlude floor --fov 360 --offset 1.6 --out v.txt   # a standing eye, all around (flat floor)
 views --bench                                                                         # street-grid city, timings only
 ```
 
@@ -30,9 +30,12 @@ degrees. The default `120,-70,50` at 2 deg is 60 x 60 = 3,600 rays per element; 
   +Z, normalised), up = right x forward. Azimuth runs from -H/2 (left) to +H/2 (right), elevation from LO to HI about
   the plane of forward and right: on a vertical facade up is +Z and the default field is a level gaze 60 deg to either
   side, 50 deg up and 70 deg down; on a tilted roof the field tilts with the face. A face looking straight up or down
-  (the normal's horizontal part under 1e-6) takes the model's east as right (90 deg clockwise of model north, +X at
-  `--north 0`), so its up is south when it looks up and north when it looks down. Every ray leaves in front of the
-  surface.
+  (the normal's horizontal part under 1e-3, about 0.06 deg: float noise on a flat roof) takes the model's east as right
+  (90 deg clockwise of model north, +X at `--north 0`, made square to the normal), so its up is south when it looks up
+  and north when it looks down. Tilted any more (a roof's 1-2 % drainage slope), a face takes its right from the tilt,
+  and the field's 50 / 70 deg asymmetry turns with it (uphill is up): for roofs and terraces `--fov 360` (one world
+  frame) or a symmetric field (`LO = -HI`) gives numbers that do not depend on which way a roof drains. Every ray leaves
+  in front of the surface.
 - **360 mode** (H = 360): one world frame for every element: azimuth clockwise from model north (+Y, turned
   counter-clockwise by `--north` as in daylight), elevation about the horizon. With `--offset 0` the directions behind
   the element's own plane are not traced (own surface, below).
@@ -46,7 +49,10 @@ and sine of elevation uniform), drawn from a hash of the element's row, the cell
 numbers bit for bit however it is chunked, while the same element at another row (other meshes before it) gets other
 points. A fixed grid would alias thin, far targets into bands: a lake 200 to 500 m away seen from 10 m up is a
 1.7 deg strip, less than a cell. `--jitter off` takes each cell's middle in azimuth and in sine of elevation
-(validation, images from `--dump-rays`).
+(validation, images from `--dump-rays`). Jittered, each element's numbers are an unbiased estimate with some noise:
+over 200 copies of the facade example's ground floor (below) about 1e-3 on a share (5 % of the 2.4 % water) and 0.3 %
+on `distance` at 2 deg, 2-3x less per halving of `--cell` (4x the rays). Use 1 deg for thin or far targets or
+element-by-element comparisons; sums and means over many elements average the noise out.
 
 ## Ray classes
 
@@ -55,15 +61,19 @@ classes) and ends in one class:
 
 | class | the ray | its distance |
 |---|---|---|
-| `sky` | meets nothing and points above the horizon | open (`--far`) |
+| `sky` | meets nothing and points above the horizon, or along it | open (`--far`) |
 | `ground` | points below the horizon and meets nothing down to the virtual ground; never sky | the virtual plane's; open with `--virtual-ground off` |
 | `obstruction` | ends on a mesh that is not a target: context, a receiver (receivers block by default), a modelled terrain | the hit's |
 | target group | ends on a mesh that `--target NAME=GROUP` names | the hit's |
 | own surface, counted in `obstruction` | 360 mode with `--offset 0`: a direction behind the element's own plane, not traced | none |
 
-The horizon itself counts as below: a ray exactly along it that meets nothing is `ground` with an open distance. At
-`--jitter off` every ray of a row centred on the horizon is such a ray (`--fov 360,-1,1` gives sky 0, ground 1 in the
-open); jittered rays fall on either side.
+The horizon itself counts as sky (as daylight's sky patches and Ladybug's HorizontalRadial count it): a ray exactly
+along it that meets nothing is `sky`; the virtual ground ends only rays pointing below it. At `--jitter off` every ray
+of a row centred on the horizon is such a ray (`--fov 360,-1,1` gives sky 1 in the open); jittered rays fall on either
+side.
+
+A degenerate face (no area, so no normal; `-v` warns) traces no ray: its whole field is own surface, `obstruction` 1
+without a distance (daylight gives such a face 0).
 
 Own surface: in 360 mode with `--offset 0`, a direction behind the element's plane would only see the surface the
 element lies on; it is not traced and counts as `obstruction` without a distance (as daylight's hemisphere cull). With
@@ -79,7 +89,11 @@ context), or at `--ground-z Z` (metres), and ends every downward ray there: the 
 terrain is modelled. A downward ray is traced to 1 cm below the plane, so geometry lying on the plane (a terrain or a
 lake at the lowest point) wins over it; a ray that meets nothing there is `ground` at the plane's exact distance,
 (eye height above the plane) / sin(angle below the horizon). Geometry below a raised `--ground-z` is hidden. An eye at
-or below the plane (a vertex at the foot of a facade, `--offset 0`) sees `ground` at 0.1 m in every downward direction.
+or below the plane (a vertex at the foot of a facade, `--offset 0`) sees `ground` at 0.1 m in every downward direction;
+an eye below it (a basement under a raised `--ground-z`, a floor grid wound downward with an `--offset`) still sees up
+through the plane (sky or geometry above), a mix that means little: `-v` counts such eyes. The default height is the
+lowest point of what the run is given, so a partial model (upper floors only, no context down to the ground) puts the
+plane at its own foot: give `--ground-z` there (`-v` prints the height).
 `--virtual-ground off` (the flag daylight shares): downward rays that meet nothing are still `ground`, but count as
 open (`--far`) and reach every D.
 
@@ -105,19 +119,24 @@ statistic weighs the rays by their cells' solid angles.
   | sky everywhere | 1000 m | 1000 m |
 
 - `distance_min` (`--distance min`): the smallest d in the field, the nearest thing in view (an all-open view gives
-  `--far`).
+  `--far`). `distance` and `distance_min` are NaN when no ray of the field is traced (all own surface: 360 mode at
+  `--offset 0` with the whole field behind the element, a degenerate face).
 - `--distance group` adds, per target group g, `<g>_distance` and `<g>_distance_min` for whichever of `mean` and `min`
   are on: the log mean and the minimum over the rays that end on g (how far the visible water is); NaN (`nan` in text)
   when g is not in view. `group` alone is a usage error; `none` drops every distance column and stands alone.
 
 **Reach.** `--reach D[,D...]` (metres, at most 8) adds a `reach_<D>` column per D: the share of the field whose ray
 travels at least D before it meets anything, by the true distance (not clamped to `--far`): sky reaches every D, a
-ground ray by its virtual-plane distance (every D with `--virtual-ground off`), an own-surface ray none.
-`--reach en17037` is `6,20,50`, the minimum, medium and high view distance levels of EN 17037.
+ground ray by its virtual-plane distance (every D with `--virtual-ground off`), an own-surface ray none. Two D that
+print alike (`reach_%g`) are a usage error. `--reach en17037` is `6,20,50`, the minimum, medium and high view distance
+levels of EN 17037. `reach_<D>` is a share of the whole field, the street below a window included at its plane
+distance, so an open view stays well under 1 (about 0.47 at 50 m from a ground-floor window with the default field,
+more higher up); no EN 17037 level is assigned. For the standard's horizontal outside distance take the field above
+the horizon (`--fov H,0,HI`) or `--virtual-ground off`, or pick a share threshold.
 
-Shares, minima and reach are exact. The log means sum ln d with a float logarithm (a double one at the 0.1 m and
-`--far` clamps, so an all-open view gives `--far` to double rounding, about 1e-15): about 1e-7 relative to a double
-computation.
+Shares, minima and reach are exact over the traced rays. The log means sum ln d with a float logarithm (a double one
+at the 0.1 m and `--far` clamps): about 1e-7 relative to a double computation; a mean whose every ray sits at the far
+clamp (an all-open view, a target wholly beyond `--far`) is `--far` exactly.
 
 ## Mesh roles
 
@@ -131,9 +150,10 @@ computation.
 
 Target rules: NAME as in `--no-occlude` (`.dmesh` file stem, OBJ `o`/`g` group, USD prim path); the token splits at its
 last `=`; several meshes may share a GROUP; at most 16 groups. GROUP takes letters, digits, `_` and `-` and is not
-`sky`, `ground`, `obstruction` or a name starting with `distance` or `reach`. Exit 1 after loading (library: `run()`
-fails) on an unknown or ambiguous name, a mesh named twice, a mesh that blocks no rays (a receiver under `--no-occlude`
-or `--no-self-occlude`) and a face slot `NAME/SLOT` (not supported yet: target the whole mesh).
+`sky`, `ground`, `obstruction`, a name starting with `distance` or `reach`, or one ending in `_distance` or
+`_distance_min` (another group's distance columns). Exit 1 after loading (library: `run()` fails) on an unknown or
+ambiguous name, a mesh named twice, a mesh that blocks no rays (a receiver under `--no-occlude` or `--no-self-occlude`)
+and a face slot `NAME/SLOT` (not supported yet: target the whole mesh).
 
 ## Flags
 
@@ -151,7 +171,7 @@ or `--no-self-occlude`) and a face slot `NAME/SLOT` (not supported yet: target t
 | `--far M` | metres, > 0.1 | `1000` | what open counts as, and the cap of every distance | `farDist` |
 | `--virtual-ground` | `on` \| `off` | `on` | a ground plane ends downward rays (`ground` at its distance); off: they stay open | `virtualGround` |
 | `--ground-z Z` | metres | the lowest point of the meshes | the virtual ground's height | `groundZ` (NAN: the lowest point) |
-| `--reach D[,D...]` \| `en17037` | metres, > 0 | none | `reach_<D>` columns: the share of the field that sees at least D metres (at most 8); `en17037` = `6,20,50` | `reach` |
+| `--reach D[,D...]` \| `en17037` | metres, > 0, distinct | none | `reach_<D>` columns: the share of the field that sees at least D metres (at most 8); `en17037` = `6,20,50` | `reach` |
 | `--on` | `faces` \| `vertices` | `faces` | element = polygon (eye at the centroid, face normal) or point (area-weighted vertex normal) | `onVertices` |
 | `--sides` | `front` \| `back` \| `both` | `front` | the viewing side(s) of each element: `back` looks along the reversed normal, `both` gives two columns per value (`_front`, `_back`) | `sides` |
 | `--cull-backfaces` | flag | off | occluder triangles block only from their front (winding) side; default both sides | `cullBackfaces` |
@@ -189,7 +209,7 @@ a file, the scene, CUDA / OptiX, memory, writing the output, a `--dump-rays` abo
   for sky, own surface and, with `--virtual-ground off`, ground. S = one row per element and side (`--sides both`:
   element e's front at row 2e, its back at 2e + 1); K = rows x columns, ray `row x columns + column`, so a row reshapes
   to the manifest's `grid`: rows from HI down, columns from the field's left edge (360 mode: from north) clockwise.
-  Refused above 4 GB (5 bytes a ray).
+  Refused above 4 GB (5 bytes a ray); a run that fails after starting them removes both files.
 - Library: `Result::values` row-major `[N x C]` (or `Result::f32`, float32 column-major, with `f32Columns`),
   `Result::columns`, `Result::ranges`; `nSky`, `nSun` and `durationHours` stay 0.
 
@@ -273,12 +293,16 @@ views facade.obj --context site.obj --target lake=water --ground-z 0.5
 ```
 
 With the plane off the classes stay (downward misses are still ground, never sky) but the open ground counts as
-1000 m: the log means rise to 780 and 672 m and the nearest thing in view is the lake. A plane raised to 0.5 m hides
-the lake (water 0) and the block's lowest half metre, and the ground comes 0.5 m closer (1.0 / sin 70 = 1.064 m).
+1000 m: the log means rise to 780 and 672 m and the nearest thing in view is the lake. Any hit below the horizon (the
+water too, or a lawn) is then shorter than open ground, so the upper floor, which sees more of the lake, ranks below
+the ground floor: keep the plane on to rank views. A plane raised to 0.5 m hides the lake (water 0) and the block's
+lowest half metre, and the ground comes 0.5 m closer (1.0 / sin 70 = 1.064 m).
 
 **A standing eye all around.** `plaza.obj` holds `plaza`, two 2 m quads at z 0 facing up, 4 to 6 m north of the
 facade. The facade is now context; `--no-occlude plaza` keeps the plaza out of the rays, so the virtual ground (at its
-height) takes its place below the eye.
+height) takes its place below the eye. That holds only for a flat grid at the model's lowest point (or one lying on a
+context surface): a grid that is itself the terrain or a raised deck must block (class it with `--target
+terrain=terrain`), else the eye sees through it down to the plane and its distances come out far too long.
 
 ```
 views plaza.obj --context facade.obj --context site.obj --no-occlude plaza --fov 360 --offset 1.6 --target lake=water --reach en17037 --dump-rays plaza_rays.npy --out plaza.txt
@@ -330,6 +354,7 @@ views plaza.obj --context facade.obj --context site.obj --fov 360
 - Coplanar triangles of two meshes z-fight (a target lying on a terrain mesh): lift targets at least 1 cm above the
   terrain or cut them out of it.
 - Log means use a float logarithm: about 1e-7 relative (shares, minima and reach are exact).
-- EN 17037: only the view distance levels (`--reach en17037`); the standard's other view criteria (horizontal sight
-  angle, the layers seen) are not computed.
+- EN 17037: only the shares at its view distance levels (`--reach en17037`, shares of the whole field: see
+  Distances); no level is assigned, and the standard's other view criteria (horizontal sight angle, the layers seen)
+  are not computed.
 - One run at a time per process, shared with daylight (one GPU).

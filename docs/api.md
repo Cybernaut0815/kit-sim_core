@@ -103,8 +103,9 @@ from it.
 Resident scenes: a views run builds daylight's opaque scene under daylight's key (`sceneKey` + the `noOcclude` set), so
 under one `sceneKey` it reuses a scene a daylight run built (one without transmitting slots or a hit record per slot)
 and the other way round (`Result::sceneReused`). Targets are labels per run, taken from the scene's build order by mesh
-name: changing them never rebuilds the scene, unless a target's name is missing from it (a scene built under other
-names), which rebuilds it under the key. `src/cli.h` (`daylight::views::cli::parse` / `manifest_json` / `kUsage`)
+(the same `Mesh` object under the same name): changing them never rebuilds the scene, unless the scene lacks a target
+so (built under other names, or the name now on another mesh), which rebuilds it under the key. A failed run removes
+its `dumpPath` files. `src/cli.h` (`daylight::views::cli::parse` / `manifest_json` / `kUsage`)
 exposes the views CLI's flag parsing and manifest for front ends that accept its flags verbatim.
 
 ## Python

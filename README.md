@@ -90,7 +90,7 @@ rows and the manifest work as in daylight; C++: `daylight::views::run` (`src/vie
 
 ```
 views facade.obj --context city.obj --context lake.obj --target lake=water --reach en17037 --out v.txt   # 120 deg about each face's normal
-views floor.obj --context city.obj --no-occlude floor --fov 360 --offset 1.6 --out v.npy                  # a standing eye, all around
+views floor.obj --context city.obj --no-occlude floor --fov 360 --offset 1.6 --out v.npy                  # a standing eye, all around (flat floor)
 views --bench
 ```
 

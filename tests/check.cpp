@@ -5,6 +5,7 @@ int check_sky(const char* testsDir);
 int check_solar(const char* testsDir);
 int check_mesh(const char* testsDir);
 int check_gpu(const char* testsDir);
+int check_views(const char* testsDir);
 int main(int argc, char** argv) {
   const char* dir = argc > 1 ? argv[1] : "tests";
   int failures = 0;
@@ -12,6 +13,7 @@ int main(int argc, char** argv) {
   failures += check_solar(dir);
   failures += check_mesh(dir);
   failures += check_gpu(dir);
+  failures += check_views(dir);
   std::printf("%s: %d failure(s)\n", failures ? "FAIL" : "OK", failures);
   return failures ? 1 : 0;
 }

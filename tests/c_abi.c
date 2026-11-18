@@ -4,6 +4,7 @@
    resident scenes over handles, the views facade, cancel. argv: the tests folder, the build folder (smoke.npy, ...). */
 #include "daylight_c.h"
 
+#include <locale.h>
 #include <math.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -185,6 +186,28 @@ int main(int argc, char** argv) {
   size_t n2 = 0;
   double* v2 = r2 ? values_of(r2, &n2) : NULL;
   CHECK(v1 && v2 && n2 == n1 && memcmp(v1, v2, n1 * sizeof(double)) == 0);
+
+  /* a host's decimal-comma C locale changes nothing (dl_run reads and writes numbers in "C"), and stays the host's */
+  if (setlocale(LC_ALL, "de-DE")) {
+    dl_result* rl = NULL;
+    CHECK(run1(DL_DAYLIGHT, sun, 10, box, NULL, &rl) == DL_OK);
+    if (rl) same_as_cli(rl, build, "smoke.npy", __LINE__);
+    CHECK(localeconv()->decimal_point[0] == ',');
+    dl_result_free(rl);
+    setlocale(LC_ALL, "C");
+  } else {
+    printf("info: no de-DE locale here, the locale case skipped\n");
+  }
+
+  /* progress ends at 1 also for a run with nothing to trace (sun hours at night) */
+  {
+    const char* const night[] = {"--lat", "41.98", "--lon", "-87.92", "--tz", "-6", "--quantity", "sunhours", "--time", "06-21T00:00"};
+    dl_control* c = dl_control_create();
+    dl_result* rn = NULL;
+    CHECK(run1(DL_DAYLIGHT, night, 10, box, c, &rn) == DL_OK && dl_control_progress(c) == 1.0);
+    dl_result_free(rn);
+    dl_control_free(c);
+  }
 
   /* views on the same handle: an opaque scene is views' too; its values and manifest are views_smoke_npy's */
   const char* const view360[] = {"--fov", "360", "--offset", "1.6", "--sides", "both"};

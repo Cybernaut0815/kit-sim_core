@@ -22,8 +22,10 @@ server (`runRemote` in bindings/ts).
   handle return NULL on error. No exception crosses the ABI.
 - **Version**: `dl_version()` returns `DL_ABI_VERSION` (1), bumped when a signature, a constant or the stats layout
   changes. Bindings refuse another version.
-- **Strings** end with NUL. Names and flags are UTF-8; paths use the C runtime's narrow encoding (the ANSI code page on
-  Windows), as the CLI's arguments do.
+- **Strings** end with NUL. Names and flags are UTF-8; paths (`dl_mesh_load`, `--epw`, `--timeseries`, `--dump-*`)
+  use the C runtime's narrow encoding (the ANSI code page on Windows), as the CLI's arguments do.
+- **Numbers**: `dl_run` reads flags and EPW files, and writes the manifest, with `.` as the decimal point whatever C
+  locale the host set (its thread runs in the `"C"` locale for the call; the host's locale is back afterwards).
 - **Arrays** are the [.dmesh](input.md) arrays: float64 xyz (metres, Z up), int32 counts (>= 3) and 0-based indices
   (right-handed winding), uint16 face slots. Counts are int64.
 - **Threads**: any function from any thread. Runs take turns behind one lock (the GPU runs one call at a time), so a
@@ -64,15 +66,16 @@ its address. One scene stays resident (the core's `residentScenes` 1); the GPU c
 process exits.
 
 **Cancel and progress.** `dl_control_create()` makes a control for one run: another thread calls
-`dl_control_cancel(c)` (the run stops at its next check and fails with `cancelled`) or reads
-`dl_control_progress(c)` (0..1, after each trace chunk). Free it after `dl_run` returned.
+`dl_control_cancel(c)` (the run stops at its next check, the scene or a trace chunk, and fails with `cancelled`; a
+cancel after the last check lets it finish) or reads `dl_control_progress(c)` (0..1 after each trace chunk, 1 once the
+run succeeded). Free it after `dl_run` returned.
 
 ## Results
 
 | function | |
 |---|---|
 | `dl_result_rows(r)`, `dl_result_cols(r)` | rows = elements of the sensor meshes in input order (faces, or points with `--on vertices`) |
-| `dl_result_manifest(r)` | the manifest exactly as the CLI writes `FILE.json` (columns, meshes; views: the field, targets) |
+| `dl_result_manifest(r)` | the manifest the CLI writes to `FILE.json` (columns, meshes; views: the field, targets), with LF line ends (the CLI's file has CRLF) |
 | `dl_result_values(r, out, n)` | rows x cols, row-major float64, as `--out FILE.npy` holds them |
 | `dl_result_values_f32(r, out, n)` | the same rounded to float32 |
 | `dl_result_stats(r, out)` | `DL_STATS` (10) doubles: scene reused (1/0), ms of prep, sky, build, trace, reduce, bounce; rays, launches, GAS bytes |
@@ -107,6 +110,8 @@ dl_mesh_free(box);
 
 ## Limits
 
-Windows only (MSVC build). One GPU run at a time per process. Non-ASCII paths fail (narrow encoding), as in the CLI.
-The host's C locale must keep `.` as the decimal point (Python, .NET and Node do). No call releases the GPU memory
-before the process exits.
+Windows only (MSVC build). One GPU run at a time per process. Paths are opened in the ANSI code page: a host that
+passes UTF-8 strings (C#, Node, Python `str`) reaches only ASCII paths in flags; Python passes an `os.PathLike` in the
+ANSI code page. A failed `dl_mesh_create` / `dl_mesh_load` / `dl_control_create` returns NULL with the message but no
+status (the bindings report 1 for bad arrays, 2 for files and memory). No call releases the GPU memory before the
+process exits.

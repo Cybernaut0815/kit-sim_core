@@ -10,6 +10,7 @@
 #include <algorithm>
 #include <atomic>
 #include <cctype>
+#include <clocale>
 #include <cstdio>
 #include <cstring>
 #include <memory>
@@ -53,6 +54,25 @@ std::string lower_ext(const std::string& path) {   // main.cpp's
   for (char& c : ext) c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
   return ext;
 }
+
+// The core reads the flags' and the EPW's numbers and prints the manifest with the C library, in the calling thread's C
+// locale: "C" for the call, whatever the host set (a decimal comma, e.g. Python's locale.setlocale, would read --lat
+// 41.98 as 41). Per thread, so the host's other threads keep theirs.
+struct CLocale {
+#ifdef _WIN32
+  int mode = _configthreadlocale(_ENABLE_PER_THREAD_LOCALE);
+  std::string saved;
+  CLocale() {
+    const char* l = std::setlocale(LC_ALL, nullptr);
+    saved = l ? l : "C";
+    std::setlocale(LC_ALL, "C");
+  }
+  ~CLocale() {
+    std::setlocale(LC_ALL, saved.c_str());
+    _configthreadlocale(mode);
+  }
+#endif   // ponytail: Windows only, as the build; uselocale(newlocale(...)) on POSIX
+};
 
 // What main.cpp reads from files or writes, handles and the result do instead (the server refuses the same).
 int32_t refused(const cli::CommonArgs& a) {
@@ -191,6 +211,7 @@ int32_t dl_run(int32_t tool, int32_t argc, const char* const* argv, dl_mesh* con
         for (const Mesh& m : hs[k]->meshes) mv.push_back({&m, m.name, pass == 0});
       }
     }
+    const CLocale cLocale;
     std::string err;
     Result r;
     if (tool == DL_DAYLIGHT) {
@@ -210,6 +231,7 @@ int32_t dl_run(int32_t tool, int32_t argc, const char* const* argv, dl_mesh* con
         std::lock_guard<std::mutex> lock(runMu);
         if (!run(mv, haveWeather ? &w : nullptr, a.opt, r, err)) return fail(DL_RUNTIME, err.c_str());
       }
+      if (control) control->progress = 1;   // also a run with nothing to trace (sun hours at night)
       return finish(r, cli::manifest_json(r), out);
     }
     views::cli::Args a;
@@ -226,6 +248,7 @@ int32_t dl_run(int32_t tool, int32_t argc, const char* const* argv, dl_mesh* con
       std::lock_guard<std::mutex> lock(runMu);
       if (!views::run(mv, a.opt, r, err)) return fail(DL_RUNTIME, err.c_str());
     }
+    if (control) control->progress = 1;
     views::Field f;
     views::field(mv, a.opt, f, err);   // the run passed the same checks
     return finish(r, views::cli::manifest_json(r, a.opt, f), out);

@@ -10,8 +10,10 @@
  *    resolve), DL_RUNTIME 2 (the run failed: a file, the GPU, "out of memory: ...", "cancelled"). After a failure
  *    dl_last_error() holds the message (per thread, until the next failing call on that thread). Functions returning
  *    a handle return NULL on error. No exception crosses the ABI.
- *  - Strings end with NUL. Names and flags are UTF-8; file paths use the C runtime's narrow encoding (the ANSI code
- *    page on Windows), as the CLI's argv does.
+ *  - Strings end with NUL. Names and flags are UTF-8; file paths (dl_mesh_load, --epw, --timeseries, --dump-*) use the
+ *    C runtime's narrow encoding (the ANSI code page on Windows), as the CLI's argv does.
+ *  - Numbers: dl_run reads the flags and EPW files, and writes the manifest, with '.' as the decimal point whatever C
+ *    locale the host set (its thread runs in the "C" locale for the call).
  *  - Mesh arrays are the .dmesh arrays (daylight.h): float64 xyz, int32 counts and 0-based indices, uint16 slots.
  *  - Threads: any function from any thread. Runs take turns behind one lock (the GPU runs one at a time), so a dl_run
  *    waits for the one before it. Free a handle only when no call uses it.
@@ -89,11 +91,13 @@ DL_API void dl_mesh_free(dl_mesh* mesh);
 /** Cancel flag and progress of one dl_run, for other threads (no callbacks cross the ABI). NULL on error. */
 DL_API dl_control* dl_control_create(void);
 
-/** From any thread: the run stops at its next check (before the sky, per trace chunk) and fails with DL_RUNTIME
- *  "cancelled"; a run not started yet fails as soon as it starts. The flag stays set: one control per run. */
+/** From any thread: the run stops at its next check (the scene, each trace chunk or launch) and fails with DL_RUNTIME
+ *  "cancelled"; a run not started yet fails as soon as it starts, a cancel after the run's last check lets it finish
+ *  (DL_OK). The flag stays set: one control per run. */
 DL_API void dl_control_cancel(dl_control* control);
 
-/** From any thread: the share of sensors traced so far, 0..1 (after each trace chunk); 0 for NULL. */
+/** From any thread: the share of sensors traced so far, 0..1 (after each trace chunk, 1 once the run succeeded); 0 for
+ *  NULL. */
 DL_API double dl_control_progress(const dl_control* control);
 
 /** Frees a control (NULL is ignored) once the dl_run given it has returned. */
@@ -123,7 +127,8 @@ DL_API int64_t dl_result_rows(const dl_result* result);
 /** Columns, named by the manifest's "columns"; -1 for NULL. */
 DL_API int64_t dl_result_cols(const dl_result* result);
 
-/** The manifest exactly as the CLI writes FILE.json (owned by the result); NULL for NULL. */
+/** The manifest the CLI writes to FILE.json, the same text with LF line ends (the CLI's file has CRLF on Windows), owned
+ *  by the result; NULL for NULL. */
 DL_API const char* dl_result_manifest(const dl_result* result);
 
 /** Copies the values into out (room for n values): rows x cols, row-major float64, as --out FILE.npy holds them.

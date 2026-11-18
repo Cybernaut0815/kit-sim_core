@@ -28,14 +28,16 @@ degrees. The default `120,-70,50` at 2 deg is 60 x 60 = 3,600 rays per element; 
 - **View mode** (0 < H <= 180, the default): the field is centred on the element's normal (the gaze is the normal; a
   back side, `--sides back|both`, looks along the reversed normal). Forward = the normal, right = horizontal (normal x
   +Z, normalised), up = right x forward. Azimuth runs from -H/2 (left) to +H/2 (right), elevation from LO to HI about
-  the plane of forward and right: on a vertical facade up is +Z and the default field is a level gaze 60 deg to either
-  side, 50 deg up and 70 deg down; on a tilted roof the field tilts with the face. A face looking straight up or down
-  (the normal's horizontal part under 1e-3, about 0.06 deg: float noise on a flat roof) takes the model's east as right
-  (90 deg clockwise of model north, +X at `--north 0`, made square to the normal), so its up is south when it looks up
-  and north when it looks down. Tilted any more (a roof's 1-2 % drainage slope), a face takes its right from the tilt,
-  and the field's 50 / 70 deg asymmetry turns with it (uphill is up): for roofs and terraces `--fov 360` (one world
-  frame) or a symmetric field (`LO = -HI`) gives numbers that do not depend on which way a roof drains. Every ray leaves
-  in front of the surface.
+  the plane of forward and right: on a vertical face up is +Z and the default field is a level gaze 60 deg to either
+  side, 50 deg up and 70 deg down; on a tilted face the field tilts with it (up = uphill along the face). A face
+  looking straight up or down has no uphill and takes a fixed frame: right = the model's east (90 deg clockwise of
+  model north, +X at `--north 0`, made square to the normal), so its up is south when it looks up and north when it
+  looks down. "Straight" allows a horizontal part of the normal under 1e-3 (about 0.06 deg), so float noise in a face
+  modelled horizontal does not turn its field. A face tilted any more takes its right from the tilt, and the field's
+  shape (120 deg wide, 50 deg up and 70 deg down by default) turns with it: two nearly horizontal faces sloping
+  different ways see differently turned fields. Where that matters, `--fov 360` (one world frame for every element,
+  e.g. `--fov 360,0,90` for the hemisphere an upward face sees) does not depend on the tilt. Every ray leaves in front
+  of the surface.
 - **360 mode** (H = 360): one world frame for every element: azimuth clockwise from model north (+Y, turned
   counter-clockwise by `--north` as in daylight), elevation about the horizon. With `--offset 0` the directions behind
   the element's own plane are not traced (own surface, below).

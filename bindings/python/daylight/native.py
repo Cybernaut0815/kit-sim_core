@@ -122,7 +122,7 @@ def usage(tool):
 
 
 def run(tool, args, sensors, context=(), control=None):
-    """One run of `tool`, 'daylight' (docs/cli.md) or 'views' (docs/views.md): `args` its CLI flags (str as UTF-8, an
+    """One run of `tool`, 'daylight' (docs/daylight.md) or 'views' (docs/views.md): `args` its CLI flags (str as UTF-8, an
     os.PathLike in the narrow encoding the core opens files with; mesh files, --context, --out, --bench and -h are
     refused), `sensors` / `context` a Mesh or an iterable of them in place of the CLI's mesh files and --context files,
     `control` None or a Control. -> Result, values and manifest bit for bit the CLI's (numbers read and written with

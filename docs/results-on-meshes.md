@@ -8,9 +8,10 @@ The values are plain per-face or per-point attributes, so writing them back is i
   the first column, `vmin`/`vmax` default to the data range) on every sensor prim. The source stage is untouched; add
   the layer as a sublayer (Omniverse Kit, usdview, `Usd.Stage.Open('daylight.usda')`) and the meshes are coloured.
   `prims` = the prim paths of the sensor meshes in run order (what `split` gave you); the CLI one-liner does the same
-  with `--write-usd out/daylight.usda` using its `meshes.json`. Faces dropped by the converter (USD `holeIndices`,
-  faces with < 3 vertices) get `nan`; instance proxies and point-instancer prototypes are skipped with a warning
-  (they cannot be overridden per instance).
+  with `--write-usd out/daylight.usda` using its `meshes.json`. A views run takes `name='views'`
+  (`primvars:views_sky_front`, ...), as the one-liner's `--tool views` does. Faces dropped by the converter (USD
+  `holeIndices`, faces with < 3 vertices) get `nan`; instance proxies and point-instancer prototypes are skipped with a
+  warning (they cannot be overridden per instance).
 - **three.js (TypeScript)**: `await applyToThree(mesh, values, {vmin, vmax, material})` sets a `color` attribute
   (per triangle when `values.length` equals the triangle count: the geometry becomes non-indexed; per vertex when it
   equals the point count) and a `MeshStandardMaterial({vertexColors: true})` unless `material: false`. Use the rows

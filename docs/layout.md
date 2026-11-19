@@ -17,7 +17,11 @@ bindings/cpp     USD reader (LightUSD) for the CLI / C++
 bindings/csharp  Daylight.dll (netstandard2.0, P/Invoke on daylight_c.dll), check/ on net9.0 + net48
 bindings/ts      three.js / glTF -> .dmesh, CLI wrapper, runRemote, vertex colours; lib/ = compiled JavaScript;
                  src/native.ts = daylight-mesh/native (Node, koffi, in-process)
+examples/        a program per way in, both tools each: cli/ (PowerShell), cpp/ and c/ (CMake targets and ctests
+                 example_cpp, example_c), csharp/, python/, typescript/, javascript/; run.ps1 runs them all
 validate/        Python harness + ingest benchmark
+docs/            the tools: daylight.md, views.md; the ways in: api.md, then cpp.md, c-abi.md, csharp.md, python.md,
+                 javascript.md, examples.md; input.md, modes.md, results-on-meshes.md, validation.md, performance.md
 ```
 
 Views ([views.md](views.md)) came in one branch, `feature/views`, with these files and functions:

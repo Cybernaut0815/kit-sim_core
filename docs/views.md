@@ -14,9 +14,10 @@ views floor.obj --context city.obj --no-occlude floor --fov 360 --offset 1.6 --o
 views --bench                                                                         # street-grid city, timings only
 ```
 
-Rows, manifest ranges and mesh names work as in daylight ([cli.md](cli.md#output), [input.md](input.md)). Build:
-`cmake --build --preset release` makes `build/RelWithDebInfo/views.exe` beside `daylight.exe` (the same `src/main.cpp`,
-built with `VIEWS_CLI`). C++ API: [api.md](api.md#c-views). Timings: [performance.md](performance.md#views).
+Rows, manifest ranges and mesh names work as in daylight ([daylight.md](daylight.md#output), [input.md](input.md)).
+Build: `cmake --build --preset release` makes `build/RelWithDebInfo/views.exe` beside `daylight.exe` (the same
+`src/main.cpp`, built with `VIEWS_CLI`). C++ API: [cpp.md](cpp.md#views); the other languages: [api.md](api.md).
+Timings: [performance.md](performance.md#views).
 
 ## Field of view
 
@@ -217,7 +218,8 @@ a file, the scene, CUDA / OptiX, memory, writing the output, a `--dump-rays` abo
 
 ## Examples
 
-Run with the exe of commit 732ca41; the outputs are pasted as printed.
+Run with the exe of commit 732ca41; the outputs are pasted as printed. [examples/cli/run.ps1](../examples/cli/run.ps1)
+runs views on `tests/box.obj` with a target, reach and a standing eye, beside daylight ([examples.md](examples.md#cli)).
 
 **`tests/box.obj`, defaults** (four 2 m ground quads at z 0 facing up, and a 1 m box floating 0.5 m above the fourth;
 both meshes are receivers and block). Without `--out` the values go to stdout and no manifest is written; the columns
@@ -243,10 +245,10 @@ views tests/box.obj
 0.4490987851 0.2724980931 0.2784031218 43.40601672 1.241673112
 ```
 
-Rows 1-4 are the ground quads: looking up, their field stays above the horizon (no ground), the box is their
-obstruction, and the fourth, under it, sees it 0.50 m away. Rows 5-6, the box's bottom triangles, look down at that
-quad (an obstruction, as a blocking receiver) and, past the quads' 4 x 4 m, at the virtual ground. Rows 7-8, its top,
-see open sky: `distance` = `--far`. Rows 9-16 are its sides: nothing rises above the box, so sky is exactly
+Lines 1-4 are the ground quads: looking up, their field stays above the horizon (no ground), the box is their
+obstruction, and the fourth, under it, sees it 0.50 m away. Lines 5-6, the box's bottom triangles, look down at that
+quad (an obstruction, as a blocking receiver) and, past the quads' 4 x 4 m, at the virtual ground. Lines 7-8, its top,
+see open sky: `distance` = `--far`. Lines 9-16 are its sides: nothing rises above the box, so sky is exactly
 sin 50 / (sin 50 + sin 70) = 0.4490987851 of the field, and the rest, below the horizon, splits between the ground
 quads (obstruction) and the virtual ground beyond them.
 

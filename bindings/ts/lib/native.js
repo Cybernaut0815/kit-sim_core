@@ -78,7 +78,7 @@ export function init(dll) {
 }
 const native = () => dl ?? (init(), dl);
 const toolId = (tool) => (tool === 'daylight' ? 0 : tool === 'views' ? 1 : -1); // -1: the core's "unknown tool"
-/** The tool's usage text, as its CLI's -h prints it (docs/cli.md, docs/views.md). */
+/** The tool's usage text, as its CLI's -h prints it (docs/daylight.md, docs/views.md). */
 export function usage(tool) {
     return native().dl_usage(toolId(tool)) ?? '';
 }

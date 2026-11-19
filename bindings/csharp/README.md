@@ -1,11 +1,14 @@
 # Daylight (C# binding)
 
-`Daylight.dll` runs both tools of the core in-process: `daylight` (annual daylight / solar, [cli.md](../../docs/cli.md))
-and `views` (view analysis, [views.md](../../docs/views.md)), through the C ABI `daylight_c.dll`
-([c-abi.md](../../docs/c-abi.md)). A run takes the CLI's own flags and meshes as handles; the result is a `double[]`
-(row-major, bit for bit what `--out FILE.npy` holds) and the manifest. Runs over the same `Mesh` objects keep their GPU
-scene resident: no triangulation, upload or build the second time. netstandard2.0, no package references: .NET 8/9,
-.NET Framework 4.8 (Rhino 6 and 7 with Grasshopper, Rhino 8 on request), Rhino 8 on .NET, Unity.
+Guide: [docs/csharp.md](../../docs/csharp.md) (setup, both tools worked through, results, speed, errors); example:
+[examples/csharp](../../examples/csharp) ([docs/examples.md](../../docs/examples.md)).
+
+`Daylight.dll` runs both tools of the core in-process: `daylight` (annual daylight / solar,
+[daylight.md](../../docs/daylight.md)) and `views` (view analysis, [views.md](../../docs/views.md)), through the C ABI
+`daylight_c.dll` ([c-abi.md](../../docs/c-abi.md)). A run takes the CLI's own flags and meshes as handles; the result
+is a `double[]` (row-major, bit for bit what `--out FILE.npy` holds) and the manifest. Runs over the same `Mesh` objects
+keep their GPU scene resident: no triangulation, upload or build the second time. netstandard2.0, no package
+references: .NET 8/9, .NET Framework 4.8 (Rhino 6 and 7 with Grasshopper, Rhino 8 on request), Rhino 8 on .NET, Unity.
 
 ## Build and check
 

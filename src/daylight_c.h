@@ -41,7 +41,7 @@ extern "C" {
 #define DL_OK 0
 #define DL_USAGE 1
 #define DL_RUNTIME 2
-#define DL_DAYLIGHT 0 /* daylight.exe: annual daylight / solar (docs/cli.md) */
+#define DL_DAYLIGHT 0 /* daylight.exe: annual daylight / solar (docs/daylight.md) */
 #define DL_VIEWS 1    /* views.exe: view analysis (docs/views.md) */
 #define DL_STATS 10   /* doubles dl_result_stats writes */
 

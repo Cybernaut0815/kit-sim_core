@@ -13,7 +13,7 @@ using System.Threading.Tasks;
 
 namespace Daylight
 {
-    /// <summary>The tools: daylight.exe (annual daylight / solar, docs/cli.md), views.exe (views, docs/views.md).</summary>
+    /// <summary>The tools: daylight.exe (annual daylight / solar, docs/daylight.md), views.exe (views, docs/views.md).</summary>
     public enum Tool
     {
         /// <summary>daylight.exe.</summary>

@@ -1,175 +1,194 @@
 # kit-sim_core
 
-GPU simulation core for meshes: two tools on one library (`daylightcore`: mesh readers, sensors, mesh roles, the OptiX
-pipeline and the resident scenes). `daylight.exe` is annual daylight / solar simulation, the tool this page describes.
-`views.exe` is view analysis from the same meshes: which share of a field of view ends on sky, ground, obstructions or
-target groups, and how far each face sees ([Views](#views), [docs/views.md](docs/views.md)).
+GPU simulation core for meshes: rays from every face or point of the analysed meshes, traced through the whole model
+on NVIDIA RT cores with OptiX 9. Two tools share one library, `daylightcore` (mesh readers, sensors, mesh roles, the
+OptiX pipeline and the resident scenes): **daylight**, annual daylight and solar simulation, and **views**, view
+analysis. Both run as CLIs (`daylight.exe`, `views.exe`), from C++, through the C ABI `daylight_c.dll` and in-process
+from C#, Python and TypeScript / JavaScript; browsers reach daylight through the web app's server.
 
-daylight: generic face-vertex meshes in, one value list per element out (per face or per vertex, input order). Ray
-casting on NVIDIA RT cores via OptiX 9; sky model is a port of Radiance `gendaymtx` (Perez all-weather); results
-validated against Ladybug Tools, Radiance and pvlib.
+## Tools
 
-Ways in, all with raw vertex / face-vertex-index arrays:
+| | daylight: `daylight.exe` | views: `views.exe` |
+|---|---|---|
+| asks | how much sun and daylight reaches each face or point | what each face or point sees, and how far |
+| rays per element | to each sky patch (145 / 577 / 2305, `--sky-density`), to the ground below the horizon and to the sun at every time step | one per 2 deg cell (`--cell`) of a field of view: 120 deg wide about the normal, 70 deg down to 50 deg up (3,600 rays), or all around (`--fov 360`: 10,800) |
+| besides the meshes | weather and place: an EPW (`--epw`), a clear-sky year for `--lat --lon` (`--clear-sky`) or none for sun hours; a year, an instant (`--time`) or a range (`--from --to --step`) | target groups (`--target lake=water`); the eye moved along the normal (`--offset 1.6` above a floor: standing); a virtual ground plane that ends downward rays (`--virtual-ground`, `--ground-z`) |
+| columns | `radiation` kWh/m2 over the run (also `direct`, `diffuse`), `irradiance` mean W/m2, `illuminance` mean lux, `sunhours` h | the shares of the field that end on `sky`, `ground`, `obstruction` and each target group (summing to 1); `distance` (log mean) and `distance_min` in m, an open ray counting as `--far` (1000 m); `reach_<D>`, the share that sees at least D m (`--reach en17037`: 6, 20, 50) |
+| model | the sky a port of Radiance `gendaymtx` (Perez all-weather); `--mode physical` or `ladybug` (Ladybug's studies bit for bit); glass and porous slots (`--optics`, `--transmission on`), reflected light (`--bounces N`) | opaque surfaces; each ray through a random point of its cell (`--jitter`, deterministic); every ray's class and distance on request (`--dump-rays`) |
+| validated against | Ladybug Tools (`--mode ladybug`: radiation ~1e-6 relative, sun hours exact), Radiance (the `gendaymtx` sky byte for byte, `rcontrib`), pvlib (sun position, clear sky) | Radiance `rtrace`, ray by ray (10 cases: 100.000 % of the compared rays in class and distance); the unobstructed share next to Ladybug's View Percent |
+| in code | C++ `daylight::run` (`src/daylight.h`); C ABI and bindings: `DL_DAYLIGHT`, `Tool.Daylight`, `'daylight'` | C++ `daylight::views::run` (`src/views.h`); C ABI and bindings: `DL_VIEWS`, `Tool.Views`, `'views'` |
+| docs | [docs/daylight.md](docs/daylight.md): every flag, output, worked examples | [docs/views.md](docs/views.md): field of view, ray classes, distances, every flag, output, worked examples |
 
-- **CLIs**: `.dmesh` files (one `fread`, no library semantics) are the native input, `.obj` is text interop, `.usd*`
-  is interop when built with `-DDAYLIGHT_USD=ON`.
-- **C++ library** (`daylight.h`, `views.h`).
-- **C ABI** `daylight_c.dll` ([docs/c-abi.md](docs/c-abi.md)). The bindings load it to run both tools in-process from
-  **C#** (`bindings/csharp`: .NET, Rhino / Grasshopper, Unity), **Python** (`bindings/python`, also USD in and out)
-  and **Node** (`bindings/ts`, TypeScript and plain JavaScript, also three.js / glTF). In-process runs skip the
-  process start, the GPU start and the files, and keep the scene of reused meshes on the GPU
-  ([docs/performance.md](docs/performance.md#in-process-vs-cli)).
-- **Browsers** through the web app's HTTP server (`runRemote` in `bindings/ts`): CUDA cannot run in a browser.
+Both CLIs are built from the same `src/main.cpp` and treat meshes and results alike:
 
-The bindings also drive the CLIs as processes and put results back onto the meshes (USD primvars, three.js vertex
-colours).
+- **Meshes**: `.dmesh` (raw arrays read with one `fread`: the native input), `.obj` (text interop) or `.usd*` (the
+  `-DDAYLIGHT_USD=ON` build); points in metres, Z up, faces with right-handed winding.
+- **Roles**: positional files are analysed (sensor meshes) and block rays; `--context FILE` files only block;
+  `--no-occlude NAME` keeps an analysed mesh out of the rays.
+- **Rows and columns**: a row per element of the analysed meshes in input order (`--on faces`, the default, or
+  `vertices`), a column per quantity or share and side (`--sides front|back|both`: `radiation_front`, `sky_back`).
+- **Files**: `--out v.txt` writes a text line per row, `--out v.npy` a float64 `[N x C]` NumPy array, and either a
+  manifest beside it (`v.txt.json`, `v.npy.json`: the columns, each mesh's rows); without `--out` the values go to
+  stdout. `daylight --help` and `views --help` list the flags.
 
 ```
-daylight roof.obj --context city.obj --epw site.epw --out rad.txt                      # annual kWh/m2 per face
-daylight sensors.dmesh --context city.dmesh --context trees.obj --epw site.epw --quantity radiation,sunhours --out v.npy
-daylight facade.obj --lat 52.52 --lon 13.41 --quantity sunhours --from 06-21T00:00 --to 06-22T00:00 --step 10
-daylight roof.obj --clear-sky --lat 52.52 --lon 13.41 --out clear.txt                  # no weather file: clear-sky year
-daylight scene.usdc --context city.usdc --epw site.epw --on vertices --out v.txt       # vs2022-usd build
-daylight roof.obj --context city.obj --epw site.epw --mode ladybug --no-self-occlude --out lb.txt
-daylight roof.obj --epw site.epw --quantity illuminance --sky-density 2 --patch-samples 4 --timeseries roof.npy --out roof.txt
-daylight --bench 1000000 10000000 --epw site.epw
+daylight roof.obj --context city.obj --epw site.epw --out rad.txt                   # annual kWh/m2 per face
+daylight roof.obj --clear-sky --lat 52.52 --lon 13.41 --quantity radiation,sunhours --out v.npy   # no weather file
+daylight roof.obj --lat 52.52 --lon 13.41 --quantity sunhours --from 06-21T00:00 --to 06-22T00:00   # 21 June
+views facade.obj --context city.obj --out v.txt                                     # 120 deg about each face's normal
+views facade.obj --context city.obj --context lake.obj --target lake=water --reach en17037 --out v.npy
+views floor.obj --context city.obj --no-occlude floor --fov 360 --offset 1.6 --out v.txt   # a standing eye, all around
 ```
+
+`daylight` and `views` stand for `build\RelWithDebInfo\daylight.exe` and `views.exe`.
 
 ## Quick start
 
-**CLI.** Positional files are analysed (sensor meshes), `--context FILE` files only block. Any mix of `.dmesh`, `.obj`
-and (USD build) `.usd*`. `--out v.txt` writes one text line per element, `--out v.npy` a float64 `[N x C]` NumPy
-array; both get a `.json` manifest next to them (columns, mesh ranges). Every flag: [docs/cli.md](docs/cli.md).
+On Windows x64 with an NVIDIA GPU and what [Build](#build) lists (VS 2022, CUDA 12.6, the OptiX 9 headers): build,
+then run both tools on [tests/box.obj](tests/box.obj), two meshes (OBJ groups): `ground`, four 2 m quads at z 0 facing
+up, and `box`, a 1 m box floating 0.5 m above the fourth quad, both analysed and blocking. Nothing to download: views
+needs only the meshes, and daylight synthesises a clear-sky year for Berlin.
 
 ```
-daylight sensors.dmesh --context city.obj --epw site.epw --quantity radiation,sunhours --sides both --out v.npy
-daylight --help
+cmake --preset vs2022 && cmake --build --preset release
+build\RelWithDebInfo\daylight.exe tests\box.obj --clear-sky --lat 52.52 --lon 13.41 --quantity radiation,sunhours
+build\RelWithDebInfo\views.exe tests\box.obj
 ```
 
-**C++** (in-process, no files). Fill `daylight::Mesh` (points xyz in metres, Z-up; 0-based indices, right-handed
-winding) and call `daylight::run`. CMake: `add_subdirectory(<repo>)` + `target_link_libraries(app PRIVATE daylightcore)`.
+Each prints a line per face, 16 in all: the four quads, then the box's 12 triangles (bottom, top, then two per side).
+daylight's columns are `radiation_front` (kWh/m2 over the year) and `sunhours_front`: about 1600 kWh/m2 and 4456 sun
+hours on the open quads, 926 and 3587 on the quad under the box. views' columns are the shares of each face's field
+(120 deg about its normal) that end on `sky`, `ground` and `obstruction`, then `distance` (the log mean, m) and
+`distance_min`: the quad under the box sees 42 % sky, the rest is the box, 0.50 m above it. Row by row:
+[daylight.md](docs/daylight.md#examples), [views.md](docs/views.md#examples).
 
-```cpp
-#include "daylight.h"
-#include <stdexcept>
-daylight::Mesh m;                                  // one quad; m.sensor = false would make it context (blocks only)
-m.name = "roof"; m.points = {0,0,3, 10,0,3, 10,8,3, 0,8,3}; m.counts = {4}; m.indices = {0,1,2,3};
-daylight::Options opt; opt.quantities = {daylight::Quantity::Radiation, daylight::Quantity::SunHours};
-daylight::Weather w; daylight::Result r; std::string err;
-if (!daylight::read_epw("site.epw", w, err) || !daylight::run({m}, &w, opt, r, err)) throw std::runtime_error(err);
-double roofRadiation = r.values[0], roofSunHours = r.values[1];   // r.values: N x r.columns.size(), row-major
+```
+pwsh examples/cli/run.ps1   # both tools, five flag sets on box.obj, the mean of each column per mesh
+pwsh examples/run.ps1       # every example, a program per way in: PASS / FAIL each
 ```
 
-**Python** (`bindings/python`). Raw arrays in, `[N x C]` NumPy array out; USD stages in and out via the CLI wrapper.
+`pwsh` is PowerShell 7. `examples/run.ps1` also needs the .NET 9 SDK, uv and Node >= 22.18 with `npm install` run in
+`bindings/ts` ([examples.md](docs/examples.md#running-them)).
+
+## Use it from your language
+
+| way in | runs | where | guide | example |
+|---|---|---|---|---|
+| CLIs: any language, scripts, batch jobs | a process per run: mesh files in, text or `.npy` out | `daylight.exe`, `views.exe` in `build/RelWithDebInfo/` | [daylight.md](docs/daylight.md), [views.md](docs/views.md) | [cli/run.ps1](examples/cli/run.ps1) |
+| C++17 (CMake, MSVC) | in-process | the static library `daylightcore` (`add_subdirectory(<repo>)`): `src/daylight.h`, `src/views.h`, `src/cli.h`; USD stages: `bindings/cpp` | [cpp.md](docs/cpp.md) | [cpp/example.cpp](examples/cpp/example.cpp) |
+| C, any language with a C FFI | in-process | `daylight_c.dll` (`src/daylight_c.h`) | [c-abi.md](docs/c-abi.md) | [c/example.c](examples/c/example.c) |
+| C#: .NET 8 / 9, .NET Framework 4.8 (Rhino 6 / 7, Grasshopper), Rhino 8, Unity | in-process, over the C ABI | `bindings/csharp`: `Daylight.dll` (netstandard2.0) | [csharp.md](docs/csharp.md) | [csharp/Program.cs](examples/csharp/Program.cs) |
+| Python >= 3.10: numpy arrays, USD stages in and out | in-process (`daylight.native`) or a process per run (`run_meshes`) | `bindings/python`: package `daylight` | [python.md](docs/python.md) | [python/inprocess.py](examples/python/inprocess.py), [python/process.py](examples/python/process.py) |
+| TypeScript, JavaScript: Node >= 20, three.js, glTF | in-process (`daylight-mesh/native`) or a process per run (`run(exe, ...)`) | `bindings/ts`: package `daylight-mesh` | [javascript.md](docs/javascript.md) | [typescript/native.ts](examples/typescript/native.ts), [javascript/native.mjs](examples/javascript/native.mjs), [typescript/cli.ts](examples/typescript/cli.ts) |
+| browsers (CUDA cannot run in one) | a job on the web app's HTTP server, which runs the core in-process; daylight only | `runRemote` in `daylight-mesh` | [javascript.md](docs/javascript.md#in-a-browser) | none |
+
+Every way in takes the same meshes and the tools' own flags (C++ sets the matching `Options` fields) and gives the same
+rows, columns and manifest. In-process runs give the CLI's values bit for bit without a process or files, pay the GPU
+start once per host process, and keep the scene of meshes that are run again on the GPU, shared by both tools. Python,
+both tools on the same meshes:
 
 ```python
-import numpy as np, daylight
-P = np.array([[0, 0, 3], [10, 0, 3], [10, 8, 3], [0, 8, 3]], float)       # world metres, Z-up
-values, manifest = daylight.run_meshes([(P, [4], [0, 1, 2, 3])], epw='site.epw', args=['--quantity', 'radiation,sunhours'])
-print(manifest['columns'], values)                                         # values: [N x C] float64, N = faces
+from daylight import Mesh, native            # uv run --project bindings/python python, from the repo root
+with Mesh.load('tests/box.obj') as box:      # the meshes "ground" and "box", both sensors
+    sun = native.run('daylight', ['--clear-sky', '--lat', '52.52', '--lon', '13.41'], box)
+    view = native.run('views', ['--reach', 'en17037'], box)       # the same meshes: the GPU scene is reused
+print(sun.values.shape, view.values.shape, view.stats['scene_reused'])   # (16, 1) (16, 8) True
 ```
 
-```
-python -m daylight scene.usd --sensors /World/Bldg -o out --write-usd out/daylight.usda -- --epw site.epw   # USD in, USD out
-```
+The bindings also put results back onto meshes: USD primvars (Python), three.js vertex colours (TypeScript)
+([results-on-meshes.md](docs/results-on-meshes.md)). The C++, C#, Python and TypeScript / JavaScript guides share one
+layout: setup, a daylight and a views example worked through, results, speed, errors / cancel / progress, reference
+(the full API is in the binding's README) and examples. Choosing a way in: [api.md](docs/api.md); every example with
+its run command and output: [examples.md](docs/examples.md).
 
-**TypeScript** (`bindings/ts`, three.js / glTF). Meshes in, one `Float64Array` per triangle out, vertex colours back.
+## Performance
 
-```ts
-import { fromThree, fromGLB, run, applyToThree } from 'daylight-mesh';
-import fs from 'node:fs/promises';
-const sensors = fromThree([roofMesh]);                               // three.js Mesh and its descendants
-const context = await fromGLB(await fs.readFile('city.glb'));
-const { values, columns } = await run('build/RelWithDebInfo/daylight.exe', { sensors, context, args: ['--epw', 'site.epw'] });
-await applyToThree(roofMesh, values.map((v) => v[0]));               // viridis vertex colours
-```
+RTX 2060 6 GB (Turing); expect 5-10x on Ada / Blackwell GPUs. More scenes and how they were measured:
+[docs/performance.md](docs/performance.md).
 
-**In-process** (`daylight_c.dll`; the same flags, values bit for bit the CLI's; runs over the same meshes reuse their
-GPU scene). Python, Node and C#:
+| run | size | time |
+|---|---|---|
+| `daylight --bench`: a year of Boston weather, radiation + sun hours | 1 M sensors, 12 M triangles: 4.7 G rays | trace 2.5 s, 4.2 s in all |
+| `views --bench`: a street-grid city, 120 deg about each facade quad | 1.02 M sensors, 10 M triangles: 3.66 G rays | trace 1.84 s, 3.6 s in all |
+| in-process (Python), a run after the first over the same meshes | 4 quads and a box: daylight sun hours of 21 June / views `--fov 360 --offset 1.6` | 0.9 / 1.0 ms (a CLI run: 0.70 / 0.61 s) |
+| the same | 206,480 facade quads: daylight sun hours of 21 June / views 120 deg (743 M rays) | 103 / 504 ms (a CLI run: 0.92 / 1.31 s) |
 
-```python
-from daylight import Mesh, native
-with Mesh('grid', P, C, I) as grid, Mesh.load('site.obj') as site:
-    r = native.run('daylight', ['--epw', 'site.epw', '--quantity', 'radiation'], grid, context=site)
-    v = native.run('views', ['--fov', '360', '--offset', '1.6'], grid, context=site)   # v.stats['scene_reused']: True
-```
-
-```ts
-import { Mesh, run } from 'daylight-mesh/native';                     // Node; plain JavaScript imports the same
-const sensors = [Mesh.load('facade.obj')], context = [Mesh.load('city.obj')];
-const r = await run('views', ['--target', 'lake=water'], { sensors, context }, { onProgress: (p) => console.log(p) });
-```
-
-```csharp
-using Daylight;
-using (Mesh facade = Mesh.Load("facade.obj"), city = Mesh.Load("city.obj")) {
-    Result r = Core.Run(Tool.Views, new[] { "--fov", "120" }, new[] { facade }, new[] { city });
-    double[] sky = r.Column("sky_front");
-}
-```
-
-USD from C++, writing results back onto meshes and the full binding APIs: [docs/api.md](docs/api.md),
-[docs/c-abi.md](docs/c-abi.md), [docs/results-on-meshes.md](docs/results-on-meshes.md).
-
-## Views
-
-`views.exe` is built beside `daylight.exe` from the same `src/main.cpp` and library. From every face or point of the
-receiver meshes it traces one ray per 2 deg cell of a field of view, about the normal (default 120 deg wide, from
-70 deg down to 50 deg up) or all around (`--fov 360`), and gives per element the shares of the field that end on sky,
-ground, an obstruction or each target group (`--target NAME=GROUP`), the log-mean and the nearest distance (open rays
-count as `--far`, 1000 m) and, with `--reach en17037`, the shares that see at least 6, 20 and 50 m. Mesh files, roles,
-rows and the manifest work as in daylight; C++: `daylight::views::run` (`src/views.h`,
-[docs/api.md](docs/api.md#c-views)). Every flag, the semantics and worked examples: [docs/views.md](docs/views.md).
-
-```
-views facade.obj --context city.obj --context lake.obj --target lake=water --reach en17037 --out v.txt   # 120 deg about each face's normal
-views floor.obj --context city.obj --no-occlude floor --fov 360 --offset 1.6 --out v.npy                  # a standing eye, all around (flat floor)
-views --bench
-```
+The first in-process run pays the GPU start (the CUDA context and the OptiX pipeline) once, about 0.35 s.
 
 ## Build
 
-Core: VS 2022 (MSVC 14.44), CUDA 12.6, OptiX SDK 9.0 headers (`OPTIX_INSTALL_DIR`; runtime in the driver
-R570+), CMake 3.27+, git (FetchContent pulls earcut.hpp, and LightUSD for the USD build).
+| | needs |
+|---|---|
+| to build the core | VS 2022 (MSVC 14.44), CUDA 12.6 (at its default path, as the presets name it), the OptiX SDK 9.0 headers (`OPTIX_INSTALL_DIR`, default `C:/ProgramData/NVIDIA Corporation/OptiX SDK 9.0.0`; the runtime is in the driver), CMake 3.27+, git (FetchContent pulls earcut.hpp, and LightUSD for the USD build) |
+| to run | Windows 10/11 x64, an NVIDIA GPU of compute capability 7.5 or newer (Turing and later: GTX 16, RTX 20-50, A100, H100; RT cores make it fast, without them OptiX runs on the CUDA cores), an NVIDIA driver R570+ (OptiX 9.0) and the Microsoft VC++ 2015-2022 x64 runtime |
+| the bindings | C#: the .NET 9 SDK; Python: uv (Python >= 3.10, numpy, usd-core); TypeScript / JavaScript: Node >= 20 (>= 22.18 runs the `.ts` sources) and npm |
 
-To run: Windows 10/11 x64, an NVIDIA GPU of compute capability 7.5 or newer (Turing and later: GTX 16, RTX 20-50,
-A100, H100; RT cores make it fast, without them OptiX runs on the CUDA cores), an NVIDIA driver R570+ (OptiX 9.0) and
-the Microsoft VC++ 2015-2022 x64 runtime. Nothing from the CUDA toolkit or the OptiX SDK: cudart is linked statically
-and OptiX ships in the driver. The same exe runs on every such card without a rebuild (see
-[docs/performance.md](docs/performance.md#other-gpus)).
+Nothing from the CUDA toolkit or the OptiX SDK is needed to run: cudart is linked statically and OptiX ships in the
+driver. The same exe runs on every such card without a rebuild ([performance.md](docs/performance.md#other-gpus)).
 
 ```
-cmake --preset vs2022 && cmake --build --preset release && ctest --preset release                 # build/RelWithDebInfo/daylight.exe, views.exe, daylight_c.dll
-cmake --preset vs2022-usd && cmake --build --preset release-usd && ctest --preset release-usd     # same exes + USD input
-cd bindings/python && uv sync && uv run python -m daylight.check                                  # Python (usd-core, numpy)
-cd bindings/ts && npm install && npm run build && npm test                                        # TypeScript + JavaScript (vitest)
-dotnet run --project bindings/csharp/check -f net9.0                                              # C# (also -f net48)
+cmake --preset vs2022 && cmake --build --preset release && ctest --preset release           # build/RelWithDebInfo/
+cmake --preset vs2022-usd && cmake --build --preset release-usd && ctest --preset release-usd   # + USD input
+cd bindings/python && uv sync && uv run python -m daylight.check                            # Python (usd-core, numpy)
+cd bindings/ts && npm install && npm run build && npm test                                  # TypeScript + JavaScript
+dotnet run --project bindings/csharp/check -f net9.0                                        # C# (also -f net48)
+pwsh examples/run.ps1                                                                       # every example
 ```
 
-The build compiles `src/trace_dev.cu` to OptiX-IR with `nvcc -optix-ir -arch=compute_75` and embeds it; the rest is
-plain C++17 (`/W4 /WX`) plus one CUDA host file, `src/gpu.cu`, built for `DAYLIGHT_CUDA_ARCHITECTURES` (default
+`build/RelWithDebInfo/` then holds `daylight.exe`, `views.exe`, `daylight_c.dll` (the C ABI), `daylightcore.lib` (the
+static library, both tools) and the examples `example_cpp.exe` and `example_c.exe`. The build compiles
+`src/trace_dev.cu` to OptiX-IR with `nvcc -optix-ir -arch=compute_75` and embeds it; the rest is plain C++17
+(`/W4 /WX`) plus one CUDA host file, `src/gpu.cu`, built for `DAYLIGHT_CUDA_ARCHITECTURES` (default
 `75-real;75-virtual`: native code for Turing, portable PTX for every newer card; `-DDAYLIGHT_CUDA_ARCHITECTURES=...`
 overrides it). The default build has no USD / glTF dependency.
 
-Deployment: Windows only today (VS 2022 presets, MSVC flags, a few Windows calls in the server). Containers on WSL2
-(Podman / Docker) cannot run it yet: CUDA works there, but OptiX is not part of NVIDIA's WSL driver (on driver 621.01
-`C:\Windows\System32\lxss\lib\libnvoptix.so.1` is a stub without `optixQueryFunctionTable`; re-check after driver
-updates). A Linux GPU host (driver R570+, NVIDIA Container Toolkit, Turing+ GPU) is the supported container path; it
-needs a small port (~40 lines behind `if(MSVC)` / `#ifdef _WIN32`). Before offering it to third parties as a hosted
-service, note that the OptiX SDK licence restricts hosted / internet use and asks for notice before commercial use.
+## Deployment
+
+Windows only today. To ship: the exes or `daylight_c.dll` (the CUDA runtime linked in); the target machine needs a
+supported GPU, the NVIDIA driver and the VC++ runtime (installed, or its DLLs beside them;
+[c-abi.md](docs/c-abi.md#loading-the-dll)).
+
+- **Containers on Windows** (Podman, Docker: Linux containers on WSL2) cannot run it: NVIDIA's WSL driver has no
+  OptiX. On driver 621.01 `C:\Windows\System32\lxss\lib\libnvoptix.so.1` is a loader stub without
+  `optixQueryFunctionTable`, and NVIDIA gives no date for OptiX on WSL; re-check after driver updates. Windows
+  containers have no CUDA.
+- **A Linux GPU host** (Podman or Docker with the NVIDIA Container Toolkit) is the container path, after a port: about
+  50 lines for the core, its CLIs and `libdaylight_c.so` (MSVC-only CMake flags, `-fPIC`, a Linux preset,
+  `_ftelli64`, TBB for the parallel loops, the C ABI's locale guard), about 160 with the bindings, tests, `validate/`
+  and docs (library and exe names, paths), and about 170 in the web app's server (its Win32 process and browser
+  layer). The host needs an NVIDIA driver R570+ with its GL libraries (OptiX's `libnvoptix.so.1` ships there;
+  compute-only installs lack it), CDI (`nvidia-ctk cdi generate`, then `podman run --device nvidia.com/gpu=all`) and
+  a Turing or newer GPU. Not tried yet: there is no Linux GPU machine here.
+- Before offering it to third parties as a hosted service, check the OptiX SDK and NVIDIA driver licences (the SDK
+  asks for notice before commercial use).
 
 ## Documentation
 
-- [CLI reference](docs/cli.md): every flag, exit codes, output rows / columns / manifest / units
-- [View analysis](docs/views.md): `views.exe`: field of view, ray classes, distances, roles, flags, outputs, examples
-- [Library and bindings](docs/api.md): C++ API, C++ + USD, C#, Python, TypeScript / JavaScript, bindings overview
-- [C ABI](docs/c-abi.md): `daylight_c.dll`, both tools in-process for C#, Python and Node
-- [Results on meshes](docs/results-on-meshes.md): writing values back to USD primvars, three.js colours, colormaps
-- [Input and semantics](docs/input.md): `.dmesh` / `.obj` / `.usd*` formats, sensor vs context, culling, faces vs vertices
-- [Modes and weather](docs/modes.md): `physical` vs `ladybug`, EPW vs `--clear-sky`
-- [Validation](docs/validation.md): harness and results against Radiance, Ladybug and pvlib
-- [Performance](docs/performance.md): ray tracing and mesh transport timings
-- [Source layout](docs/layout.md)
+| page | |
+|---|---|
+| [daylight.md](docs/daylight.md) | the daylight tool: what it computes, every flag, exit codes, output (rows, columns, manifest, units), worked examples |
+| [views.md](docs/views.md) | the views tool: field of view, ray classes, the virtual ground, distances and reach, mesh roles, every flag, output, worked examples, limits |
+| [api.md](docs/api.md) | library and bindings: the ways in compared (in-process or a process, the resident scene, platform) |
+| [cpp.md](docs/cpp.md) | C++: `daylightcore`, both tools in-process, USD stages through `bindings/cpp` |
+| [c-abi.md](docs/c-abi.md) | C ABI: `daylight_c.dll`, both tools in-process for C and any C FFI; what the bindings load |
+| [csharp.md](docs/csharp.md) | C#: `Daylight.dll` for .NET, Rhino / Grasshopper and Unity |
+| [python.md](docs/python.md) | Python: `daylight.native` in-process, `run_meshes` through the CLIs, USD stages in and out |
+| [javascript.md](docs/javascript.md) | TypeScript and JavaScript: `daylight-mesh/native` in Node, `run(exe, ...)`, `runRemote` for browsers, three.js / glTF |
+| [examples.md](docs/examples.md) | every example: what it shows, its run command and output; `examples/run.ps1` |
+| [results-on-meshes.md](docs/results-on-meshes.md) | values back onto meshes: USD primvars, three.js colours, colormaps |
+| [input.md](docs/input.md) | `.dmesh` / `.obj` / `.usd*` formats, sensor vs context, culling, faces vs vertices |
+| [modes.md](docs/modes.md) | daylight's `physical` and `ladybug` modes, surfaces, EPW vs `--clear-sky` |
+| [validation.md](docs/validation.md) | the harness and its results: daylight against Radiance, Ladybug Tools and pvlib, views against Radiance `rtrace` and Ladybug |
+| [performance.md](docs/performance.md) | timings: both `--bench` scenes, transmission, reflected light, mesh transport, in-process vs CLI, other GPUs |
+| [layout.md](docs/layout.md) | source layout |
 
-Licence: Apache 2.0 with the Commons Clause, see [LICENSE](LICENSE): free to use, modify and share, not to sell (no paid
-product, hosting or consulting service whose value comes substantially from this software). Third-party notices: [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).
+The full API of each binding is in its README: [bindings/csharp](bindings/csharp/README.md),
+[bindings/python](bindings/python/README.md), [bindings/ts](bindings/ts/README.md),
+[bindings/cpp](bindings/cpp/README.md) (the USD reader). The validation harness:
+[validate/README.md](validate/README.md).
+
+## Licence
+
+Apache 2.0 with the Commons Clause, see [LICENSE](LICENSE): free to use, modify and share, not to sell (no paid product,
+hosting or consulting service whose value comes substantially from this software). Third-party notices:
+[THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).

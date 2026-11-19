@@ -7,7 +7,7 @@ import type { ObjMesh } from './index.js';
  */
 export declare function init(dll?: string): void;
 export type Tool = 'daylight' | 'views';
-/** The tool's usage text, as its CLI's -h prints it (docs/cli.md, docs/views.md). */
+/** The tool's usage text, as its CLI's -h prints it (docs/daylight.md, docs/views.md). */
 export declare function usage(tool: Tool): string;
 /**
  * Meshes on the C side (copied once). Pass them to any number of runs: runs over the same handles in the same roles and

@@ -53,6 +53,10 @@ OUT, FIX = HERE / '_out' / 'views', HERE / '_out' / 'fixtures'
 RADIANCE = Path((HERE / '_dl' / 'radiance_path.txt').read_text().strip()) / 'bin'
 RTRACE, OCONV = str(RADIANCE / 'rtrace.exe'), str(RADIANCE / 'oconv.exe')
 BOX = HERE.parent / 'tests' / 'box.obj'
+ROOM, ROOM_GRID = HERE.parent / 'tests' / 'room.obj', HERE.parent / 'tests' / 'room_grid.obj'
+# the interior: a measure grid the rays ignore (--no-occlude), all around at eye height, the window glass
+ROOM_FLAGS = ['--fov', '360', '--offset', '0.4', '--no-occlude', 'grid', '--target', 'tree=green', '--optics',
+              'window=0,0.64,glass', '--reach', '6', '--cell', '3']
 STREET = OUT / 'street'
 KDEG = 3.14159265358979323846 / 180
 MATCH, GRAZING, CUT_M, SIGN, TOL_REL, TOL_ABS = 0.999, 0.05, 1e-3, 1e-6, 1e-5, 1e-4
@@ -76,6 +80,8 @@ CASES = {
                               '--reach', '6,20,50,100']),
     'street_vg_off': ([STREET / 'facade.obj'], [STREET / 'context.obj'], TARGETS + ['--virtual-ground', 'off', '--cell', '3']),
     'street_ground_z': ([STREET / 'facade.obj'], [STREET / 'context.obj'], TARGETS + ['--ground-z', '6', '--cell', '3']),
+    'room_glass': ([ROOM_GRID], [ROOM], ROOM_FLAGS + ['--transmission', 'on']),   # out through the window
+    'room_shut': ([ROOM_GRID], [ROOM], ROOM_FLAGS),                               # the window blocks
 }
 # LB View Percent type -> (name, views --fov, views' unobstructed classes); sensor sets (receivers, context, --offset)
 LB_TYPES = {0: ('HorizontalRadial', '360,-1,1', ('sky', 'ground')), 2: ('Spherical', '360,-90,90', ('sky', 'ground')),
@@ -224,14 +230,22 @@ def layout(receivers, context, flags):
             groups += [g] if g not in groups else []
             code[mesh] = 3 + groups.index(g)
     open_ = set(';'.join(flags[k + 1] for k, f in enumerate(flags) if f == '--no-occlude').split(';'))
-    blocking = [(p, f, code.get(n, 2)) for n, p, f in ctx]
+    glass = set()   # meshes the rays pass: --transmission on and a whole-mesh --optics row NAME=0,TAU,glass
+    if flag(flags, '--transmission') == 'on':
+        for spec in ';'.join(flags[k + 1] for k, f in enumerate(flags) if f == '--optics').split(';'):
+            mesh, _, v = spec.rpartition('=')
+            v = v.split(',')
+            if len(v) == 3 and v[2] == 'glass' and float(v[1]) > 0:
+                glass.add(mesh)
+    blocking = [(p, f, code.get(n, 2)) for n, p, f in ctx if n not in glass]
     if '--no-self-occlude' not in flags:
-        blocking += [(p, f, code.get(n, 2)) for n, p, f in rec if n not in open_]
+        blocking += [(p, f, code.get(n, 2)) for n, p, f in rec if n not in open_ and n not in glass]
+    panes = [(p, f, 2) for n, p, f in ctx + rec if n in glass]
     gz = float(flag(flags, '--ground-z', allp[:, 2].min()))
-    return rec, blocking, C, gz
+    return rec, blocking, C, gz, panes
 
 
-def radiance(d, blocking, C):
+def radiance(d, blocking, C, name='scene'):
     """The blocking meshes as the core's triangles (quads split 0-1-2, 0-2-3) at its float32 positions -> frozen octree."""
     lines = [f'void plastic c{c} 0 0 5 .5 .5 .5 0 0' for c in sorted({b[2] for b in blocking})]
     k = 0
@@ -242,10 +256,10 @@ def radiance(d, blocking, C):
             for t in ([f] if len(f) == 3 else [[f[0], f[1], f[2]], [f[0], f[2], f[3]]]):
                 lines.append(f'c{c} polygon t{k} 0 0 9 ' + ' '.join('%.17g' % x for x in P[t].ravel()))
                 k += 1
-    (d / 'scene.rad').write_text('\n'.join(lines) + '\n')
-    with open(d / 'scene.oct', 'wb') as f:
-        subprocess.run([OCONV, '-f', str(d / 'scene.rad')], stdout=f, check=True)
-    return d / 'scene.oct'
+    (d / f'{name}.rad').write_text('\n'.join(lines) + '\n')
+    with open(d / f'{name}.oct', 'wb') as f:
+        subprocess.run([OCONV, '-f', str(d / f'{name}.rad')], stdout=f, check=True)
+    return d / f'{name}.oct'
 
 
 def rtrace(octree, org, dirs):
@@ -328,8 +342,9 @@ def rays(view, N32):
     return D / np.linalg.norm(D, axis=2, keepdims=True)
 
 
-def expect(view, o32, N32, C, gz, dirs, octree, vground):
-    """The host's class and distance of every ray -> (cls uint8, t float64, excluded, distance not compared, why) [S x K]."""
+def expect(view, o32, N32, C, gz, dirs, octree, vground, panes=None):
+    """The host's class and distance of every ray -> (cls uint8, t float64, excluded, distance not compared, why) [S x K].
+    panes: the octree of the glass the rays pass (--transmission on): a ray meeting it before its end gets + 128."""
     S, K = dirs.shape[:2]
     cls, t = np.full((S, K), 2, np.uint8), np.full((S, K), np.inf)
     dz, eye = dirs[..., 2], o32.astype(np.float64) + C
@@ -357,6 +372,15 @@ def expect(view, o32, N32, C, gz, dirs, octree, vground):
     t[go] = np.where(hit, ht, np.where(plane, tg, np.inf))
     out, nodist = sign.copy(), np.zeros((S, K), bool)
     out[go] |= graze | near
+    if panes is not None:   # glass before the end (the hit, the ground cut of a downward ray, else none)
+        pt, _, pcos = rtrace(panes, np.broadcast_to(eye[:, None, :], dirs.shape)[go], dirs[go])
+        end = np.where(hit, ht, np.where(plane, cut, np.inf))
+        glazed = np.isfinite(pt) & (pt < end)
+        sub = cls[go]
+        sub[glazed] |= 128
+        cls[go] = sub
+        with np.errstate(invalid='ignore'):
+            out[go] |= np.isfinite(pt) & ((pcos < GRAZING) | (np.abs(pt - end) < CUT_M))   # grazing a pane, or at the end
     nodist[go] = plane & ~hit & (-dzg < GRAZING)     # the virtual ground met at |cos| < 0.05: class only
     why = {'sign ties': int(sign.sum()), 'grazing': int((graze & ~sign[go]).sum()),
            'at the ground cut': int((near & ~graze & ~sign[go]).sum())}
@@ -374,6 +398,8 @@ def columns(man, vals, cls, dep):
     wr = (H / nAz) * KDEG * (np.sin((HI - k * ((HI - LO) / nEl)) * KDEG) - np.sin((HI - (k + 1) * ((HI - LO) / nEl)) * KDEG))
     w = np.repeat(wr / (wr * nAz).sum(), nAz)
     own = cls == 254
+    glazed = ~own & (cls >= 128)
+    cls = np.where(own, cls, cls & 127)
     d = np.clip(dep, near32, far32)
     lnd = np.where(d == far32, np.log(v['far']), np.where(d == near32, np.log(0.1), np.log(d.astype(np.float64))))
     total = w.sum()
@@ -390,6 +416,7 @@ def columns(man, vals, cls, dep):
         mn = np.where(m, d, np.inf).min(axis=1).astype(np.float64)
         return np.where(np.isinf(mn), np.nan, np.where(mn <= near32, 0.1, np.where(mn >= far32, v['far'], mn)))
     exp['distance'], exp['distance_min'] = logmean(~own), least(~own)
+    exp['glazing'] = (w * glazed).sum(axis=1) / total
     for g, name in enumerate(groups):
         exp[f'{name}_distance'], exp[f'{name}_distance_min'] = logmean(cls == 3 + g), least(cls == 3 + g)
     for D in v['reach']:
@@ -417,13 +444,14 @@ def case_rays(exe, name, receivers, context, flags):
     flags = flags + ['--jitter', 'off', '--dump-rays', 'rays.npy']
     man, vals = run_views(exe, receivers, context, flags, d)
     gcls, gdep = np.load(d / 'rays.npy'), np.load(d / 'rays.npy.depth.npy')
-    rec, blocking, C, gz = layout(receivers, context, flags)
+    rec, blocking, C, gz, panes = layout(receivers, context, flags)
     v = man['view']
     assert abs(v['ground_z'] - gz) <= 1e-9 * max(1, abs(gz)), (v['ground_z'], gz)
     o32, N32 = eyes(rec, flags, C)
     dirs = rays(v, N32)
     assert gcls.shape == dirs.shape[:2], (gcls.shape, dirs.shape)
-    cls, t, ex, nodist, why = expect(v, o32, N32, C, gz, dirs, radiance(d, blocking, C), v['virtual_ground'])
+    cls, t, ex, nodist, why = expect(v, o32, N32, C, gz, dirs, radiance(d, blocking, C), v['virtual_ground'],
+                                     radiance(d, panes, C, 'panes') if panes else None)
     gt = gdep.astype(np.float64)
     same = gcls == cls
     fin = (np.isfinite(t) | np.isfinite(gt)) & ~nodist
@@ -441,7 +469,8 @@ def case_rays(exe, name, receivers, context, flags):
     ok = cmatch >= MATCH and dmatch >= MATCH and colok
     rel = np.where(same & use & fin & np.isfinite(dt), dt / lim, 0)
     names = dict(enumerate(v['classes'])) | {254: 'own'}
-    seen = ' '.join(f'{names[c]} {n}' for c, n in zip(*np.unique(gcls, return_counts=True)))
+    seen = ' '.join(f'{names[c & 127] if c != 254 else "own"}{"+glass" if 128 <= c < 254 else ""} {n}'
+                    for c, n in zip(*np.unique(gcls, return_counts=True)))
     line = (f'{"ok  " if ok else "FAIL"} {name}: {gcls.size} rays ({seen}), {nUse} compared ({gcls.size - nUse} not: '
             + ', '.join(f'{n} {k}' for k, n in why.items()) + '), '
             f'class {100 * cmatch:.3f} %, distance {100 * dmatch:.3f} % of {nFin} (worst {rel.max():.2g} x tol; '
@@ -475,7 +504,7 @@ def ladybug(exe):
         return np.array([[p.x, p.y, p.z] for p in v]), np.array(w)
     lines = []
     for sname, (receivers, context, off) in LB_SETS.items():
-        rec, blocking, C, gz = layout(receivers, context, ['--offset', off])
+        rec, blocking, C, gz, _ = layout(receivers, context, ['--offset', off])
         d = OUT / 'ladybug' / sname
         d.mkdir(parents=True, exist_ok=True)
         octree = radiance(d, blocking, C)

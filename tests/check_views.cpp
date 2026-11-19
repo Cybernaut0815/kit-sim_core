@@ -71,12 +71,27 @@ static float3 offset_ray(float3 p, float3 n) {
 }
 
 // A blocking face of the host model: axis-aligned (lo[axis] == hi[axis]), recentred, in float as the device has it.
-struct Quad { double lo[3], hi[3]; int axis; uint8_t cls; };
+// pass: glass the rays pass (--transmission on).
+struct Quad { double lo[3], hi[3]; int axis; uint8_t cls; bool pass = false; };
 
 // Where a ray ends: its class, distance (inf: open or own surface), the cosine between it and the normal of the surface
 // it ends on (a direction error moves the end by 1 / that) and how far off that surface the hardware may meet it:
 // 2^-22 x the quad's extent, what own_plane in trace_dev.cu allows (4x the hardware's error); 0 on the virtual plane.
-struct End { uint8_t cls = 255; double t = INFINITY, cosInc = 1, off = 0; };
+// glazed: it passed glass on the way.
+struct End { uint8_t cls = 255; double t = INFINITY, cosInc = 1, off = 0; bool glazed = false; };
+
+// Whether rays pass face f of m: --transmission on and its --optics row (NAME/SLOT > NAME > *) is glass with TAU > 0.
+static bool glass_face(const views::Options& o, const Mesh& m, size_t f) {
+  if (!o.transmission) return false;
+  const int s = m.slot.empty() ? 0 : m.slot[f];
+  const Optics* best = nullptr;
+  int rank = -1;
+  for (const Optics& r : o.optics) {
+    const int k = r.mesh == m.name ? (r.slot == s ? 2 : r.slot < 0 ? 1 : -1) : r.mesh == "*" ? 0 : -1;
+    if (k > rank) { rank = k; best = &r; }
+  }
+  return best && best->glass && best->tau > 0;
+}
 
 // The device's ray from o along unit d (n: the sensor's normal), as views.h defines it: 360 at offset 0 culls the
 // sensor's back (254), the closest quad, else sky on or above the horizon, ground below it, ended by the virtual ground (to
@@ -92,7 +107,8 @@ static End trace(const double o[3], const double d[3], const double n[3], bool c
   }
   const bool down = vground && d[2] < 0;
   if (down && !(o[2] > plane)) { e.cls = 1; e.t = 0.1; return e; }
-  double tmax = down ? (o[2] - plane + 0.01) / -d[2] : INFINITY;
+  double tmax = down ? (o[2] - plane + 0.01) / -d[2] : INFINITY, tPass = INFINITY;
+  const double tmax0 = tmax;
   for (const Quad& q : quads) {
     const int a = q.axis;
     const double tq = (q.lo[a] - o[a]) / d[a];
@@ -105,13 +121,15 @@ static End trace(const double o[3], const double d[3], const double n[3], bool c
         out = std::max({out, q.lo[b] - p, p - q.hi[b]});
       }
     margin = std::min(margin, (out > 0 ? out : in) / tq);
+    if (out <= 0 && q.pass) { tPass = std::min(tPass, tq); continue; }   // glass: passed, if it lies before the end
     if (out <= 0 && tq < tmax) {
       tmax = tq;
       e = {q.cls, tq, std::fabs(d[a]), 0};
       for (int b = 0; b < 3; ++b) e.off = std::max(e.off, (q.hi[b] - q.lo[b]) * 0x1p-22);
     }
   }
-  if (e.cls != 255) return e;
+  if (e.cls != 255) { e.glazed = tPass < e.t; return e; }
+  e.glazed = tPass < tmax0;
   margin = std::min(margin, std::fabs(d[2]));
   e.cls = d[2] >= 0 ? 0 : 1;
   if (down) { e.t = (o[2] - plane) / -d[2]; e.cosInc = -d[2]; }
@@ -157,7 +175,7 @@ static Result expect(const char* what, const std::vector<Mesh>& meshes, views::O
     const bool open = std::find(o.noOcclude.begin(), o.noOcclude.end(), m.name) != o.noOcclude.end();
     if (!m.sensor || (o.selfOcclude && !open))
       for (size_t f = 0, at = 0; f < m.numFaces(); at += size_t(m.counts[f++])) {
-        Quad q{{INFINITY, INFINITY, INFINITY}, {-INFINITY, -INFINITY, -INFINITY}, -1, cl};
+        Quad q{{INFINITY, INFINITY, INFINITY}, {-INFINITY, -INFINITY, -INFINITY}, -1, cl, glass_face(o, m, f)};
         for (size_t j = at; j < at + size_t(m.counts[f]); ++j)
           for (int a = 0; a < 3; ++a) {
             const double v = float(m.points[3 * size_t(m.indices[j]) + size_t(a)] - c[a]);
@@ -213,7 +231,7 @@ static Result expect(const char* what, const std::vector<Mesh>& meshes, views::O
       u[0] = rt[1] * f[2] - rt[2] * f[1]; u[1] = rt[2] * f[0] - rt[0] * f[2]; u[2] = rt[0] * f[1] - rt[1] * f[0];
     }
     std::vector<double> w(3 + nG), wl(3 + nG), mn(3 + nG, INFINITY), rc(o.reach.size());
-    double own = 0;
+    double own = 0, gz = 0;
     for (size_t d = 0; d < K; ++d) {
       const double s = sRow[d / nAz], cs = std::sqrt(1 - s * s), a = (az0 + (double(d % nAz) + 0.5) * dAz) * kDeg;
       double dir[3];
@@ -224,13 +242,14 @@ static Result expect(const char* what, const std::vector<Mesh>& meshes, views::O
       float gt;
       std::memcpy(&gt, db.data() + 4 * (i * K + d), 4);
       const double dt = std::isinf(h.t) ? (std::isinf(gt) ? 0 : INFINITY) : std::fabs(gt - h.t) * h.cosInc / (tol * h.t + h.off);
-      if (gc != h.cls || dt > 1) {
+      if (gc != (h.glazed ? h.cls | kViewGlazed : h.cls) || dt > 1) {
         if (badRays++ < 3)
           std::printf("views: %s: sensor %zu row %zu column %zu: class %d at %.9g m, host %d at %.9g m\n", what, i, d / nAz, d % nAz, gc, double(gt), h.cls, h.t);
       } else worstRay = std::max(worstRay, dt);
       // the columns' sums
       const double wd = wRow[d / nAz];
       if (h.cls == 254) { own += wd; continue; }
+      if (h.glazed) gz += wd;
       const double dd = std::min(std::max(h.t, 0.1), o.farDist);
       w[h.cls] += wd;
       wl[h.cls] += wd * std::log(dd);
@@ -247,6 +266,7 @@ static Result expect(const char* what, const std::vector<Mesh>& meshes, views::O
     const auto least = [](double m) { return std::isinf(m) ? NAN : m; };
     std::vector<double> want = {w[0] / total, w[1] / total, (w[2] + own) / total};
     for (size_t g = 0; g < nG; ++g) want.push_back(w[3 + g] / total);
+    if (o.transmission) want.push_back(gz / total);   // glazing
     const size_t shares = want.size();
     if (o.distMean) want.push_back(logMean(W, WL));
     if (o.distMin) want.push_back(least(M));
@@ -389,6 +409,118 @@ static void check_rules() {
     CHECK(j.find("{\"name\": \"w\\\"1\\\\x\\u0001\", \"first\": 0, \"count\": 1}") != std::string::npos &&
           j.find("{\"mesh\": \"t\\\"0\", \"group\": \"g\"}") != std::string::npos);
   }
+}
+
+// Glass (--optics ... glass + --transmission on: rays pass it, glazing_<side> = the share that did) and measure meshes the
+// rays ignore (--no-occlude), against the host model.
+static void check_glass(std::string& err) {
+  // a facade looking -y, a pane 2.3 m out, a park wall 9.1 m out
+  const Mesh facade = quad("s", true, {-1, 0, 0, 1, 0, 0, 1, 0, 2, -1, 0, 2});
+  const Mesh pane = quad("pane", false, {-1.7, -2.3, 0.4, 2.9, -2.3, 0.4, 2.9, -2.3, 2.6, -1.7, -2.3, 2.6});
+  const Mesh park = quad("park", false, {-6.2, -9.1, 0, 7.3, -9.1, 0, 7.3, -9.1, 5.3, -6.2, -9.1, 5.3});
+  const std::vector<Mesh> ms = {facade, pane, park};
+  views::Options o;
+  o.targets = {{"park", "green"}};
+  o.optics = {{"pane", -1, 0, 0.64, true}};
+  const Result off = expect("glass, --transmission off: the pane blocks", ms, o);
+  views::Options on = o;
+  on.transmission = true;
+  const Result through = expect("glass, --transmission on: the park behind the pane", ms, on);
+  CHECK(at(through, 0, "glazing_front") > 0.05 && at(through, 0, "green_front") > at(off, 0, "green_front") &&
+        std::isnan(at(off, 0, "glazing_front")));
+  views::Options porous = on;   // porous slots stay opaque: only glass is passed
+  porous.optics = {{"pane", -1, 0.2, 0.3, false}};
+  const Result rp = expect("porous, --transmission on: the pane still blocks", ms, porous);
+  CHECK(at(rp, 0, "glazing_front") == 0 && at(rp, 0, "green_front") == at(off, 0, "green_front"));
+  {   // a mixed mesh: face slot 1 glass, slot 0 opaque (its triangles found by triangulating it again)
+    Mesh wall = mesh("wall", false);
+    face(wall, {-1.7, -2.3, 0.4, 0.6, -2.3, 0.4, 0.6, -2.3, 2.6, -1.7, -2.3, 2.6});
+    face(wall, {0.6, -2.3, 0.4, 2.9, -2.3, 0.4, 2.9, -2.3, 2.6, 0.6, -2.3, 2.6});
+    wall.slot = {0, 1};
+    views::Options os = on;
+    os.optics = {{"wall", 1, 0, 0.64, true}};
+    const Result rs = expect("glass slot 1 of a two-slot wall", {facade, wall, park}, os);
+    CHECK(at(rs, 0, "glazing_front") > 0 && at(rs, 0, "glazing_front") < at(through, 0, "glazing_front"));
+  }
+  {   // double glazing: two panes passed
+    Mesh pane2 = pane;
+    pane2.name = "pane2";
+    for (size_t i = 1; i < pane2.points.size(); i += 3) pane2.points[i] = -2.47;
+    views::Options od = on;
+    od.optics = {{"pane", -1, 0, 0.64, true}, {"pane2", -1, 0, 0.64, true}};
+    const Result rd = expect("double glazing", {facade, pane, pane2, park}, od);
+    CHECK(at(rd, 0, "green_front") == at(through, 0, "green_front"));
+  }
+  {   // rules: a target all of glass, a reserved group, an unknown --optics name
+    Result r;
+    views::Options t = on;
+    t.targets = {{"pane", "water"}};
+    CHECK(!views::run(ms, t, r, err) && err.find("rays pass through it") != std::string::npos);
+    t.transmission = false;
+    CHECK(views::run(ms, t, r, err) && at(r, 0, "water_front") > 0);
+    t = on;
+    t.targets = {{"park", "glazing"}};
+    CHECK(!views::run(ms, t, r, err) && err.find("reserved") != std::string::npos);
+    t = on;
+    t.optics = {{"nosuch", -1, 0, 0.5, true}};
+    CHECK(!views::run(ms, t, r, err) && err.find("nosuch") != std::string::npos);
+    views::cli::Args a;
+    CHECK(parse({"f.obj", "--optics", "pane=0,0.64,glass", "--transmission", "on"}, a, err) == 0 && a.opt.transmission &&
+          a.opt.optics.size() == 1 && a.opt.optics[0].glass);
+    CHECK(parse({"f.obj", "--transmission", "maybe"}, a, err) == 1 && err.find("--transmission") != std::string::npos);
+    CHECK(parse({"f.obj", "--optics", "pane=0.2,0.5,glass"}, a, err) == 1 && err.find("RHO must be 0") != std::string::npos);
+  }
+  {   // labels are per run: off then on under one key reuse the scene, and give the keyless numbers
+    views::Options k1 = o, k2 = on;
+    k1.sceneKey = k2.sceneKey = "check_glass";
+    k1.jitter = k2.jitter = false;   // as expect() ran them
+    Result r1, r2;
+    CHECK(views::run(ms, k1, r1, err) && views::run(ms, k2, r2, err) && r2.sceneReused && same(r2, through) && same(r1, off));
+  }
+
+  // an interior: a 6.3 x 5.1 x 2.9 m room with a window in its south wall, a tree outside, a measure grid at 0.8 m (the
+  // eye 0.4 m above it), all around: --no-occlude grid keeps the grid out of the rays
+  Mesh room = mesh("room", false);
+  face(room, {0, 0, 0, 6.3, 0, 0, 6.3, 5.1, 0, 0, 5.1, 0});
+  face(room, {0, 0, 2.9, 0, 5.1, 2.9, 6.3, 5.1, 2.9, 6.3, 0, 2.9});
+  face(room, {0, 5.1, 0, 6.3, 5.1, 0, 6.3, 5.1, 2.9, 0, 5.1, 2.9});
+  face(room, {0, 0, 0, 0, 5.1, 0, 0, 5.1, 2.9, 0, 0, 2.9});
+  face(room, {6.3, 0, 0, 6.3, 0, 2.9, 6.3, 5.1, 2.9, 6.3, 5.1, 0});
+  face(room, {0, 0, 0, 6.3, 0, 0, 6.3, 0, 0.93, 0, 0, 0.93});
+  face(room, {0, 0, 2.21, 6.3, 0, 2.21, 6.3, 0, 2.9, 0, 0, 2.9});
+  face(room, {0, 0, 0.93, 2.07, 0, 0.93, 2.07, 0, 2.21, 0, 0, 2.21});
+  face(room, {4.13, 0, 0.93, 6.3, 0, 0.93, 6.3, 0, 2.21, 4.13, 0, 2.21});
+  const Mesh window = quad("window", false, {2.07, 0, 0.93, 4.13, 0, 0.93, 4.13, 0, 2.21, 2.07, 0, 2.21});
+  const Mesh tree = quad("tree", false, {0.9, -7.3, 0, 5.2, -7.3, 0, 5.2, -7.3, 4.4, 0.9, -7.3, 4.4});
+  Mesh grid = mesh("grid", true);
+  for (int j = 0; j < 3; ++j)
+    for (int i = 0; i < 4; ++i) {
+      const double x = 0.75 + 1.2 * i, y = 0.65 + 1.3 * j;
+      face(grid, {x, y, 0.8, x + 1.2, y, 0.8, x + 1.2, y + 1.3, 0.8, x, y + 1.3, 0.8});
+    }
+  const std::vector<Mesh> rm = {grid, room, window, tree};
+  views::Options in;
+  in.fovH = 360;
+  in.offset = 0.4;
+  in.noOcclude = {"grid"};
+  in.targets = {{"tree", "green"}};
+  in.optics = {{"window", -1, 0, 0.64, true}};
+  in.reach = {6};
+  const Result shut = expect("interior, --transmission off: the window blocks", rm, in);
+  in.transmission = true;
+  const Result lit = expect("interior, --transmission on: out through the window", rm, in);
+  double sky = 0, green = 0, shutOut = 0;
+  for (size_t e = 0; e < 12; ++e) {
+    sky += at(lit, e, "sky_front");
+    green += at(lit, e, "green_front");
+    shutOut += at(shut, e, "sky_front") + at(shut, e, "green_front");
+    CHECK(at(lit, e, "glazing_front") > 0);   // every point sees the window, not all of them the tree through it
+  }
+  CHECK(sky > 0 && green > 0 && shutOut == 0);
+  views::Options blocking = in;   // without --no-occlude the grid blocks: the rays down end on it 0.4 m below the eye
+  blocking.noOcclude = {};
+  const Result rb = expect("interior, the grid blocking", rm, blocking);
+  CHECK(at(rb, 5, "distance_min_front") < 0.5 && at(lit, 5, "distance_min_front") > 0.5);
 }
 
 int check_views(const char* testsDir) {
@@ -741,5 +873,6 @@ int check_views(const char* testsDir) {
     CHECK(!f);
     if (f) std::fclose(f);
   }
+  check_glass(err);
   return failures;
 }

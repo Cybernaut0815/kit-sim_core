@@ -17,6 +17,11 @@ enum : unsigned {
   kSlotTwin = 8,          // ... of no volume, faces in coincident pairs (a double-faced sheet): closest hits meet either twin
                           // first, so the bounce pass takes every face as an entry (one event per pair); any-hit sees both
 };
+// views: the label of a triangle rays pass (glass with --transmission on), the panes a ray passes at most (then an
+// obstruction at the last), and the class bit of a ray that passed glass (cls | kViewGlazed)
+constexpr unsigned char kLabelPass = 255;
+constexpr unsigned kMaxPanes = 16;
+constexpr unsigned char kViewGlazed = 0x80;
 
 struct Params {
   unsigned long long gas; // OptixTraversableHandle
@@ -39,9 +44,10 @@ struct Params {
   float cosN, sinN;       // cos / sin of --north: turns escaping directions back to true north (views: true north's frame)
   // __raygen__view (views): direction-major cls[d*nc + i] / dist[d*nc + i] (from the launch's first sensor; nc the
   // chunk's), K = nAz x nEl directions, d = row * nAz + column, rows top-down, columns clockwise from az0
-  unsigned char* cls;     // 0 sky, 1 ground, 2 obstruction, 3 + g target group g, 254 own surface (not traced)
+  unsigned char* cls;     // 0 sky, 1 ground, 2 obstruction, 3 + g target group g (+ kViewGlazed: passed glass), 254 own
+                          // surface (not traced)
   float* dist;            // true distance: the hit's t, the virtual ground's, +inf open sky / own surface
-  const unsigned char* label;   // class per triangle (primitive index); null: every hit is an obstruction
+  const unsigned char* label;   // class per triangle (primitive index), kLabelPass: passed; null: every hit an obstruction
   const float2* rowSin;   // per row: sin of its bottom and top elevation
   unsigned nAz, nEl;
   float az0, dAz;         // degrees: the first column's left edge, the column width

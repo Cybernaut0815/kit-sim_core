@@ -268,7 +268,9 @@ int main(int argc, char** argv) {
   std::vector<char> open;
   std::vector<std::string> groups;
   std::vector<uint8_t> cls;
-  if (!resolve_no_occlude(meshes, a.opt.noOcclude, open, err) || !resolve_targets(views_of(meshes), a.opt.targets, a.opt.selfOcclude, open, groups, cls, err))
+  std::vector<Slot> slots;
+  if (!resolve_no_occlude(meshes, a.opt.noOcclude, open, err) || !resolve_targets(views_of(meshes), a.opt.targets, a.opt.selfOcclude, open, groups, cls, err) ||
+      !resolve_optics(meshes, a.opt.optics, slots, err))
     return usage_error(err.c_str());
 #else
   if (std::vector<Slot> slots; !resolve_optics(meshes, a.opt.optics, slots, err)) return usage_error(err.c_str());

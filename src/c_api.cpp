@@ -241,7 +241,9 @@ int32_t dl_run(int32_t tool, int32_t argc, const char* const* argv, dl_mesh* con
     std::vector<char> open;
     std::vector<std::string> groups;
     std::vector<uint8_t> cls;
-    if (!resolve_no_occlude(mv, a.opt.noOcclude, open, err) || !resolve_targets(mv, a.opt.targets, a.opt.selfOcclude, open, groups, cls, err))
+    std::vector<Slot> slots;
+    if (!resolve_no_occlude(mv, a.opt.noOcclude, open, err) || !resolve_targets(mv, a.opt.targets, a.opt.selfOcclude, open, groups, cls, err) ||
+        !resolve_optics(mv, a.opt.optics, slots, err))
       return fail(DL_USAGE, err.c_str());
     set_run(a.opt, key, control);
     {

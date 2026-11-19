@@ -68,6 +68,9 @@ struct RunOptions {
   double offset = 0;                  // sensor offset along the normal, metres
   bool virtualGround = true;          // the virtual ground below the horizon; daylight: its Lambertian reflection of
                                       // Options::ground (false: black, the numbers of ground 0); views: a plane that ends downward rays
+  std::vector<Optics> optics;         // per mesh / face slot (--optics); names = Mesh::name
+  bool transmission = false;          // daylight: tau lets light through glass / porous slots; views: rays pass glass slots
+                                      // (tau > 0); false = every slot opaque (as before)
   // Scene identity for long-lived callers (a server). Non-empty and equal to the previous run's key: the occluder
   // triangles and the acceleration structure of that run stay resident and are reused (the caller guarantees the
   // meshes and selfOcclude are unchanged; optics values may change; the noOcclude meshes (with selfOcclude), the set of
@@ -91,9 +94,7 @@ struct Options : RunOptions {
   int mf = 1;                        // sky density: 1 (145 patches), 2 (577), 4 (2305)
   int patchSamples = 1;               // physical: K = m*m stratified rays per patch
   double ground = 0.2;                // ground reflectance
-  std::vector<Optics> optics;         // per mesh / face slot (--optics); names = Mesh::name
-  bool transmission = false;          // tau lets light through glass / porous slots; false = every slot opaque (as before)
-  bool fresnel = true;                // glass by angle; false = glass passes tau at every angle
+  bool fresnel = true;               // glass by angle; false = glass passes tau at every angle
   int bounces = 0;                    // reflected light: diffuse reflections per path, 0..20 (0 = none, as before; physical mode)
   int bounceSamples = 1024;           // paths per sensor for it, 64..65536
   double lat = NAN, lon = NAN, tz = NAN;        // override EPW header / no-EPW runs

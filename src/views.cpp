@@ -29,6 +29,7 @@ bool field(const std::vector<MeshView>& meshes, const Options& opt, Field& f, st
   if (!(opt.elevLo >= -90 && opt.elevLo < opt.elevHi && opt.elevHi <= 90)) { err = "--fov H,LO,HI needs -90 <= LO < HI <= 90"; return false; }
   if (!(opt.cell > 0) || std::isinf(opt.cell)) { err = "--cell must be positive and finite (degrees)"; return false; }
   if (!std::isfinite(opt.north) || !std::isfinite(opt.offset)) { err = "--north and --offset must be finite"; return false; }
+  if (!optics_rows_ok(opt.optics, err)) return false;
   const double nAz = std::max(1.0, std::round(opt.fovH / opt.cell)), nEl = std::max(1.0, std::round((opt.elevHi - opt.elevLo) / opt.cell));
   if (nAz * nEl > double(1 << 20)) {
     char s[160];
@@ -67,12 +68,35 @@ static bool run_views(const std::vector<MeshView>& meshes, const Options& opt, R
   if (!field(meshes, opt, fd, err) || !resolve_no_occlude(meshes, opt.noOcclude, open, err) ||
       !resolve_targets(meshes, opt.targets, opt.selfOcclude, open, groups, clsOf, err)) return false;
   const auto blocks = [&](size_t k) { return !meshes[k].sensor || (opt.selfOcclude && !open[k]); };   // mesh k goes into the GAS
+  // glass: with --transmission on rays pass the global slots that are glass with tau > 0 (resolve_optics, as daylight
+  // numbers them: each mesh's base is the slot count of the meshes before it); per blocking mesh, all or some faces
+  std::vector<Slot> slots;
+  if (!resolve_optics(meshes, opt.optics, slots, err)) return false;
+  std::vector<size_t> base(meshes.size() + 1, 0);
+  for (size_t k = 0; k < meshes.size(); ++k) base[k + 1] = base[k] + slot_count(*meshes[k].mesh);
+  const auto passes = [&](size_t s) { return opt.transmission && (slots[s].flags & kSlotGlass) && slots[s].tau > 0; };
+  std::vector<char> passAll(meshes.size(), 0), passAny(meshes.size(), 0);
+  bool anyPass = false;
+  for (size_t k = 0; opt.transmission && k < meshes.size(); ++k) {
+    if (!blocks(k)) continue;   // not in the scene anyway
+    const Mesh& m = *meshes[k].mesh;
+    size_t n = 0;
+    for (size_t f = 0; f < m.numFaces(); ++f) n += passes(base[k] + (m.slot.empty() ? 0 : m.slot[f])) ? 1 : 0;
+    passAny[k] = n > 0;
+    passAll[k] = n > 0 && n == m.numFaces();
+    anyPass = anyPass || n > 0;
+    if (clsOf[k] != 2 && passAll[k]) {
+      err = "--target " + meshes[k].name + ": rays pass through it (glass with --transmission on), none can end on it";
+      return false;
+    }
+  }
   // daylight's key of an opaque scene: a views run shares its GAS whatever the targets (labels are per run)
   const std::string key = opt.sceneKey.empty() ? "" : opt.sceneKey + open_key(open, opt.selfOcclude);
   const size_t nS = opt.sides == Sides::Both ? 2 : 1;
   size_t nElem = 0;
   for (const MeshView& v : meshes) if (v.sensor) nElem += opt.onVertices ? v.mesh->numPoints() : v.mesh->numFaces();
-  const size_t nSens = nElem * nS, K = size_t(fd.nAz) * fd.nEl, nClass = 3 + groups.size(), NA = 3 * nClass + 1 + opt.reach.size();
+  const size_t nSens = nElem * nS, K = size_t(fd.nAz) * fd.nEl, nClass = 3 + groups.size(),
+               NA = 3 * nClass + 1 + opt.reach.size() + (opt.transmission ? 1 : 0);
   if (nSens == 0) { err = "no sensor elements (no sensor meshes, or none with faces / points)"; return false; }
   if (!opt.dumpPath.empty() && nSens * K * 5 > (size_t(4) << 30)) {
     err = "--dump-rays: " + std::to_string(nSens) + " sensors x " + std::to_string(K) + " rays exceed 4 GB (fewer receivers or a coarser --cell)";
@@ -111,26 +135,36 @@ static bool run_views(const std::vector<MeshView>& meshes, const Options& opt, R
   if (!scene_acquire(meshes, blocks, {Slot{}}, false, key, opt.residentScenes, opt.cancel, &g, sc, out, stage, err)) return false;
   // label[t] = the class of a hit on triangle t, from the scene's build order: a target's triangles are the ones the
   // scene holds under its name for its Mesh (a resident scene may have been built from another mesh order); a target the
-  // scene lacks so (built under other names, or its name now on another mesh): a fresh build under the key
+  // scene lacks so (built under other names, or its name now on another mesh): a fresh build under the key. Passed glass:
+  // kLabelPass, a mixed mesh's triangles found by triangulating it again as the scene did (same centre, same faces kept)
   std::vector<uint8_t> label;
   const auto labelled = [&] {
     label.assign(sc.nTris, 2);
     std::unordered_map<std::string, const SceneMesh*> byName;   // null: the scene has the name twice
     for (const SceneMesh& s : sc.order) if (!byName.emplace(s.name, &s).second) byName[s.name] = nullptr;
     for (size_t k = 0; k < meshes.size(); ++k) {
-      if (clsOf[k] == 2) continue;
+      if (clsOf[k] == 2 && !passAny[k]) continue;
       const auto it = byName.find(meshes[k].name);
       if (it == byName.end() || !it->second || it->second->mesh != meshes[k].mesh) return false;
-      std::fill_n(label.data() + it->second->tri0, it->second->nTri, clsOf[k]);
+      const SceneMesh& s = *it->second;
+      std::fill_n(label.data() + s.tri0, s.nTri, passAll[k] ? kLabelPass : clsOf[k]);
+      if (passAny[k] && !passAll[k]) {
+        Tris tr;
+        int skipped = 0;
+        triangulate(*meshes[k].mesh, sc.c, tr, skipped, uint32_t(base[k]), true);
+        if (tr.slot.size() != s.nTri) return false;
+        for (size_t t = 0; t < s.nTri; ++t) if (passes(tr.slot[t])) label[s.tri0 + t] = kLabelPass;
+      }
     }
     return true;
   };
-  stage = "labelling the targets";
-  if (!groups.empty() && !labelled()) {
+  stage = "labelling the targets and the glass";
+  if ((!groups.empty() || anyPass) && !labelled()) {
     scene_forget(key);
     if (!scene_acquire(meshes, blocks, {Slot{}}, false, key, opt.residentScenes, opt.cancel, &g, sc, out, stage, err)) return false;
-    if (!labelled()) { err = "internal: a target mesh is not in the scene"; return false; }
+    if (!labelled()) { err = "internal: a target or glass mesh is not in the scene as built"; return false; }
   }
+  const size_t nPass = size_t(std::count(label.begin(), label.end(), kLabelPass));
   const GpuStats st0 = gpu_stats(*g);   // the GPU's counters before this run's trace (they add up over the process)
   // Beside the scene: the sensors, the labels, and per sensor of a chunk its classes (1 B per ray), distances (4 B) and
   // sums (NA doubles); chunkBytes caps the distances and the sums
@@ -150,6 +184,7 @@ static bool run_views(const std::vector<MeshView>& meshes, const Options& opt, R
     if (opt.virtualGround) std::snprintf(vg, sizeof vg, "at z %g", fd.groundZ);
     std::fprintf(stderr, "info: %zu sensors, %zu triangles%s, %u x %u = %zu rays per sensor, %zu target groups, virtual ground %s\n", nSens,
                  sc.nTris, out.sceneReused ? " (scene reused)" : "", fd.nEl, fd.nAz, K, groups.size(), vg);
+    if (opt.transmission) std::fprintf(stderr, "info: --transmission on: rays pass %zu glass triangles\n", nPass);
     if (sc.skipped) std::fprintf(stderr, "warn: %d degenerate faces skipped in occluders\n", sc.skipped);
     if (!warn.empty()) std::fprintf(stderr, "warn: %s\n", warn.c_str());
     const size_t below = opt.virtualGround ? size_t(std::count_if(sens.p.begin(), sens.p.end(), [&](const float3& p) { return p.z < plane; })) : 0;
@@ -163,6 +198,7 @@ static bool run_views(const std::vector<MeshView>& meshes, const Options& opt, R
   stage = "allocating the result";
   std::vector<std::string> names = {"sky", "ground", "obstruction"};
   names.insert(names.end(), groups.begin(), groups.end());
+  if (opt.transmission) names.push_back("glazing");   // the share that passed glass, outside the shares' partition
   if (opt.distMean) names.push_back("distance");
   if (opt.distMin) names.push_back("distance_min");
   for (size_t k = 0; opt.distGroup && k < groups.size(); ++k) {
@@ -200,6 +236,7 @@ static bool run_views(const std::vector<MeshView>& meshes, const Options& opt, R
     put(a[3] / total);
     put((a[6] + own) / total);
     for (size_t k = 0; k < groups.size(); ++k) put(a[3 * (3 + k)] / total);
+    if (opt.transmission) put(a[3 * nClass + 1 + opt.reach.size()] / total);
     if (opt.distMean) put(logMean(w, wl, mn));
     if (opt.distMin) put(least(mn));
     for (size_t k = 0; opt.distGroup && k < groups.size(); ++k) {
@@ -228,7 +265,7 @@ static bool run_views(const std::vector<MeshView>& meshes, const Options& opt, R
     if (!gpu_view(*g, i0, nc, flags, vl, launch, err)) return false;
     const auto tRed = Clk::now();
     sums.resize(nc * NA);
-    if (!gpu_reduce_view(*g, nc, wRow, unsigned(nClass), opt.farDist, reach, sums.data(), err)) return false;
+    if (!gpu_reduce_view(*g, nc, wRow, unsigned(nClass), opt.farDist, reach, opt.transmission, sums.data(), err)) return false;
     for (size_t i = 0; i < nc; ++i) store(i0 + i, sums.data() + i * NA);
     out.stats.reduceMs += ms(tRed);
     if (opt.progress) opt.progress->store(double(i0 + nc) / double(nSens));

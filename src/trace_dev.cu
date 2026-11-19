@@ -179,7 +179,8 @@ static __forceinline__ __device__ float u01(unsigned v) { return float(v >> 8) *
 // chunks and launches change nothing; else the cell's middle in azimuth and in sine of elevation), in the sensor's frame
 // (forward = n, right = horizontal, up) or, 360 mode, the world's (forward = true north, up = +z). The closest hit
 // passes the sensor's own plane as past_own_plane does (at most 4 segments, then an obstruction at the last); its class
-// is the hit triangle's label (one build input: primitive index = triangle order). A ray meeting nothing is sky on or
+// is the hit triangle's label (one build input: primitive index = triangle order); a triangle labelled kLabelPass (glass,
+// --transmission on) is passed, at most kMaxPanes of them, and marks the ray kViewGlazed. A ray meeting nothing is sky on or
 // above the horizon (dir.z >= 0, as daylight's sky_bin), else ground. A downward ray ends at the virtual ground:
 // traced 1 cm past its plane, so geometry lying on it (a terrain at the lowest point, a lake) wins, a ray meeting
 // nothing is ground at the plane's distance. A degenerate element (zero normal) traces nothing: all own surface.
@@ -224,13 +225,20 @@ extern "C" __global__ void __raygen__view() {
       const float tg = plane ? (o.z - params.groundZ) / -dir.z : inf;
       const float tmax = plane ? (o.z - params.groundZ + 0.01f) / -dir.z : FLT_MAX;
       float tmin = 1e-5f;
-      for (unsigned seg = 0; seg < 4; ++seg) {
+      unsigned own = 0, panes = 0;
+      for (;;) {
         optixTraverse(params.gas, o, dir, tmin, tmax, 0.f, OptixVisibilityMask(1), params.rayFlags, 0, 1, 0);
         if (!optixHitObjectIsHit()) { cl = dir.z >= 0.f ? 0 : 1; t = tg; break; }   // tg: inf unless the plane ends it
         t = optixHitObjectGetRayTmax();
-        if (!own_hit(n)) { cl = params.label ? params.label[optixHitObjectGetPrimitiveIndex()] : 2; break; }
+        if (own_hit(n)) { if (++own == 4) break; }   // the sensor's own plane: 4 segments, then an obstruction at the last
+        else {
+          const unsigned char lb = params.label ? params.label[optixHitObjectGetPrimitiveIndex()] : 2;
+          if (lb != kLabelPass) { cl = lb; break; }
+          if (++panes > kMaxPanes) break;   // glass (--transmission on): passed; past kMaxPanes an obstruction at the last
+        }
         tmin = __uint_as_float(__float_as_uint(t) + 1);   // the next float past it
       }
+      if (panes) cl |= kViewGlazed;   // cl < 128 here (254 is the culled branch above)
     }
     const size_t at = size_t(d) * params.nc + i;   // direction-major: a warp's 32 sensors store side by side
     params.cls[at] = cl;

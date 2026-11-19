@@ -87,6 +87,8 @@ bool mesh_ok(const Mesh& m, const std::string& label, std::string& err);
 // Optics rows within range (0..1, rho + tau <= 1; glass rho 0, 0 < tau <= 0.918), --bounces 0..20, --bounce-samples
 // 64..65536 and the mode rules (ladybug: no transmission, no bounces). False + err naming the first bad row or flag.
 bool optics_ok(const Options& opt, std::string& err);
+// The row part of optics_ok (ranges, glass rules), for every tool that takes --optics (views: the rows only).
+bool optics_rows_ok(const std::vector<Optics>& rows, std::string& err);
 // One Slot per global slot from the rows (NAME/SLOT > NAME > * > rho 0.2 tau 0; glass: tn_from_Tn(tau), kSlotGlass).
 // Errors: unknown or ambiguous mesh name, slot out of range, duplicate row, a Mesh::slot not one per face.
 bool resolve_optics(const std::vector<MeshView>& meshes, const std::vector<Optics>& rows, std::vector<Slot>& out, std::string& err);
@@ -101,7 +103,7 @@ inline bool resolve_no_occlude(const std::vector<Mesh>& meshes, const std::vecto
 }
 // views::Options::targets: cls[k] = 3 + g when mesh k is a target of groups[g] (groups in order of first appearance), else
 // 2 (an obstruction). Errors: NAME/SLOT (face-slot targets are not supported), a GROUP not [A-Za-z0-9_-]+ or reserved (sky,
-// ground, obstruction, distance*, reach*, *_distance, *_distance_min: column names), an unknown or ambiguous name, a
+// ground, obstruction, glazing, distance*, reach*, *_distance, *_distance_min: column names), an unknown or ambiguous name, a
 // mesh given twice, a mesh that blocks no rays (a sensor mesh under --no-self-occlude or open[k], --no-occlude), more
 // than 16 groups.
 bool resolve_targets(const std::vector<MeshView>& meshes, const std::vector<views::Target>& targets, bool selfOcclude,
@@ -202,7 +204,7 @@ bool gpu_view(Gpu& g, size_t i0, size_t nc, unsigned rayFlags, const ViewLaunch&
 // own-surface weight, then per reach threshold the weight whose distance is at least it. wRow: weight per row.
 // Deterministic: the same bits for any chunking.
 bool gpu_reduce_view(Gpu& g, size_t nc, const std::vector<double>& wRow, unsigned nClass, double farDist, const std::vector<float>& reach,
-                     double* out, std::string& err);
+                     bool glazing, double* out, std::string& err);
 bool gpu_download_view(Gpu& g, size_t nc, std::vector<uint8_t>& cls, std::vector<float>& dist, std::string& err);   // [nc x K] each (transposed)
 struct GpuStats {
   double buildMs = 0, traceMs = 0, bounceMs = 0;

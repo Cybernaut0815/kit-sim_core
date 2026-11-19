@@ -158,6 +158,8 @@ int parse_common(int argc, char** argv, CommonArgs& a, RunOptions& o, std::strin
       (f == "--north" ? o.north : o.offset) = x;
     }
     else if (f == "--virtual-ground") { if (!(v = need(i, "--virtual-ground"))) return 1; if (!std::strcmp(v, "on")) o.virtualGround = true; else if (!std::strcmp(v, "off")) o.virtualGround = false; else { err = "--virtual-ground on|off"; return 1; } }
+    else if (f == "--optics") { if (!(v = need(i, "--optics"))) return 1; if (!parse_optics(v, o.optics, err)) return 1; }
+    else if (f == "--transmission") { if (!(v = need(i, "--transmission"))) return 1; if (!std::strcmp(v, "on")) o.transmission = true; else if (!std::strcmp(v, "off")) o.transmission = false; else { err = "--transmission off|on"; return 1; } }
     else if (f == "--out") { if (!(v = need(i, "--out"))) return 1; a.out = v; }
     else if (f == "--bench") {
       a.bench = true;
@@ -205,8 +207,6 @@ int parse(int argc, char** argv, Args& a, std::string& err) {
     else if (f == "--sky-density") { if (!(v = need(i, "--sky-density"))) return 1; a.opt.mf = std::atoi(v); }
     else if (f == "--patch-samples") { if (!(v = need(i, "--patch-samples"))) return 1; a.opt.patchSamples = std::atoi(v); }
     else if (f == "--ground") { if (!(v = need(i, "--ground"))) return 1; a.opt.ground = std::atof(v); }
-    else if (f == "--optics") { if (!(v = need(i, "--optics"))) return 1; if (!parse_optics(v, a.opt.optics, err)) return 1; }
-    else if (f == "--transmission") { if (!(v = need(i, "--transmission"))) return 1; if (!std::strcmp(v, "on")) a.opt.transmission = true; else if (!std::strcmp(v, "off")) a.opt.transmission = false; else { err = "--transmission off|on"; return 1; } }
     else if (f == "--fresnel") { if (!(v = need(i, "--fresnel"))) return 1; if (!std::strcmp(v, "on")) a.opt.fresnel = true; else if (!std::strcmp(v, "off")) a.opt.fresnel = false; else { err = "--fresnel on|off"; return 1; } }
     else if (f == "--bounces" || f == "--bounce-samples") {   // ranges: optics_ok below
       if (!(v = need(i, f.c_str()))) return 1;
@@ -291,9 +291,11 @@ const char* const kUsage =
     "  --cull-backfaces         occluders block only from their front side (default two-sided)\n"
     "  --north DEG  --offset M  --no-self-occlude\n"
     "  --no-occlude NAME[;NAME...]  these sensor meshes are analysed but block no rays (repeatable)\n"
+    "  --optics SPEC[;SPEC...]  NAME[/SLOT]=RHO[,TAU[,glass|porous]] per mesh / face slot, as daylight's (repeatable)\n"
+    "  --transmission off|on    rays pass glass slots (default off: every surface blocks); adds glazing_<side>\n"
     "  --out FILE[.npy]         values (text rows, or float64 [N x C] NumPy when .npy) + FILE.json manifest\n"
-    "  --dump-rays F.npy        classes uint8 [rows x rays] (a row per element and side) + F.npy.depth.npy float32\n"
-    "                           distances\n"
+    "  --dump-rays F.npy        classes uint8 [rows x rays] (a row per element and side; + 128: passed glass) +\n"
+    "                           F.npy.depth.npy float32 distances\n"
     "  --bench [NSENS NTRIS]  -v          exit code: 1 usage, 2 runtime error\n";
 
 namespace {
@@ -379,7 +381,8 @@ std::string manifest_json(const Result& r, const Options& opt, const Field& f) {
   m += "],\n  \"view\": {\"fov\": [" + num(opt.fovH) + ", " + num(opt.elevLo) + ", " + num(opt.elevHi) + "], \"cell\": " + num(opt.cell) +
        ", \"grid\": [" + std::to_string(f.nEl) + ", " + std::to_string(f.nAz) + "], \"jitter\": " + (opt.jitter ? "true" : "false") +
        ", \"north\": " + num(opt.north) + ", \"offset\": " + num(opt.offset) + ", \"far\": " + num(opt.farDist) + ", \"near\": 0.1, \"virtual_ground\": " +
-       (opt.virtualGround ? "true" : "false") + ", \"ground_z\": " + num(f.groundZ) + ", \"reach\": [";
+       (opt.virtualGround ? "true" : "false") + ", \"ground_z\": " + num(f.groundZ) + (opt.transmission ? ", \"transmission\": true" : "") +
+       ", \"reach\": [";
   for (size_t k = 0; k < opt.reach.size(); ++k) m += (k ? ", " : "") + num(opt.reach[k]);
   m += "], \"classes\": [\"sky\", \"ground\", \"obstruction\"";
   std::vector<std::string> groups;   // first appearance, as run() orders them

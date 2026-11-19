@@ -1,0 +1,54 @@
+// SPDX-License-Identifier: Apache-2.0 AND LicenseRef-Commons-Clause-1.0
+// daylight and views in-process (Node, daylight_c.dll through koffi): tests/box.obj and a facade from arrays, a
+// clear-sky year, a view target, rows per mesh from the manifest ranges, the resident scene, progress, cancel, errors.
+// Run from the repo root after the build: node examples/typescript/native.ts (Node >= 22.18 strips the types)
+import { fileURLToPath } from 'node:url';
+import { DaylightError, Mesh, run, type NativeResult } from '../../bindings/ts/src/native.ts';
+
+// Meshes are copied to the C side once; runs over the same handles in the same roles and order reuse the GPU scene.
+const site = Mesh.load(fileURLToPath(new URL('../../tests/box.obj', import.meta.url))); // OBJ groups: ground, box
+const facade = Mesh.create('facade', // a 4 x 3 m wall at y = 3 facing south (-y), two 1.5 m rows
+  [-2, 3, 0, 2, 3, 0, 2, 3, 1.5, -2, 3, 1.5, 2, 3, 3, -2, 3, 3], // xyz per point: metres, Z up
+  [4, 4], // vertices per face
+  [0, 1, 2, 3, 3, 2, 4, 5]); // 0-based, counter-clockwise seen from the front
+const sensors = [site, facade];
+console.log('meshes:', sensors.flatMap((m) => m.names).join(', '));
+
+// The rows of one mesh in one column: the manifest's ranges, one { name, first, count } per mesh in sensor order.
+type Ranges = { meshes: { name: string; first: number; count: number }[] };
+function rows(r: NativeResult, mesh: string, column: string): Float64Array {
+  const { first, count } = (r.manifest as Ranges).meshes.find((m) => m.name === mesh)!;
+  return r.data[r.columns.indexOf(column)].subarray(first, first + count);
+}
+const mean = (v: Float64Array) => v.reduce((a, b) => a + b, 0) / v.length;
+
+// daylight: a clear-sky year in Berlin (no weather file), annual radiation and sun hours per face.
+const args = ['--clear-sky', '--lat', '52.52', '--lon', '13.41', '--quantity', 'radiation,sunhours'];
+let t = performance.now();
+const sun = await run('daylight', args, { sensors },
+  { signal: AbortSignal.timeout(10_000), onProgress: (p) => console.log(`  traced ${Math.round(100 * p)} %`) });
+console.log(`daylight: ${(performance.now() - t).toFixed(0)} ms, scene reused ${sun.stats.sceneReused}`);
+for (const { name } of (sun.manifest as Ranges).meshes) {
+  const kwh = mean(rows(sun, name, 'radiation_front')), hours = mean(rows(sun, name, 'sunhours_front'));
+  console.log(`  ${name.padEnd(6)} ${kwh.toFixed(0)} kWh/m2, ${hours.toFixed(0)} h (mean per face)`);
+}
+
+// views: 120 deg about each face's normal; rays ending on the mesh "box" count for the group "cube".
+t = performance.now();
+const view = await run('views', ['--target', 'box=cube'], { sensors }, { signal: AbortSignal.timeout(10_000) });
+console.log(`views: ${(performance.now() - t).toFixed(0)} ms, scene reused ${view.stats.sceneReused}`);
+console.log(`  columns ${view.columns.join(' ')}`);
+const sky = rows(view, 'facade', 'sky_front'), cube = rows(view, 'facade', 'cube_front');
+const distance = rows(view, 'facade', 'distance_front'), nearest = rows(view, 'facade', 'distance_min_front');
+sky.forEach((s, i) => console.log(`  facade row ${i}: sky ${s.toFixed(3)}, cube ${cube[i].toFixed(3)}, ` +
+  `distance ${distance[i].toFixed(1)} m, nearest ${nearest[i].toFixed(2)} m`));
+
+// Errors: DaylightError, status 1 usage (flags, names the meshes do not resolve) or 2 runtime (files, GPU, cancelled).
+try {
+  await run('views', ['--target', 'tree=green'], { sensors });
+} catch (e) {
+  if (!(e instanceof DaylightError)) throw e;
+  console.log(`error ${e.status}: ${e.message}`);
+}
+site.free(); // now; else when garbage collected
+facade.free();

@@ -1,0 +1,4 @@
+# what the examples build and write: dotnet's bin/ and obj/, the CLI runs' values and run.ps1's logs in out/
+bin/
+obj/
+out/

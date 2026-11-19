@@ -1,8 +1,42 @@
-# CLI reference
+# Daylight and solar (`daylight`)
 
-Complete CLI reference (`daylight --help` prints the short form). The C++ `daylight::Options` field for each flag
-is given for in-process callers; the Python and TypeScript `run(..., args=[...])` pass flags through verbatim.
-`views.exe`, the view analysis on the same library, has its own reference: [views.md](views.md).
+`daylight.exe` is the first tool on the core library: the same meshes, mesh roles, resident scenes and GPU as
+`views.exe`, another question. From every face or point of the sensor meshes it casts rays to each sky patch, to the
+ground below the horizon and to the sun at every time step (the directions in front of the element), and sums the light
+of the weather that reaches the element past the model: radiation (kWh/m2 over the run, also its direct and diffuse
+parts), irradiance (mean W/m2), illuminance (mean lux) and sun hours, a column each. The sky is a port of Radiance
+`gendaymtx` (Perez all-weather); the numbers are validated against Ladybug Tools, Radiance and pvlib
+([validation.md](validation.md)).
+
+- **Weather and place**: an EPW file (`--epw`: hourly DNI and DHI, the location from its header), a synthetic
+  clear-sky year (`--clear-sky` for `--lat --lon`: cloudless, an upper bound), or none for sun hours (`--lat --lon`).
+- **Time**: annual by default (a step per weather hour), one instant (`--time`), or a range (`--from --to --step`),
+  optionally only some hours of each day (`--hours`).
+- **Modes**: `physical` (default) or `ladybug`, which reproduces Ladybug's radiation and direct-sun studies bit for bit
+  ([modes.md](modes.md)). Every surface is opaque and black by default (the ground below the horizon reflects,
+  `--ground`); `--optics` gives meshes or face slots a reflectance and a transmittance, which `--transmission on`
+  (light through glass and porous slots) and `--bounces N` (the light the model reflects) use, in physical mode.
+- **Output**: a row per element of the sensor meshes in input order, a column per quantity and side (`radiation_front`,
+  `sunhours_back`); text or NumPy `.npy`, and a JSON manifest that maps the rows to the meshes ([Output](#output)).
+
+```
+daylight roof.obj --context city.obj --epw site.epw --out rad.txt                    # annual kWh/m2 per face
+daylight facade.obj --context city.obj --epw site.epw --quantity radiation,sunhours --sides both --out v.npy
+daylight roof.obj --clear-sky --lat 52.52 --lon 13.41 --out clear.txt                # no weather file: a clear-sky year
+daylight facade.obj --lat 52.52 --lon 13.41 --quantity sunhours --from 06-21T00:00 --to 06-22T00:00 --step 10
+daylight roof.obj --context city.obj --epw site.epw --mode ladybug --no-self-occlude --out lb.txt   # Ladybug's numbers
+daylight --bench                                                                     # grid + boxes, timings only
+```
+
+Mesh files, roles and names: [input.md](input.md). Build: `cmake --build --preset release` makes
+`build/RelWithDebInfo/daylight.exe` beside `views.exe` (the same `src/main.cpp`). C++ API: [cpp.md](cpp.md#daylight);
+the other languages: [api.md](api.md). Timings: [performance.md](performance.md).
+
+## Flags
+
+`daylight --help` prints the short form; the C++ `daylight::Options` field for each flag is given for in-process
+callers. The C ABI and the bindings take the flags verbatim, except mesh paths, `--context`, `--out`, `--bench` and
+`-h` (their meshes and results stay in memory). `views.exe` has its own flags: [views.md](views.md#flags).
 
 | flag | value | default | meaning | `Options` |
 |---|---|---|---|---|
@@ -65,3 +99,66 @@ Environment: `CUDA_VISIBLE_DEVICES` selects the GPU. Exit codes: 0 ok, 1 usage e
   averaged over the evaluated hours, `illuminance` lux averaged, `sunhours` hours.
 - Library: `Result::values` row-major `[N x C]`, `Result::columns`, `Result::ranges` = `(name, count)` per sensor mesh
   in input order.
+
+## Examples
+
+Run with the exe of commit 89b9327; the outputs are pasted as printed. [examples/cli/run.ps1](../examples/cli/run.ps1)
+runs these and more flag sets of both tools ([examples.md](examples.md#cli)).
+
+**`tests/box.obj`, a clear-sky year in Berlin** (four 2 m ground quads at z 0 facing up, and a 1 m box floating 0.5 m
+above the fourth; both meshes are sensors and block). Without `--out` the values go to stdout and no manifest is
+written; the columns are `radiation_front sunhours_front`.
+
+```
+daylight tests/box.obj --clear-sky --lat 52.52 --lon 13.41 --quantity radiation,sunhours
+1607.184707 4456
+1600.866545 4456
+1468.185887 4063
+926.1058524 3587
+41.08718741 0
+42.40675941 0
+1610.838706 4456
+1610.838706 4456
+1610.09265 3654
+1620.798476 3654
+1079.911348 2194
+1089.281121 2194
+334.4936637 802
+346.176471 802
+1004.434329 2262
+1032.356277 2262
+```
+
+Lines 1-4 are the ground quads: the first two, in the open, get about 1600 kWh/m2 and are sunlit in every one of the
+4456 hours the sun is up (the manifest's `dirs.sun`); the third, west of the box, loses morning sun to it (4063 hours);
+the fourth, under it, is shaded whenever the sun is high (926 kWh/m2, 3587 hours). Lines 5-6, the box's bottom
+triangles, face down: no sun, only the virtual ground's light beyond the ground quads, which are black (41 kWh/m2).
+Lines 7-8, its top, see the whole sky. Lines 9-16 are its sides, two triangles each: south 1610-1621 kWh/m2 and 3654
+hours, east 1080-1089 and 2194, north 334-346 and 802, west 1004-1032 and 2262.
+
+**Sun hours of one day, no weather file.** `--quantity sunhours` needs only the place (`--lat --lon`, and `--tz` for
+the clock of `--from` and `--to`): 21 June in 10-minute steps.
+
+```
+daylight tests/box.obj --quantity sunhours --lat 52.52 --lon 13.41 --tz 1 --from 06-21T00:00 --to 06-22T00:00 --step 10
+16.66666716
+16.66666716
+13.66666707
+10.16666697
+0
+0
+16.66666716
+16.66666716
+9.333333611
+9.333333611
+8.333333582
+8.333333582
+7.333333552
+7.333333552
+8.333333582
+8.333333582
+```
+
+The open quads and the box's top have the sun for 16.7 hours, sunrise to sunset; the quad west of the box 13.7, the
+one under it 10.2; the box's sides 9.3 (south), 8.3 (east, west) and 7.3 (north: the early morning and the evening
+sun); its bottom none.

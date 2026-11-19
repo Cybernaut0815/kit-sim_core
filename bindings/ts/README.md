@@ -1,8 +1,13 @@
 # daylight-mesh (TypeScript and JavaScript binding)
 
-Turns three.js scenes or `.glb` files into the raw `.dmesh` arrays (or OBJ) the daylight core reads, and runs the core:
-from Node through `daylight.exe` / `views.exe` (`run`) or in-process through `daylight_c.dll` (`daylight-mesh/native`),
-from a browser through a `daylight_server` (`runRemote`; a browser cannot run the GPU).
+Guide: [docs/javascript.md](../../docs/javascript.md) (setup, both tools worked through, results, speed, errors);
+examples: [examples/typescript](../../examples/typescript), [examples/javascript](../../examples/javascript)
+([docs/examples.md](../../docs/examples.md)).
+
+Turns three.js scenes or `.glb` files into the raw `.dmesh` arrays (or OBJ) the core reads, and runs both its tools,
+daylight and views: from Node through `daylight.exe` / `views.exe` (`run`) or in-process through `daylight_c.dll`
+(`daylight-mesh/native`); daylight also from a browser, through a `daylight_server` (`runRemote`; a browser cannot run
+the GPU).
 
 One package for TypeScript and plain JavaScript: `src/*.ts` compiles (`npm run build`) to the committed `lib/*.js` with
 `lib/*.d.ts` beside them, and `package.json` `exports` points `daylight-mesh` at `lib/index.js` and `daylight-mesh/native`
@@ -106,7 +111,8 @@ await applyToThree(mesh, data[col].subarray(first, first + count)); // one value
   `Uint16Array`, one optics slot per triangle (the core's `Mesh::slot`; absent = every triangle slot 0), written by
   `toDmesh` (so by `run` and `runRemote`: part of the bytes the server caches under `id`); `toObj` drops it.
 - `fromThree(objects, { scale })`: `updateMatrixWorld(true)`, applies `matrixWorld`, converts `(x, y, z) -> (x, -z, y)`,
-  reverses winding when `det(matrixWorld) < 0`. Triangle `BufferGeometry` only (indexed or not); no strips, fans or lines.
+  reverses winding when `det(matrixWorld) < 0`; names each mesh by its `name`, else its `uuid`. Triangle
+  `BufferGeometry` only (indexed or not); no strips, fans or lines.
 - `fromGLB(data, { scale })`: via `@gltf-transform/core`; `TRIANGLES` primitives of every node with a mesh,
   name `node/mesh`. Same frame conversion and winding rule.
 - `toDmesh(mesh, { matrix?, scale? })`: one mesh -> `Uint8Array` in the `.dmesh` layout below (flags 1 + the slot block

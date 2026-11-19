@@ -1,5 +1,8 @@
 # daylight (Python binding)
 
+Guide: [docs/python.md](../../docs/python.md) (setup, both tools worked through, results, speed, errors); examples:
+[examples/python](../../examples/python) ([docs/examples.md](../../docs/examples.md)).
+
 USD stage -> raw mesh arrays for the agnostic `daylight` core, a `.dmesh` writer for numpy arrays, a thin
 `subprocess` wrapper around the core's two CLIs (`daylight.exe`: daylight / solar, `views.exe`: view analysis), and
 `daylight.native`, both tools in-process through the C ABI (`daylight_c.dll`, [docs/c-abi.md](../../docs/c-abi.md)).
@@ -89,13 +92,13 @@ print(r.values.shape, r.manifest['columns'], v.stats['scene_reused'])           
   `.names` = what the manifest, `--target`, `--optics` and `--no-occlude` call them. `close()`, a `with` block or
   garbage collection frees the handle; never close one a run on another thread is using.
 - `native.run(tool, args, sensors, context=(), control=None)` -> `Result(values, manifest, stats)`: `tool` `'daylight'`
-  ([cli.md](../../docs/cli.md)) or `'views'` ([views.md](../../docs/views.md)), `args` its flags as strings (mesh
-  paths, `--context`, `--out`, `--bench` and `-h` are refused: the meshes are `sensors` / `context`, each a `Mesh` or
-  an iterable of them), `values` `[N x C]` float64, `manifest` the CLI's `FILE.json` as a dict, `stats` `{scene_reused,
-  prep_ms, sky_ms, build_ms, trace_ms, reduce_ms, bounce_ms, rays, launches, gas_bytes}`. Files in flags (`--epw`,
-  `--timeseries`, `--dump-*`) are paths of this process; a `str` goes as UTF-8 (names), a `pathlib.Path` in the ANSI
-  code page the core opens files with, as the CLI's argv: give a non-ASCII path as a `Path`. `native.usage(tool)`: the
-  CLI's `-h` text.
+  ([daylight.md](../../docs/daylight.md)) or `'views'` ([views.md](../../docs/views.md)), `args` its flags as strings
+  (mesh paths, `--context`, `--out`, `--bench` and `-h` are refused: the meshes are `sensors` / `context`, each a
+  `Mesh` or an iterable of them), `values` `[N x C]` float64, `manifest` the CLI's `FILE.json` as a dict, `stats`
+  `{scene_reused, prep_ms, sky_ms, build_ms, trace_ms, reduce_ms, bounce_ms, rays, launches, gas_bytes}`. Files in
+  flags (`--epw`, `--timeseries`, `--dump-*`) are paths of this process; a `str` goes as UTF-8 (names), a
+  `pathlib.Path` in the ANSI code page the core opens files with, as the CLI's argv: give a non-ASCII path as a `Path`.
+  `native.usage(tool)`: the CLI's `-h` text.
 - `Control()`: pass it as `control`, then from another thread `cancel()` (the run stops at its next check and raises
   `DaylightError` 2 `cancelled`) or read `progress` (0..1). One control per run; `close()` / `with` as for `Mesh`.
 - Errors raise `native.DaylightError` with `.status` = the CLI's exit code (1: flags, arguments, mesh names the flags

@@ -102,6 +102,21 @@ add_test(NAME c_abi COMMAND c_abi "${CMAKE_CURRENT_SOURCE_DIR}/tests" "${CMAKE_C
 set_tests_properties(cli_smoke_npy views_smoke_npy PROPERTIES FIXTURES_SETUP cli_npy)
 set_tests_properties(c_abi PROPERTIES FIXTURES_REQUIRED cli_npy TIMEOUT 300)
 
+# examples/ (docs/cpp.md, docs/c-abi.md), built and run only when this is the top-level project: a host that adds this
+# repo with add_subdirectory (the app server) gets the libraries without them.
+if(PROJECT_IS_TOP_LEVEL)
+  add_executable(example_cpp examples/cpp/example.cpp)
+  target_link_libraries(example_cpp PRIVATE daylightcore)
+  target_compile_options(example_cpp PRIVATE ${CXX_WARN})
+  target_link_options(example_cpp PRIVATE /NODEFAULTLIB:libcmt)
+  add_executable(example_c examples/c/example.c)
+  target_link_libraries(example_c PRIVATE daylight_c)
+  target_compile_definitions(example_c PRIVATE _CRT_SECURE_NO_WARNINGS)
+  target_compile_options(example_c PRIVATE /W4 /WX /utf-8)
+  add_test(NAME example_cpp COMMAND example_cpp "${CMAKE_CURRENT_SOURCE_DIR}/tests")
+  add_test(NAME example_c COMMAND example_c "${CMAKE_CURRENT_SOURCE_DIR}/tests")
+endif()
+
 option(DAYLIGHT_USD "USD input for the CLI via bindings/cpp (fetches LightUSD)" OFF)
 if(DAYLIGHT_USD)
   add_subdirectory(bindings/cpp)

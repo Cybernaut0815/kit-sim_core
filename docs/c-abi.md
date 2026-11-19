@@ -3,7 +3,7 @@
 Both tools in-process, for hosts that are not C++: the C# ([bindings/csharp](../bindings/csharp)), Python
 ([bindings/python](../bindings/python)) and Node ([bindings/ts](../bindings/ts)) bindings load it. A run takes the CLI's
 own flags (the CLI's parser checks them, so every option, default and message is the CLI's) and meshes as handles
-instead of files. C++ hosts link `daylightcore` and use `daylight.h` / `views.h` / `cli.h` ([api.md](api.md)) instead.
+instead of files. C++ hosts link `daylightcore` and use `daylight.h` / `views.h` / `cli.h` ([cpp.md](cpp.md)) instead.
 
 Files: [src/daylight_c.h](../src/daylight_c.h) (the contract, every function documented),
 [src/c_api.cpp](../src/c_api.cpp), test [tests/c_abi.c](../tests/c_abi.c) (ctest `c_abi`). The build puts
@@ -45,9 +45,9 @@ A handle never changes. A mesh without faces gives a handle holding no mesh (the
 ## Runs
 
 `dl_run(tool, argc, argv, sensors, n_sensors, context, n_context, control, &result)`: `tool` is `DL_DAYLIGHT` (0) or
-`DL_VIEWS` (1); `argv` the flags of [cli.md](cli.md) or [views.md](views.md) without the program name; the sensor
-handles take the place of the CLI's mesh arguments, the context handles of its `--context` meshes, each handle giving
-its meshes in order.
+`DL_VIEWS` (1); `argv` the flags of [daylight.md](daylight.md) or [views.md](views.md) without the program name; the
+sensor handles take the place of the CLI's mesh arguments, the context handles of its `--context` meshes, each handle
+giving its meshes in order.
 
 | flag | in-process |
 |---|---|
@@ -88,15 +88,47 @@ them with `cli_smoke_npy` and `views_smoke_npy`).
 
 ```c
 #include "daylight_c.h"
-dl_mesh* box = dl_mesh_load("tests/box.obj");
-const char* const args[] = {"--lat", "41.98", "--lon", "-87.92", "--tz", "-6", "--quantity", "sunhours", "--time", "06-21T12:00"};
-dl_result* r = NULL;
-if (dl_run(DL_DAYLIGHT, 10, args, &box, 1, NULL, 0, NULL, &r) != DL_OK) fprintf(stderr, "%s\n", dl_last_error());
-double v[64];
-dl_result_values(r, v, 64);   /* 16 faces x 1 column (sunhours_front) */
+dl_mesh* box = dl_mesh_load("tests/box.obj");   /* meshes "ground" and "box": 16 faces */
+const char* const sun[] = {"--lat", "41.98", "--lon", "-87.92", "--tz", "-6", "--quantity", "sunhours", "--time", "06-21T12:00"};
+const char* const view[] = {"--fov", "360", "--offset", "1.6"};   /* an eye 1.6 m out from each face, all around */
+dl_result *r = NULL, *w = NULL;
+double v[80];
+if (dl_run(DL_DAYLIGHT, 10, sun, &box, 1, NULL, 0, NULL, &r) != DL_OK) fprintf(stderr, "%s\n", dl_last_error());
+dl_result_values(r, v, 80);   /* 16 faces x 1 column (sunhours_front) */
+if (dl_run(DL_VIEWS, 4, view, &box, 1, NULL, 0, NULL, &w) != DL_OK) fprintf(stderr, "%s\n", dl_last_error());
+dl_result_values(w, v, 80);   /* 16 x 5: sky, ground, obstruction, distance, distance_min; the same GPU scene */
 dl_result_free(r);
+dl_result_free(w);
 dl_mesh_free(box);
 ```
+
+## Examples
+
+[examples/c/example.c](../examples/c/example.c) runs both tools from plain C: `dl_mesh_load` of `tests/box.obj` (meshes
+`ground` and `box`) and a 4 x 3 m facade from arrays (`dl_mesh_create`), a clear-sky year of daylight with a
+`dl_control` (progress), views with `--target box=cube` over the same handles (the resident scene:
+`dl_result_stats[0]` = 1), the means per mesh from the values and the manifest's ranges, a cancelled run and a target
+name the meshes do not resolve. The CMake target `example_c` links `daylight_c.lib` (built when the repo is the
+top-level project); ctest `example_c` runs it. From the repo root:
+
+```
+build\RelWithDebInfo\example_c.exe tests
+daylight: 18 rows, scene reused 0, progress 1
+  columns "radiation_front", "sunhours_front"
+  ground  4 faces:      1384      4137
+  box    12 faces:     914.5      2207
+  facade  2 faces:      1554      3522
+views: 18 rows, scene reused 1
+  columns "sky_front", "ground_front", "obstruction_front", "cube_front", "distance_front", "distance_min_front"
+  ground  4 faces:    0.7096         0    0.1118    0.1786     352.5     1.546
+  box    12 faces:    0.3824    0.1991    0.4185         0     108.5     1.148
+  facade  2 faces:    0.4174     0.325    0.1814   0.07617     40.55     1.282
+cancelled run: status 2, cancelled
+bad target: status 1, --target tree=green: no mesh of that name
+```
+
+The C++ library in-process, both tools: [cpp.md](cpp.md) and [examples/cpp/example.cpp](../examples/cpp/example.cpp).
+Every example, in every language, and `examples/run.ps1`, which runs them all: [examples.md](examples.md).
 
 ## Loading the DLL
 
@@ -105,7 +137,8 @@ dl_mesh_free(box);
   `msvcp140.dll`: install the redistributable or copy them beside the DLL). No CUDA toolkit DLL: the CUDA runtime is
   linked in.
 - C#: next to the managed `Daylight.dll`, or `DAYLIGHT_DLL`. Python: `DAYLIGHT_DLL`, next to the package, or
-  `<repo>/build/RelWithDebInfo/`. Node: `DAYLIGHT_DLL` or the same build folder. Each loads it by absolute path.
+  `<repo>/build/RelWithDebInfo/`. Node: `init(path)`, `DAYLIGHT_DLL` or the same build folder. Each loads it by
+  absolute path.
 - Never unload it (`FreeLibrary`): the static CUDA runtime does not support unloading; process exit is fine.
 
 ## Limits

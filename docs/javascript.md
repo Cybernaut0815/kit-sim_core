@@ -174,7 +174,8 @@ await applyToThree(roofMesh, r.data[r.columns.indexOf('radiation_front')]);   //
 ### In a browser
 
 `runRemote` sends the job to the web app's server (`daylight_server`; its API is documented at `/docs` and
-`/openapi.json` on the server), which queues the jobs of all its users for the GPU:
+`/openapi.json` on the server), which queues the jobs of all its users for the GPU. The server and the web app live in
+a separate repository that is private for now; without it, run the tools in Node (above). A job on the server:
 
 ```ts
 import { fromThree, runRemote } from 'daylight-mesh';

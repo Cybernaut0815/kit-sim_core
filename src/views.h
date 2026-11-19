@@ -8,7 +8,7 @@
 namespace daylight::views {
 
 // Rays ending on mesh `mesh` (Mesh::name, as --no-occlude) count for `group` ([A-Za-z0-9_-]+, not sky, ground,
-// obstruction, distance*, reach*, *_distance or *_distance_min); several meshes may share a group, at most 16 groups.
+// obstruction, glazing, distance*, reach*, *_distance or *_distance_min); several meshes may share a group, at most 16 groups.
 struct Target { std::string mesh, group; };
 
 struct Options : RunOptions {

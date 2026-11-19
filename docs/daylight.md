@@ -32,6 +32,26 @@ Mesh files, roles and names: [input.md](input.md). Build: `cmake --build --prese
 `build/RelWithDebInfo/daylight.exe` beside `views.exe` (the same `src/main.cpp`). C++ API: [cpp.md](cpp.md#daylight);
 the other languages: [api.md](api.md). Timings: [performance.md](performance.md).
 
+## Mesh roles
+
+The same roles and flags as views ([views.md](views.md#mesh-roles)), so one set of meshes serves both tools:
+
+| role | CLI | C++ |
+|---|---|---|
+| sensor: analysed (a row per element), casts shade | positional `FILE...` | `Mesh::sensor = true` (`MeshView::sensor`) |
+| context: casts shade, never analysed | `--context FILE` | `sensor = false` |
+| analysed but invisible to rays (casts no shade), e.g. a grid of measuring points in a room | `--no-occlude NAME` (one sensor mesh), `--no-self-occlude` (every sensor mesh) | `noOcclude`, `selfOcclude = false` |
+| glass or porous: light passes by its transmittance | `--optics NAME[/SLOT]=RHO,TAU[,glass\|porous]` with `--transmission on` | `optics`, `transmission = true` |
+| ignored | not passed | not in the list |
+
+An interior: the room as context, a window as its own mesh with a glass row, the measuring grid under `--no-occlude`,
+as in views' [Glass and interiors](views.md#glass-and-interiors) (the same [tests/room.obj](../tests/room.obj) and
+[tests/room_grid.obj](../tests/room_grid.obj)):
+
+```
+daylight tests/room_grid.obj --context tests/room.obj --no-occlude grid --optics window=0,0.64,glass --transmission on --clear-sky --lat 52.52 --lon 13.41
+```
+
 ## Flags
 
 `daylight --help` prints the short form; the C++ `daylight::Options` field for each flag is given for in-process

@@ -169,8 +169,8 @@ size_t triangulate_into(const Mesh& m, const double c[3], float3* vOut, uint3* t
 
 size_t slot_count(const Mesh& m) { return m.slot.empty() ? 1 : size_t(*std::max_element(m.slot.begin(), m.slot.end())) + 1; }
 
-bool optics_ok(const Options& opt, std::string& err) {
-  for (const Optics& o : opt.optics) {
+bool optics_rows_ok(const std::vector<Optics>& rows, std::string& err) {
+  for (const Optics& o : rows) {
     const std::string row = "--optics " + o.mesh + (o.slot >= 0 ? "/" + std::to_string(o.slot) : "") + ": ";
     if (o.mesh.empty() || o.slot < -1 || o.slot > 65535 || (o.mesh == "*" && o.slot >= 0)) { err = row + "NAME (or *) with an optional /SLOT 0..65535"; return false; }
     if (!(o.rho >= 0 && o.rho <= 1 && o.tau >= 0 && o.tau <= 1)) { err = row + "RHO and TAU must be in 0..1"; return false; }
@@ -178,6 +178,11 @@ bool optics_ok(const Options& opt, std::string& err) {
     if (o.glass && o.rho != 0) { err = row + "glass reflects by angle: RHO must be 0"; return false; }
     if (o.glass && !(o.tau > 0 && o.tau <= 0.918)) { err = row + "glass TAU must be in (0, 0.918] (n 1.52 passes at most 0.918)"; return false; }
   }
+  return true;
+}
+
+bool optics_ok(const Options& opt, std::string& err) {
+  if (!optics_rows_ok(opt.optics, err)) return false;
   if (opt.transmission && opt.mode == Mode::Ladybug) { err = "--transmission on needs --mode physical (ladybug: every surface opaque and black)"; return false; }
   if (opt.bounces < 0 || opt.bounces > 20) { err = "--bounces must be 0..20"; return false; }
   if (opt.bounceSamples < 64 || opt.bounceSamples > 65536) { err = "--bounce-samples must be 64..65536"; return false; }
@@ -251,9 +256,9 @@ bool resolve_targets(const std::vector<MeshView>& meshes, const std::vector<view
       err = row + "GROUP takes letters, digits, _ and - only"; return false;
     }
     const auto ends = [&](const char* s) { const size_t n = std::strlen(s); return g.size() >= n && g.compare(g.size() - n, n, s) == 0; };
-    if (g == "sky" || g == "ground" || g == "obstruction" || g.rfind("distance", 0) == 0 || g.rfind("reach", 0) == 0 || ends("_distance") ||
-        ends("_distance_min")) {   // column names: another group's distances
-      err = row + "GROUP is reserved (sky, ground, obstruction, distance*, reach*, *_distance, *_distance_min)"; return false;
+    if (g == "sky" || g == "ground" || g == "obstruction" || g == "glazing" || g.rfind("distance", 0) == 0 || g.rfind("reach", 0) == 0 ||
+        ends("_distance") || ends("_distance_min")) {   // column names: another group's distances
+      err = row + "GROUP is reserved (sky, ground, obstruction, glazing, distance*, reach*, *_distance, *_distance_min)"; return false;
     }
     const size_t k = find_mesh(byName, t.mesh, row, err);
     if (k == SIZE_MAX) return false;

@@ -170,7 +170,8 @@ __global__ void k_series_dc(unsigned nc, Dc dc, const float* S, int T, float* E)
 // Views: one warp per sensor i, lane l sums the directions l, l + 32, ... in order (weight w = wRow[row], double) per class
 // c: w, w x ln d, min d with d = the distance clamped to [0.1, farDist] (open: farDist); the own-surface weight; per reach
 // threshold the weight of distances >= it. Then a fixed shuffle tree adds the lanes, so a sensor's sums do not depend on
-// the chunk it is in. out[i*NA + a]: per class (w, w ln d, min d), then own, then the reach sums. The rays are
+// the chunk it is in. out[i*NA + a]: per class (w, w ln d, min d), then own, then the reach sums, then (glazing) the
+// weight of the rays that passed glass (cls | kViewGlazed; their class is what lies behind). The rays are
 // direction-major (cls[d*nc + i], as __raygen__view stores them): a lane's loads are strided, the block's 8 sensors
 // share their sectors.
 // ponytail: ln d in float (~1e-7 relative in a log mean; the clamps take exact logs, and views.cpp's store() gives a mean
@@ -182,24 +183,25 @@ __device__ __forceinline__ double warp_sum(double v) {
   return v;
 }
 __global__ void k_view(unsigned nc, unsigned K, unsigned nAz, const unsigned char* cls, const float* dist, const double* wRow,
-                       unsigned nClass, float farDist, double lnFar, unsigned nReach, Reach reach, double* out) {
+                       unsigned nClass, float farDist, double lnFar, unsigned nReach, Reach reach, unsigned glazing, double* out) {
   const unsigned i = blockIdx.x * (blockDim.x / 32) + threadIdx.x / 32, lane = threadIdx.x & 31;
   if (i >= nc) return;   // whole warps
-  double w[kViewClasses] = {}, wl[kViewClasses] = {}, rc[8] = {}, own = 0;
+  double w[kViewClasses] = {}, wl[kViewClasses] = {}, rc[8] = {}, own = 0, gz = 0;
   float mn[kViewClasses];
   for (unsigned c = 0; c < kViewClasses; ++c) mn[c] = __int_as_float(0x7f800000);
   for (unsigned d = lane; d < K; d += 32) {
-    const unsigned c = cls[size_t(d) * nc + i];
+    unsigned c = cls[size_t(d) * nc + i];
     const float t = dist[size_t(d) * nc + i];
     const double wd = wRow[d / nAz];
     if (c == 254) { own += wd; continue; }
+    if (c & kViewGlazed) { gz += wd; c &= ~unsigned(kViewGlazed); }   // passed glass: its class is what lies behind
     const float dd = fminf(fmaxf(t, 0.1f), farDist);
     w[c] += wd;
     wl[c] += wd * (dd == farDist ? lnFar : dd == 0.1f ? -2.302585092994045684 : (double)logf(dd));   // ln 0.1
     mn[c] = fminf(mn[c], dd);
     for (unsigned r = 0; r < nReach; ++r) if (t >= reach.d[r]) rc[r] += wd;
   }
-  double* o = out + size_t(i) * (3 * nClass + 1 + nReach);
+  double* o = out + size_t(i) * (3 * nClass + 1 + nReach + glazing);
   for (unsigned c = 0; c < nClass; ++c) {
     float m = mn[c];
     for (unsigned s = 16; s; s >>= 1) m = fminf(m, __shfl_down_sync(~0u, m, s));
@@ -211,6 +213,10 @@ __global__ void k_view(unsigned nc, unsigned K, unsigned nAz, const unsigned cha
   for (unsigned r = 0; r < nReach; ++r) {
     const double a = warp_sum(rc[r]);
     if (!lane) o[3 * nClass + 1 + r] = a;
+  }
+  if (glazing) {
+    const double a = warp_sum(gz);
+    if (!lane) o[3 * nClass + 1 + nReach] = a;
   }
 }
 
@@ -610,11 +616,11 @@ bool gpu_series(Gpu& g, size_t nc, const SeriesIn& in, float* E, std::string& er
 }
 
 bool gpu_reduce_view(Gpu& g, size_t nc, const std::vector<double>& wRow, unsigned nClass, double farDist, const std::vector<float>& reach,
-                     double* out, std::string& err) {
+                     bool glazing, double* out, std::string& err) {
   if (nc == 0) return true;
   if (nc != g.viewN) { err = "gpu_reduce_view: no gpu_view for this chunk"; return false; }
   if (nClass > kViewClasses || reach.size() > 8) { err = "gpu_reduce_view: at most 16 groups and 8 reach distances"; return false; }
-  const size_t NA = 3 * nClass + 1 + reach.size();
+  const size_t NA = 3 * nClass + 1 + reach.size() + (glazing ? 1 : 0);
   if (!grow(&g.dScratch, &g.scratchCap, wRow.size() * sizeof(double), err) || !grow(&g.dOut, &g.outCap, nc * NA * sizeof(double), err)) return false;
   CU(cudaMemcpy(g.dScratch, wRow.data(), wRow.size() * sizeof(double), cudaMemcpyHostToDevice));
   Reach r = {};
@@ -622,7 +628,8 @@ bool gpu_reduce_view(Gpu& g, size_t nc, const std::vector<double>& wRow, unsigne
   const char* b = static_cast<const char*>(g.dView);
   k_view<<<unsigned((nc + 7) / 8), 256>>>((unsigned)nc, (unsigned)g.viewK, (unsigned)g.viewNAz, reinterpret_cast<const unsigned char*>(b),
                                          reinterpret_cast<const float*>(b + view_dist(nc * g.viewK)), static_cast<const double*>(g.dScratch),
-                                         nClass, float(farDist), std::log(farDist), (unsigned)reach.size(), r, static_cast<double*>(g.dOut));
+                                         nClass, float(farDist), std::log(farDist), (unsigned)reach.size(), r, glazing ? 1u : 0u,
+                                         static_cast<double*>(g.dOut));
   CU(cudaGetLastError());
   CU(cudaMemcpy(out, g.dOut, nc * NA * sizeof(double), cudaMemcpyDeviceToHost));
   return true;

@@ -235,6 +235,23 @@ int main(int argc, char** argv) {
   CHECK(v5 && n5 == 5 && fabs(v5[0] - 0.4490987851112869) < 1e-9 && fabs(v5[1] - 0.5509012148887131) < 1e-9 && v5[2] == 0);
   CHECK(r5 && has(dl_result_manifest(r5), "\"columns\": [\"sky_front\", \"ground_front\", \"obstruction_front\""));
 
+  /* an interior through the DLL: the measure grid ignored by the rays, the window glass passed (glazing_front) */
+  {
+    dl_mesh* grid = dl_mesh_load(join(p, sizeof p, tests, "room_grid.obj"));
+    dl_mesh* room = dl_mesh_load(join(p, sizeof p, tests, "room.obj"));
+    const char* const in[] = {"--fov", "360", "--offset", "0.4", "--no-occlude", "grid", "--optics", "window=0,0.64,glass",
+                              "--transmission", "on", "--cell", "6"};
+    dl_result* ri = NULL;
+    CHECK(grid && room && dl_run(DL_VIEWS, 12, in, &grid, 1, &room, 1, NULL, &ri) == DL_OK && dl_result_rows(ri) == 12);
+    CHECK(ri && has(dl_result_manifest(ri), "\"glazing_front\"") && has(dl_result_manifest(ri), "\"transmission\": true"));
+    const char* const unknown[] = {"--optics", "nosuch=0,0.5,glass", "--transmission", "on"};
+    dl_result* rx = NULL;
+    CHECK(dl_run(DL_VIEWS, 4, unknown, &grid, 1, &room, 1, NULL, &rx) == DL_USAGE && rx == NULL && has(dl_last_error(), "nosuch"));
+    dl_result_free(ri);
+    dl_mesh_free(grid);
+    dl_mesh_free(room);
+  }
+
   /* cancel: a cancelled control fails the run as it starts; the next run works */
   dl_control* stop = dl_control_create();
   dl_control_cancel(stop);

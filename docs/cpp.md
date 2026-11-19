@@ -137,7 +137,7 @@ model is part of the time too.
 | `lat`, `lon`, `tz` | NAN | the weather's; set them for a run without weather (sun hours) or to override it |
 | `mf`, `patchSamples` | 1, 1 | sky density (145 patches), stratified rays per patch |
 | `ground` | 0.2 | ground reflectance |
-| `optics`, `transmission`, `fresnel`, `bounces`, `bounceSamples` | none, false, true, 0, 1024 | materials and reflected light, below |
+| `fresnel`, `bounces`, `bounceSamples` (and `optics`, `transmission` of `RunOptions`) | true, 0, 1024 (none, false) | materials and reflected light, below |
 | `seriesPath`, `dumpBitsPath`, `dumpSky`, `dumpSun` | empty | the time series and validation dumps (files) |
 
 `weather` may be `nullptr` only when every quantity is `SunHours` (then `lat`, `lon` and `tz` give the place). Optics:
@@ -149,8 +149,9 @@ a row given twice).
 
 The fields both tools take alike are in `daylight::RunOptions`, the base of `daylight::Options` and
 `daylight::views::Options`: `sides`, `cullBackfaces`, `onVertices`, `selfOcclude`, `noOcclude`, `north`, `offset`,
-`virtualGround` (daylight's ground light, views' ground plane), `sceneKey`, `residentScenes`, `cancel`, `progress`,
-`verbose`, `chunkBytes`, `f32Columns`.
+`virtualGround` (daylight's ground light, views' ground plane), `optics` and `transmission` (daylight: light through
+glass and porous slots; views: rays pass glass slots, [views.md](views.md#glass-and-interiors)), `sceneKey`,
+`residentScenes`, `cancel`, `progress`, `verbose`, `chunkBytes`, `f32Columns`.
 
 ## Views
 

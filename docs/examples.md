@@ -50,7 +50,7 @@ PASS  cli                  3.8 s
 ## CLI
 
 [examples/cli/run.ps1](../examples/cli/run.ps1) runs `daylight.exe` and `views.exe` on `tests/box.obj`, where both
-meshes are sensors and block. Each run writes its values (text, a line per face) and manifest to `examples/cli/out/`;
+meshes are sensors and block, then both on an interior (`tests/room.obj` with its measure grid `tests/room_grid.obj`). Each run writes its values (text, a line per face) and manifest to `examples/cli/out/`;
 the script prints the command (the exes are in `build\RelWithDebInfo\`) and per mesh the mean of each column over its
 faces, without the `_front` of the column names.
 
@@ -70,6 +70,10 @@ views tests/box.obj --fov 120 --target ground=lawn --reach en17037 --out example
   box    12 faces  sky 0.47  ground 0.24  lawn 0.29  obstruction 0  distance 193.31  reach_20 0.49
 views tests/box.obj --fov 360 --offset 1.6 --target ground=lawn --target box=cube --reach en17037 --out examples/cli/out/eye.txt
   ground  4 faces  sky 0.45  ground 0.3  lawn 0.12  cube 0.13  distance 41.2  reach_20 0.49
+views tests/room_grid.obj --context tests/room.obj --fov 360 --offset 0.4 --target tree=green --no-occlude grid --optics window=0,0.64,glass --transmission on --reach en17037 --out examples/cli/out/interior.txt
+  grid   12 faces  sky 0.02  ground 0.01  green 0.01  glazing 0.03  distance 2.68  reach_6 0.03
+daylight tests/room_grid.obj --context tests/room.obj --clear-sky --lat 52.52 --lon 13.41 --no-occlude grid --optics window=0,0.64,glass --transmission on --quantity radiation,sunhours --out examples/cli/out/interior_light.txt
+  grid   12 faces  radiation 52.9  sunhours 198.85
 ```
 
 - `year`, daylight: a clear-sky year in Berlin without a weather file (cloudless: an upper bound, [modes.md](modes.md)).
@@ -88,6 +92,13 @@ views tests/box.obj --fov 360 --offset 1.6 --target ground=lawn --target box=cub
   50 deg up). Nothing rises above it, so its sky is sin 50 / (sin 50 + sin 70) = 0.449 of the field; the ground quads
   below fill 12 %, the box 13 % (most of it seen from the quad it floats over), the virtual ground beyond them 30 %.
   Only the ground's rows are printed: the box's faces get eyes 1.6 m out too, which mean nothing here.
+- `interior`, views: a room with a window in its south wall and a tree outside; the measure grid at desk height
+  (0.8 m) is kept out of the rays (`--no-occlude grid`), the eye 0.4 m above it, all around. The window is glass
+  (`--optics window=0,0.64,glass`) and `--transmission on` lets the rays pass it: 2 % sky, 1 % ground and 1 % tree
+  seen through it, `glazing` 3 % (the share seen through glass), the rest the room, 2.7 m away on log mean. Without
+  `--transmission on` the window blocks and the room is closed ([views.md](views.md#glass-and-interiors)).
+- `interior_light`, daylight: the same files and roles, the light that comes in through the window over a clear-sky
+  year (glass passes 0.64 at normal incidence, less at grazing angles).
 
 ## C++ and C
 

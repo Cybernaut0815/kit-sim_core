@@ -11,6 +11,7 @@ open ones good; an open ray counts as `--far` (1000 m), good but bounded.
 views facade.obj --context city.obj --out v.txt                                    # view mode: 120 x 120 deg about each face's normal
 views facade.obj --context city.obj --context lake.obj --target lake=water --reach en17037 --out v.npy
 views floor.obj --context city.obj --no-occlude floor --fov 360 --offset 1.6 --out v.txt   # a standing eye, all around (flat floor)
+views grid.obj --context room.obj --no-occlude grid --fov 360 --offset 1.2 --optics window=0,0.64,glass --transmission on   # interior
 views --bench                                                                         # street-grid city, timings only
 ```
 
@@ -149,14 +150,46 @@ clamp (an all-open view, a target wholly beyond `--far`) is `--far` exactly.
 | context: blocks rays (an obstruction), never analysed | `--context FILE` | `sensor = false` |
 | target: rays ending on it count for its group | `--target NAME=GROUP`, NAME a context or receiver mesh | `views::Options::targets` |
 | analysed but invisible to rays (casts no shade) | `--no-occlude NAME` (one receiver mesh), `--no-self-occlude` (every receiver) | `noOcclude`, `selfOcclude = false` |
+| glass the rays look through (a window) | `--optics NAME[/SLOT]=0,TAU,glass` with `--transmission on` | `optics`, `transmission = true` |
 | ignored | not passed | not in the list |
 
 Target rules: NAME as in `--no-occlude` (`.dmesh` file stem, OBJ `o`/`g` group, USD prim path); the token splits at its
 last `=`; several meshes may share a GROUP; at most 16 groups. GROUP takes letters, digits, `_` and `-` and is not
-`sky`, `ground`, `obstruction`, a name starting with `distance` or `reach`, or one ending in `_distance` or
-`_distance_min` (another group's distance columns). Exit 1 after loading (library: `run()` fails) on an unknown or
+`sky`, `ground`, `obstruction`, `glazing`, a name starting with `distance` or `reach`, or one ending in `_distance`
+or `_distance_min` (another group's distance columns). Exit 1 after loading (library: `run()` fails) on an unknown or
 ambiguous name, a mesh named twice, a mesh that blocks no rays (a receiver under `--no-occlude` or `--no-self-occlude`)
-and a face slot `NAME/SLOT` (not supported yet: target the whole mesh).
+and a face slot `NAME/SLOT` (not supported yet: target the whole mesh). A target made only of passed glass (with
+`--transmission on`) fails the run (exit 2): no ray can end on it.
+
+These roles and their flags are daylight's ([daylight.md](daylight.md#mesh-roles)): a grid of measuring points under
+`--no-occlude`, a window as a glass `--optics` row, the same meshes and files serve both tools.
+
+## Glass and interiors
+
+By default every surface blocks, glass included: a window is an obstruction at its pane. `--transmission on` lets the
+rays pass glass: the faces whose `--optics` row is glass (`NAME[/SLOT]=0,TAU,glass`, daylight's rows and numbers) are
+passed whatever their TAU, and a ray's class and distance are those of what lies behind. Porous slots (trees,
+screens) and everything else still block: they are what one looks at. Each ray that passed glass also counts for
+the column `glazing_<side>`, the share of the field seen through glass (outside the shares that sum to 1: a ray
+through a window to the sky counts for `sky` and for `glazing`); `--dump-rays` adds 128 to its class. A ray passes at
+most 16 panes, then ends as an obstruction at the next. `--optics` without `--transmission on` changes nothing, and
+with `--transmission off` (the default) the numbers are those of the opaque scene, bit for bit. Glass is a label of
+the run, not of the scene: the resident scene stays daylight's and is reused.
+
+Interiors: the room as context, its windows as meshes of their own (or face slots) with a glass row, the measuring
+points as a receiver mesh that `--no-occlude` keeps out of the rays, and all around from eye height (`--offset` above
+the grid). [tests/room.obj](../tests/room.obj) is such a room (6.3 x 5.1 x 2.9 m, a window in its south wall, a tree
+7.3 m outside) and [tests/room_grid.obj](../tests/room_grid.obj) its 12-face grid at desk height (0.8 m; the eye
+0.4 m above it):
+
+```
+views tests/room_grid.obj --context tests/room.obj --no-occlude grid --fov 360 --offset 0.4 --target tree=green --optics window=0,0.64,glass --transmission on --reach en17037
+```
+
+Over the 12 faces the field holds on average 1.8 % sky, 0.5 % ground and 0.9 % tree seen through the window, 3.3 %
+glazing, the rest the room (log-mean distance 2.7 m; 3.4 % of the field sees at least 6 m, 1.9 % at least 50 m). With
+`--transmission off` the room is closed: obstruction 1, nothing reaches 20 m. daylight takes the same files and flags
+(`--no-occlude grid --optics window=0,0.64,glass --transmission on`) for the light that comes in through the window.
 
 ## Flags
 
@@ -180,6 +213,8 @@ and a face slot `NAME/SLOT` (not supported yet: target the whole mesh).
 | `--cull-backfaces` | flag | off | occluder triangles block only from their front (winding) side; default both sides | `cullBackfaces` |
 | `--no-self-occlude` | flag | off | receivers block no rays (only `--context` meshes do); none of them can then be a target | `selfOcclude = false` |
 | `--no-occlude NAME[;NAME...]` | receiver mesh names, repeatable | none | these receivers are analysed but invisible to rays, e.g. a grid of measuring points that must not block | `noOcclude` |
+| `--optics SPEC[;SPEC...]` | `NAME[/SLOT]=RHO[,TAU[,glass\|porous]]`, repeatable | none | daylight's rows ([daylight.md](daylight.md)); views uses only which slots are glass with TAU > 0, and only with `--transmission on`; names and ranges checked as in daylight (exit 1) | `optics` |
+| `--transmission` | `off` \| `on` | `off` | `on`: rays pass glass slots and the `glazing` column is added ([Glass and interiors](#glass-and-interiors)) | `transmission` |
 | `--north DEG` | degrees, counter-clockwise from +Y | `0` | model north (90 = west): 360 mode's azimuth 0, and the east a face looking straight up or down takes as right | `north` |
 | `--offset M` | metres | `0` | the eye moved along the normal (e.g. 1.6 above a floor grid: a standing eye); in 360 mode a non-zero offset also traces the directions behind the element | `offset` |
 | `--out FILE[.npy]` | path | stdout (no manifest) | values: text (one line per element, `%.10g`) or NumPy float64 `[N x C]`; manifest at `FILE.json` | `Result` |
@@ -199,15 +234,16 @@ a file, the scene, CUDA / OptiX, memory, writing the output, a `--dump-rays` abo
   the manifest's `meshes` ranges map them back.
 - Columns `<name>_<side>` (sides inner: `sky_front`, `sky_back`, ...; `--sides back` gives `_back` only), in this order:
   the shares `sky`, `ground`, `obstruction` and one per target group (first appearance in `--target`), which sum to 1;
-  then `distance`, `distance_min`, per group `<g>_distance` and `<g>_distance_min`; then `reach_<D>` (D as `%g`:
+  with `--transmission on` then `glazing` (the share seen through glass, not part of that sum); then `distance`, `distance_min`, per group `<g>_distance` and `<g>_distance_min`; then `reach_<D>` (D as `%g`:
   `reach_6`, `reach_2.5`). Default columns with one group: `sky_front ground_front obstruction_front water_front
   distance_front distance_min_front`.
 - Manifest `FILE.json`: `columns`; `view` with the field (`fov` [H, LO, HI], `cell` as given, `grid` [rows, columns]),
   `jitter`, `north`, `offset`, `far`, `near` (the 0.1 m floor), `virtual_ground`, `ground_z` (the plane's height in
-  input metres, also with the plane off), `reach`, `classes` (the dump's class names in code order) and `image` (the
+  input metres, also with the plane off), `transmission: true` (only when on), `reach`, `classes` (the dump's class names in code order) and `image` (the
   dump's ray order); `targets`; `meshes` as daylight's. No `duration_h` or `dirs`. An example is in the examples below.
 - `--dump-rays F.npy` (validation, images): `F.npy` uint8 `[S x K]`, the class of every ray: 0 sky, 1 ground,
-  2 obstruction, 3 + g the target group `classes[3 + g]`, 254 own surface; `F.npy.depth.npy` float32 `[S x K]`, its
+  2 obstruction, 3 + g the target group `classes[3 + g]`, + 128 when the ray passed glass, 254 own surface;
+  `F.npy.depth.npy` float32 `[S x K]`, its
   distance in metres, true (not clamped): the hit's, the virtual plane's (0.1 for an eye at or below the plane), +inf
   for sky, own surface and, with `--virtual-ground off`, ground. S = one row per element and side (`--sides both`:
   element e's front at row 2e, its back at 2e + 1); K = rows x columns, ray `row x columns + column`, so a row reshapes
@@ -350,9 +386,8 @@ views plaza.obj --context facade.obj --context site.obj --fov 360
 
 ## Limits
 
-- Opaque surfaces only: every triangle blocks and is seen; there is no glass or porous class (daylight's `--optics`
-  and `--transmission` do not apply). Glass in the model is an obstruction: leave a window's glazing out to look
-  through it.
+- Glass is passed or not (`--transmission on`): no refraction, no reflections in it, and a porous slot blocks like an
+  opaque one. At most 16 panes per ray.
 - Targets are whole meshes: face-slot targets (`NAME/SLOT`) are not supported yet; split such a mesh. At most 16
   target groups and 8 reach distances.
 - Coplanar triangles of two meshes z-fight (a target lying on a terrain mesh): lift targets at least 1 cm above the

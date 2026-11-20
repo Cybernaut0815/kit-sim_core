@@ -37,7 +37,8 @@ struct Gpu {
   void* dScratch = nullptr; size_t scratchCap = 0;   // reduce / series inputs
   void* dOut = nullptr; size_t outCap = 0;           // reduce / series outputs
   void* dView = nullptr; size_t viewCap = 0;         // the last gpu_view's classes | distances (view_dist) | row sines
-  size_t viewN = 0, viewK = 0, viewNAz = 0;          // ... its sensors, directions, columns
+  size_t viewN = 0, viewK = 0, viewI0 = 0;           // ... its sensors, directions, first sensor
+  ViewLaunch view;                                   // ... its grid (rowSin: the host's, gone)
   void* dLabel = nullptr;                            // views: class per triangle (gpu_set_labels), null: none
   cudaEvent_t ev[2] = {};
   GpuStats stats;
@@ -182,14 +183,49 @@ __device__ __forceinline__ double warp_sum(double v) {
   for (unsigned s = 16; s; s >>= 1) v += __shfl_down_sync(~0u, v, s);
   return v;
 }
+
+// Isovist (dim 2: the area of the polygon, dim 3: the volume of the mesh through the rays' end points): ray d ends at
+// min(t, far) x its direction in the field's own frame (view_local, the raygen's jitter; area and volume do not depend on
+// the frame), own surface at the eye. Direction d anchors the segment to the next column (360: the last wraps to the
+// first), in 3D the quad down to the next row: tetrahedra eye-A-B-C and eye-B-D-C, det[a, b, c] = a . ((b - a) x (c - a))
+// so the float directions' rounding stays relative to the cell, not to 1.
+// ponytail: each lane computes its corners' directions anew (4 per quad); share them through shuffles if the reduce
+// time matters
+struct Iso {
+  unsigned dim = 0, world = 0, jitter = 0, i0 = 0, nS = 1, back = 0, nAz = 1, nEl = 1;
+  float az0 = 0, dAz = 1;
+  const float2* rowSin = nullptr;   // device
+  double farD = 0;   // not "far": a windef.h macro
+};
+__device__ __forceinline__ float3 sub3(float3 a, float3 b) { return make_float3(a.x - b.x, a.y - b.y, a.z - b.z); }
+__device__ __forceinline__ float det3(float3 a, float3 b, float3 c) {
+  const float3 u = sub3(b, a), v = sub3(c, a);
+  return a.x * (u.y * v.z - u.z * v.y) + a.y * (u.z * v.x - u.x * v.z) + a.z * (u.x * v.y - u.y * v.x);
+}
+__device__ double iso_cell(const Iso& s, const unsigned char* cls, const float* dist, unsigned nc, unsigned i, unsigned d) {
+  const unsigned row = d / s.nAz, col = d % s.nAz, gi = s.i0 + i, element = gi / s.nS, side = s.nS == 2 ? gi % 2 : s.back;
+  if (col + 1 == s.nAz && !s.world) return 0;   // a fan's last column: no segment on
+  const unsigned d1 = d - col + (col + 1) % s.nAz;   // the next column
+  const auto len = [&](unsigned k) { const size_t at = size_t(k) * nc + i; return cls[at] == 254 ? 0. : fmin(double(dist[at]), s.farD); };
+  const auto dir = [&](unsigned k) { return view_local(k, s.nAz, s.rowSin, s.az0, s.dAz, s.jitter, element, side); };
+  const float3 a = dir(d), b = dir(d1);
+  if (s.dim == 2) return 0.5 * len(d) * len(d1) * double(a.y * b.x - a.x * b.y);   // sin of the turn, clockwise
+  if (row + 1 == s.nEl) return 0;
+  const unsigned d2 = d + s.nAz, d3 = d1 + s.nAz;   // the row below
+  const float3 c = dir(d2), e = dir(d3);
+  const double la = len(d), lb = len(d1), lc = len(d2);
+  return (la * lb * lc * double(det3(a, b, c)) + lb * len(d3) * lc * double(det3(b, e, c))) / 6;
+}
+
 __global__ void k_view(unsigned nc, unsigned K, unsigned nAz, const unsigned char* cls, const float* dist, const double* wRow,
-                       unsigned nClass, float farDist, double lnFar, unsigned nReach, Reach reach, unsigned glazing, double* out) {
+                       unsigned nClass, float farDist, double lnFar, unsigned nReach, Reach reach, unsigned glazing, Iso iso, double* out) {
   const unsigned i = blockIdx.x * (blockDim.x / 32) + threadIdx.x / 32, lane = threadIdx.x & 31;
   if (i >= nc) return;   // whole warps
-  double w[kViewClasses] = {}, wl[kViewClasses] = {}, rc[8] = {}, own = 0, gz = 0;
+  double w[kViewClasses] = {}, wl[kViewClasses] = {}, rc[8] = {}, own = 0, gz = 0, vol = 0;
   float mn[kViewClasses];
   for (unsigned c = 0; c < kViewClasses; ++c) mn[c] = __int_as_float(0x7f800000);
   for (unsigned d = lane; d < K; d += 32) {
+    if (iso.dim) vol += iso_cell(iso, cls, dist, nc, i, d);
     unsigned c = cls[size_t(d) * nc + i];
     const float t = dist[size_t(d) * nc + i];
     const double wd = wRow[d / nAz];
@@ -201,7 +237,7 @@ __global__ void k_view(unsigned nc, unsigned K, unsigned nAz, const unsigned cha
     mn[c] = fminf(mn[c], dd);
     for (unsigned r = 0; r < nReach; ++r) if (t >= reach.d[r]) rc[r] += wd;
   }
-  double* o = out + size_t(i) * (3 * nClass + 1 + nReach + glazing);
+  double* o = out + size_t(i) * (3 * nClass + 1 + nReach + glazing + (iso.dim ? 1 : 0));
   for (unsigned c = 0; c < nClass; ++c) {
     float m = mn[c];
     for (unsigned s = 16; s; s >>= 1) m = fminf(m, __shfl_down_sync(~0u, m, s));
@@ -217,6 +253,10 @@ __global__ void k_view(unsigned nc, unsigned K, unsigned nAz, const unsigned cha
   if (glazing) {
     const double a = warp_sum(gz);
     if (!lane) o[3 * nClass + 1 + nReach] = a;
+  }
+  if (iso.dim) {
+    const double a = warp_sum(vol);
+    if (!lane) o[3 * nClass + 1 + nReach + glazing] = a;
   }
 }
 
@@ -520,7 +560,7 @@ bool gpu_view(Gpu& g, size_t i0, size_t nc, unsigned rayFlags, const ViewLaunch&
   if (i0 + nc > g.nSensors) { err = "gpu_view: sensor range exceeds the scene"; return false; }
   const size_t K = size_t(v.nAz) * v.nEl, nWords = (K + 31) / 32, sines = view_dist(nc * K) + view_dist(nc * K * sizeof(float));
   if (!grow(&g.dView, &g.viewCap, sines + v.nEl * sizeof(float2), err)) return false;
-  g.viewN = nc; g.viewK = K; g.viewNAz = v.nAz;
+  g.viewN = nc; g.viewK = K; g.viewI0 = i0; g.view = v; g.view.rowSin = nullptr;
   char* b = static_cast<char*>(g.dView);
   CU(cudaMemcpy(b + sines, v.rowSin, v.nEl * sizeof(float2), cudaMemcpyHostToDevice));
   if (nc == 0 || K == 0) return true;
@@ -616,19 +656,24 @@ bool gpu_series(Gpu& g, size_t nc, const SeriesIn& in, float* E, std::string& er
 }
 
 bool gpu_reduce_view(Gpu& g, size_t nc, const std::vector<double>& wRow, unsigned nClass, double farDist, const std::vector<float>& reach,
-                     bool glazing, double* out, std::string& err) {
+                     bool glazing, unsigned isoDim, double* out, std::string& err) {
   if (nc == 0) return true;
   if (nc != g.viewN) { err = "gpu_reduce_view: no gpu_view for this chunk"; return false; }
   if (nClass > kViewClasses || reach.size() > 8) { err = "gpu_reduce_view: at most 16 groups and 8 reach distances"; return false; }
-  const size_t NA = 3 * nClass + 1 + reach.size() + (glazing ? 1 : 0);
+  const size_t NA = 3 * nClass + 1 + reach.size() + (glazing ? 1 : 0) + (isoDim ? 1 : 0);
   if (!grow(&g.dScratch, &g.scratchCap, wRow.size() * sizeof(double), err) || !grow(&g.dOut, &g.outCap, nc * NA * sizeof(double), err)) return false;
   CU(cudaMemcpy(g.dScratch, wRow.data(), wRow.size() * sizeof(double), cudaMemcpyHostToDevice));
   Reach r = {};
   std::copy(reach.begin(), reach.end(), r.d);
   const char* b = static_cast<const char*>(g.dView);
-  k_view<<<unsigned((nc + 7) / 8), 256>>>((unsigned)nc, (unsigned)g.viewK, (unsigned)g.viewNAz, reinterpret_cast<const unsigned char*>(b),
+  const ViewLaunch& v = g.view;
+  Iso iso;
+  iso.dim = isoDim; iso.world = v.world; iso.jitter = v.jitter; iso.i0 = unsigned(g.viewI0); iso.nS = v.nS; iso.back = v.back;
+  iso.nAz = v.nAz; iso.nEl = v.nEl; iso.az0 = v.az0; iso.dAz = v.dAz; iso.farD = farDist;
+  iso.rowSin = reinterpret_cast<const float2*>(b + view_dist(nc * g.viewK) + view_dist(nc * g.viewK * sizeof(float)));   // as gpu_view put them
+  k_view<<<unsigned((nc + 7) / 8), 256>>>((unsigned)nc, (unsigned)g.viewK, v.nAz, reinterpret_cast<const unsigned char*>(b),
                                          reinterpret_cast<const float*>(b + view_dist(nc * g.viewK)), static_cast<const double*>(g.dScratch),
-                                         nClass, float(farDist), std::log(farDist), (unsigned)reach.size(), r, glazing ? 1u : 0u,
+                                         nClass, float(farDist), std::log(farDist), (unsigned)reach.size(), r, glazing ? 1u : 0u, iso,
                                          static_cast<double*>(g.dOut));
   CU(cudaGetLastError());
   CU(cudaMemcpy(out, g.dOut, nc * NA * sizeof(double), cudaMemcpyDeviceToHost));

@@ -199,12 +199,14 @@ bool gpu_set_labels(Gpu& g, const std::vector<uint8_t>& label, std::string& err)
 // as gpu_trace's byte mode (2^13 threads first and at least, then ~40 ms, at most doubling), the size carried from chunk
 // to chunk in launch (0 = start over); v.cancel is checked between them.
 bool gpu_view(Gpu& g, size_t i0, size_t nc, unsigned rayFlags, const ViewLaunch& v, size_t& launch, std::string& err);
-// out (host, nc x NA doubles, NA = 3 nClass + 1 + reach.size()) for the last gpu_view: per sensor and class the weight,
-// weight x ln d and min d (d = the distance clamped to [0.1, farDist]; min +inf: the class is not in view), then the
-// own-surface weight, then per reach threshold the weight whose distance is at least it. wRow: weight per row.
+// out (host, nc x NA doubles, NA = 3 nClass + 1 + reach.size() + glazing + (isoDim > 0)) for the last gpu_view: per
+// sensor and class the weight, weight x ln d and min d (d = the distance clamped to [0.1, farDist]; min +inf: the class
+// is not in view), then the own-surface weight, then per reach threshold the weight whose distance is at least it, then
+// (glazing) the weight that passed glass, then (isoDim 2 / 3) the isovist: the area of the polygon (one row) / the volume
+// of the mesh through the rays' end points, each at min(true distance, farDist). wRow: weight per row.
 // Deterministic: the same bits for any chunking.
 bool gpu_reduce_view(Gpu& g, size_t nc, const std::vector<double>& wRow, unsigned nClass, double farDist, const std::vector<float>& reach,
-                     bool glazing, double* out, std::string& err);
+                     bool glazing, unsigned isoDim, double* out, std::string& err);
 bool gpu_download_view(Gpu& g, size_t nc, std::vector<uint8_t>& cls, std::vector<float>& dist, std::string& err);   // [nc x K] each (transposed)
 struct GpuStats {
   double buildMs = 0, traceMs = 0, bounceMs = 0;

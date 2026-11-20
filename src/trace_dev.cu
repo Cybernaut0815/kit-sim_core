@@ -164,16 +164,6 @@ extern "C" __global__ void __anyhit__tr() {
   optixIgnoreIntersection();
 }
 
-// Jarzynski & Olano 2020 (JCGT 9(3), "Hash Functions for GPU Rendering"): counter-based, 3 x 32 random bits per call.
-static __forceinline__ __device__ uint3 pcg3d(unsigned x, unsigned y, unsigned z) {
-  x = x * 1664525u + 1013904223u; y = y * 1664525u + 1013904223u; z = z * 1664525u + 1013904223u;
-  x += y * z; y += z * x; z += x * y;
-  x ^= x >> 16; y ^= y >> 16; z ^= z >> 16;
-  x += y * z; y += z * x; z += x * y;
-  return make_uint3(x, y, z);
-}
-static __forceinline__ __device__ float u01(unsigned v) { return float(v >> 8) * (1.f / 16777216.f); }   // [0, 1)
-
 // Views, launched as __raygen__bits: a warp traces one direction for 32 neighbouring sensors. Direction d = row * nAz +
 // column, one point per cell (jitter: uniform in the cell's solid angle, seeded by the global element, d and the side, so
 // chunks and launches change nothing; else the cell's middle in azimuth and in sine of elevation), in the sensor's frame
@@ -209,13 +199,8 @@ extern "C" __global__ void __raygen__view() {
   for (unsigned k = 0; k < 32; ++k) {
     const unsigned d = w * 32 + k;
     if (d >= K) break;
-    const float2 rs = params.rowSin[d / params.nAz];   // sin of the row's bottom, top
-    float a = 0.5f, s = 0.5f * (rs.x + rs.y);
-    if (params.jitter) { const uint3 h = pcg3d(element, d, side); a = u01(h.x); s = rs.x + u01(h.y) * (rs.y - rs.x); }
-    float sa, ca;
-    sincospif((params.az0 + (float(d % params.nAz) + a) * params.dAz) * (1.f / 180.f), &sa, &ca);
-    const float c = sqrtf(fmaxf(0.f, 1.f - s * s));
-    const float3 dir = (c * sa) * r + (c * ca) * f + s * u;
+    const float3 l = view_local(d, params.nAz, params.rowSin, params.az0, params.dAz, params.jitter, element, side);
+    const float3 dir = l.x * r + l.y * f + l.z * u;
     unsigned char cl = 2;
     float t = inf;
     if (none || (params.cull && dot(n, dir) <= 0.f)) cl = 254;   // degenerate, or behind the sensor (360 mode, offset 0)

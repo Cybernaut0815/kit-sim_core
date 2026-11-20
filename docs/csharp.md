@@ -157,7 +157,9 @@ views: 1 ms, scene reused True
 
 - The default field is 120 deg wide about each face's normal, from 70 deg down to 50 deg up, a ray per 2 deg cell
   (3,600 per face). `--fov 360 --offset 1.6` makes a floor or ground grid a standing eye that looks all around
-  ([views.md](views.md#field-of-view)).
+  ([views.md](views.md#field-of-view)); all around, the default column is the isovist: `volume` (m3), or `area` (m2)
+  with horizontal rays only (`--fov 360,0,0`), as the example's isovist runs in tests/room.obj show
+  ([views.md](views.md#isovist)).
 - `--target box=block`: rays that end on the mesh `box` count for the group `block` (a column `block_front`) instead of
   `obstruction`. NAME is a sensor or context mesh; several meshes may share a group (at most 16 groups).
 - `--reach en17037` adds `reach_6`, `reach_20` and `reach_50`: the shares of the field that see at least 6, 20 and
@@ -205,7 +207,9 @@ static double Mean(Result r, string column, MeshRange m) =>
 
 **Columns** are `<name>_<side>`, sides inner (`--sides both`: `_front` and `_back`). daylight: one per `--quantity`, in
 its order. views: the shares `sky`, `ground`, `obstruction` and one per target group (in order of first appearance in
-`--target`), then `distance` and `distance_min` (`--distance`), per group `<g>_distance` and `<g>_distance_min`
+`--target`), with `--transmission on` `glazing`, then `volume` or `area` (the isovist), `distance` and `distance_min`
+(`--distance`; all around the default is the isovist alone, about the normal the two distances), per group
+`<g>_distance` and `<g>_distance_min`
 (`--distance group`), then `reach_<D>`.
 
 | column | unit |
@@ -216,6 +220,7 @@ its order. views: the shares `sky`, `ground`, `obstruction` and one per target g
 | `sunhours` | hours (equivalent full-sun hours behind translucent slots, `--transmission on`) |
 | `sky`, `ground`, `obstruction`, `<g>`, `reach_<D>` | share of the field's solid angle, 0..1 |
 | `distance`, `distance_min`, `<g>_distance`, `<g>_distance_min` | metres, 0.1 to `--far` (1000) |
+| `volume`, `area` | m3, m2: the isovist, each ray at most `--far` long |
 
 **NaN.** views: `distance` and `distance_min` are NaN when no ray of a face's field is traced (`--fov 360` at
 `--offset 0` with the whole field behind the face, a degenerate face), `<g>_distance` and `<g>_distance_min` when the

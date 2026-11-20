@@ -196,6 +196,24 @@ mean distance of its faces averages 43 m (open rays count as 1000 m); 73 % of th
 least 20 m, 35 % at least 50 m (the block is 18 m away). The ground quads look up (sky 0.61), the box looks down onto
 the lawn (0.29). The run reused the scene: 2 ms.
 
+All around, the default column is the isovist instead of the distances: `volume` (m³), or `area` (m²) with
+horizontal rays only (`--fov 360,0,0`). The example ends with both, in tests/room.obj from its measure grid
+([views.md](views.md#isovist)):
+
+```python
+with Mesh.load(BOX.parent / 'room_grid.obj') as grid, Mesh.load(BOX.parent / 'room.obj') as room:   # room, window, tree
+    eye = ['--offset', '0.4', '--no-occlude', 'grid']                  # the grid is measured, not seen
+    vol = native.run('views', ['--fov', '360,-90,90', *eye], grid, context=room)
+    area = native.run('views', ['--fov', '360,0,0', *eye], grid, context=room)
+```
+
+```
+isovists in the room: volume 92.8 m3 all around, area 32.1 m2 at eye height
+```
+
+The room holds 93.18 m³ on a 32.13 m² floor: the polygon and mesh through the rays' ends cut its corners a little.
+`--distance mean,min` gives the distances instead, `--far M` caps both.
+
 ### Through `views.exe`: names are file stems
 
 `tool='views'` runs `views.exe` on the same tuples (the `v = ...` line above), with:

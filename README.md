@@ -10,14 +10,14 @@ from C#, Python and TypeScript / JavaScript; browsers reach daylight through the
 
 | | daylight: `daylight.exe` | views: `views.exe` |
 |---|---|---|
-| asks | how much sun and daylight reaches each face or point | what each face or point sees, and how far |
-| rays per element | to each sky patch (145 / 577 / 2305, `--sky-density`), to the ground below the horizon and to the sun at every time step | one per 2 deg cell (`--cell`) of a field of view: 120 deg wide about the normal, 70 deg down to 50 deg up (3,600 rays), or all around (`--fov 360`: 10,800) |
+| asks | how much sun and daylight reaches each face or point | what each face or point sees, and how far; isovists (the volume or area in view) |
+| rays per element | to each sky patch (145 / 577 / 2305, `--sky-density`), to the ground below the horizon and to the sun at every time step | one per 2 deg cell (`--cell`) of a field of view: 120 deg wide about the normal, 70 deg down to 50 deg up (3,600 rays), or all around (`--fov 360`: 10,800; `--fov 360,0,0`: 180 horizontal rays) |
 | besides the meshes | weather and place: an EPW (`--epw`), a clear-sky year for `--lat --lon` (`--clear-sky`) or none for sun hours; a year, an instant (`--time`) or a range (`--from --to --step`) | target groups (`--target lake=water`); the eye moved along the normal (`--offset 1.6` above a floor: standing); a virtual ground plane that ends downward rays (`--virtual-ground`, `--ground-z`) |
-| columns | `radiation` kWh/m2 over the run (also `direct`, `diffuse`), `irradiance` mean W/m2, `illuminance` mean lux, `sunhours` h | the shares of the field that end on `sky`, `ground`, `obstruction` and each target group (summing to 1); `distance` (log mean) and `distance_min` in m, an open ray counting as `--far` (1000 m); `reach_<D>`, the share that sees at least D m (`--reach en17037`: 6, 20, 50) |
+| columns | `radiation` kWh/m2 over the run (also `direct`, `diffuse`), `irradiance` mean W/m2, `illuminance` mean lux, `sunhours` h | the shares of the field that end on `sky`, `ground`, `obstruction` and each target group (summing to 1); all around the isovist: `volume` in m3 (`area` in m2 with horizontal rays), about the normal `distance` (log mean) and `distance_min` in m (`--distance` picks), an open ray counting as `--far` (1000 m); `reach_<D>`, the share that sees at least D m (`--reach en17037`: 6, 20, 50) |
 | model | the sky a port of Radiance `gendaymtx` (Perez all-weather); `--mode physical` or `ladybug` (Ladybug's studies bit for bit); glass and porous slots (`--optics`, `--transmission on`), reflected light (`--bounces N`) | opaque surfaces, or glass the rays pass (daylight's `--optics ...,glass` rows with `--transmission on`, and a `glazing` share); each ray through a random point of its cell (`--jitter`, deterministic); every ray's class and distance on request (`--dump-rays`) |
-| validated against | Ladybug Tools (`--mode ladybug`: radiation ~1e-6 relative, sun hours exact), Radiance (the `gendaymtx` sky byte for byte, `rcontrib`), pvlib (sun position, clear sky) | Radiance `rtrace`, ray by ray (10 cases: 100.000 % of the compared rays in class and distance); the unobstructed share next to Ladybug's View Percent |
+| validated against | Ladybug Tools (`--mode ladybug`: radiation ~1e-6 relative, sun hours exact), Radiance (the `gendaymtx` sky byte for byte, `rcontrib`), pvlib (sun position, clear sky) | Radiance `rtrace`, ray by ray (13 cases: 100.000 % of the compared rays in class and distance; the isovist recomputed from them); the unobstructed share next to Ladybug's View Percent |
 | in code | C++ `daylight::run` (`src/daylight.h`); C ABI and bindings: `DL_DAYLIGHT`, `Tool.Daylight`, `'daylight'` | C++ `daylight::views::run` (`src/views.h`); C ABI and bindings: `DL_VIEWS`, `Tool.Views`, `'views'` |
-| docs | [docs/daylight.md](docs/daylight.md): every flag, output, worked examples | [docs/views.md](docs/views.md): field of view, ray classes, distances, every flag, output, worked examples |
+| docs | [docs/daylight.md](docs/daylight.md): every flag, output, worked examples | [docs/views.md](docs/views.md): field of view, ray classes, distances, isovists, every flag, output, worked examples |
 
 Both CLIs are built from the same `src/main.cpp` and treat meshes and results alike:
 
@@ -37,7 +37,8 @@ daylight roof.obj --clear-sky --lat 52.52 --lon 13.41 --quantity radiation,sunho
 daylight roof.obj --lat 52.52 --lon 13.41 --quantity sunhours --from 06-21T00:00 --to 06-22T00:00   # 21 June
 views facade.obj --context city.obj --out v.txt                                     # 120 deg about each face's normal
 views facade.obj --context city.obj --context lake.obj --target lake=water --reach en17037 --out v.npy
-views floor.obj --context city.obj --no-occlude floor --fov 360 --offset 1.6 --out v.txt   # a standing eye, all around
+views floor.obj --context city.obj --no-occlude floor --fov 360 --offset 1.6 --out v.txt   # a standing eye, all around: volume in view
+views grid.obj --context room.obj --no-occlude grid --fov 360,0,0 --offset 1.2 --out a.txt  # the 2D isovist: area in view
 views grid.obj --context room.obj --no-occlude grid --fov 360 --offset 1.2 --optics window=0,0.64,glass --transmission on   # an interior, out through its glass
 ```
 

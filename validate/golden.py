@@ -88,7 +88,8 @@ VARIANTS = [('box_dmesh_slots', 'box_dmesh', 'slots', [], []),
 VIEWS_CASES = {'walls_view': ('walls', 'obj', []),                          # default view mode on vertical facades
                'walls_jitter_off': ('walls', 'obj', ['--jitter', 'off']),
                'walls_virtual_ground_off': ('walls', 'obj', ['--virtual-ground', 'off']),
-               'box_360': ('box', 'obj', ['--fov', '360', '--offset', '1.6', '--dump-rays', 'rays.npy']),
+               'box_360': ('box', 'obj', ['--fov', '360', '--offset', '1.6', '--dump-rays', 'rays.npy']),   # the volume
+               'box_2d': ('box', 'obj', ['--fov', '360,0,0', '--offset', '1.6', '--distance', 'isovist,mean,min']),  # the area
                'box_targets': ('box', 'obj', ['--target', 'box_a=water;box_b=park', '--distance', 'mean,min,group',
                                               '--reach', 'en17037']),
                'overhang_sides_both': ('overhang', 'obj', ['--sides', 'both'])}

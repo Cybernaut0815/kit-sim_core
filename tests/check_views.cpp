@@ -6,10 +6,12 @@
 // rectangle targets with group distances and --reach (also past --far). Then the horizon, degenerate faces, the jitter
 // (in its cells), chunks and sub-launches, progress, f32 columns, sides, a scene shared with daylight, labels on reused,
 // renamed, reordered and name-swapped resident scenes, cancel (no dump left), ray counts, the option, target and CLI
-// rules, the manifest's escaping and the dump size guard. Self-skips without a CUDA device.
+// rules, the manifest's escaping and the dump size guard; the isovist (area, volume) against the host model and known
+// answers. Self-skips without a CUDA device.
 #include "cli.h"
 #include "internal.h"
 #include <algorithm>
+#include <array>
 #include <atomic>
 #include <cmath>
 #include <cstdio>
@@ -130,7 +132,7 @@ static End trace(const double o[3], const double d[3], const double n[3], bool c
   }
   if (e.cls != 255) { e.glazed = tPass < e.t; return e; }
   e.glazed = tPass < tmax0;
-  margin = std::min(margin, std::fabs(d[2]));
+  if (d[2] != 0) margin = std::min(margin, std::fabs(d[2]));   // exactly on it (a flat field's rays): sky by rule, no margin
   e.cls = d[2] >= 0 ? 0 : 1;
   if (down) { e.t = (o[2] - plane) / -d[2]; e.cosInc = -d[2]; }
   return e;
@@ -195,8 +197,9 @@ static Result expect(const char* what, const std::vector<Mesh>& meshes, views::O
     }
   }
 
-  // the grid
-  const bool world = o.fovH == 360;
+  // the grid; a flat field (LO = HI = 0) weighs its rays by angle; the distance columns (DistAuto: isovist in 360 mode)
+  const bool world = o.fovH == 360, flat = o.elevLo == 0 && o.elevHi == 0;
+  const unsigned dist = o.distance != views::DistAuto ? o.distance : world ? unsigned(views::DistIsovist) : unsigned(views::DistMean | views::DistMin);
   const unsigned nAz = unsigned(std::max(1.0, std::round(o.fovH / o.cell))), nEl = unsigned(std::max(1.0, std::round((o.elevHi - o.elevLo) / o.cell)));
   const size_t K = size_t(nAz) * nEl, nSens = P.size(), nG = groups.size(), C = r.columns.size();
   const double dAz = o.fovH / nAz, dEl = (o.elevHi - o.elevLo) / nEl, az0 = world ? 0 : -o.fovH / 2;
@@ -205,7 +208,7 @@ static Result expect(const char* what, const std::vector<Mesh>& meshes, views::O
   for (unsigned k = 0; k < nEl; ++k) {
     const double top = std::sin((o.elevHi - k * dEl) * kDeg), bot = std::sin((o.elevHi - (k + 1) * dEl) * kDeg);
     sRow[k] = (top + bot) / 2;
-    wRow[k] = top - bot;
+    wRow[k] = flat ? 1 : top - bot;
     sum += wRow[k] * nAz;
   }
   for (double& w : wRow) w /= sum;
@@ -214,7 +217,9 @@ static Result expect(const char* what, const std::vector<Mesh>& meshes, views::O
 
   const double cosN = std::cos(o.north * kDeg), sinN = std::sin(o.north * kDeg);
   size_t badRays = 0, badCols = 0;
-  double worstRay = 0, worstCol = 0, margin = INFINITY;
+  double worstRay = 0, worstCol = 0, worstIso = 0, margin = INFINITY;
+  std::vector<std::array<double, 3>> U(K);   // per ray: its direction in the field's frame (x right, y forward, z up)
+  std::vector<double> L(K);                 // ... and where it ends: min(t, far), own surface 0 (at the eye)
   for (size_t i = 0; i < nSens; ++i) {
     const float3 of = offset_ray(P[i], N[i]);
     const double O[3] = {of.x, of.y, of.z}, n[3] = {N[i].x, N[i].y, N[i].z}, l = std::hypot(n[0], n[1]);
@@ -236,7 +241,9 @@ static Result expect(const char* what, const std::vector<Mesh>& meshes, views::O
       const double s = sRow[d / nAz], cs = std::sqrt(1 - s * s), a = (az0 + (double(d % nAz) + 0.5) * dAz) * kDeg;
       double dir[3];
       for (int b = 0; b < 3; ++b) dir[b] = cs * std::sin(a) * rt[b] + cs * std::cos(a) * f[b] + s * u[b];
-      const End h = trace(O, dir, n, world && o.offset == 0, o.virtualGround, plane, quads, margin);
+      const End h = trace(O, dir, n, world && o.offset == 0 && !flat, o.virtualGround, plane, quads, margin);
+      U[d] = {cs * std::sin(a), cs * std::cos(a), s};
+      L[d] = h.cls == 254 ? 0 : std::min(h.t, o.farDist);
       // the device's ray: its class, and how far its end lies from the host's across the surface, in tolerances
       const uint8_t gc = uint8_t(cb[i * K + d]);
       float gt;
@@ -259,7 +266,19 @@ static Result expect(const char* what, const std::vector<Mesh>& meshes, views::O
         if (!std::isinf(h.t)) margin = std::min(margin, std::fabs(h.t / o.reach[q] - 1));
       }
     }
-    // the columns, in views.h's order: shares, distance, distance_min, per group, reach_<D>
+    // the isovist: the polygon (flat) or the mesh through the rays' ends, tetrahedra eye-A-B-C and eye-B-D-C per quad
+    double iso = 0;
+    const auto det = [&](size_t a, size_t b, size_t c) {
+      const auto& x = U[a]; const auto& y = U[b]; const auto& z = U[c];
+      return x[0] * (y[1] * z[2] - y[2] * z[1]) + x[1] * (y[2] * z[0] - y[0] * z[2]) + x[2] * (y[0] * z[1] - y[1] * z[0]);
+    };
+    for (size_t d = 0; d < K; ++d) {
+      const size_t row = d / nAz, col = d % nAz, d1 = d - col + (col + 1) % nAz, d2 = d + nAz, d3 = d1 + nAz;
+      if (col + 1 == nAz && !world) continue;
+      if (flat) iso += 0.5 * L[d] * L[d1] * (U[d][1] * U[d1][0] - U[d][0] * U[d1][1]);
+      else if (row + 1 < nEl) iso += (L[d] * L[d1] * L[d2] * det(d, d1, d2) + L[d1] * L[d3] * L[d2] * det(d1, d3, d2)) / 6;
+    }
+    // the columns, in views.h's order: shares, glazing, volume / area, distance, distance_min, per group, reach_<D>
     double total = own, W = 0, WL = 0, M = INFINITY;
     for (size_t k = 0; k < w.size(); ++k) { total += w[k]; W += w[k]; WL += wl[k]; M = std::min(M, mn[k]); }
     const auto logMean = [](double sw, double swl) { return sw > 0 ? std::exp(swl / sw) : NAN; };
@@ -267,12 +286,13 @@ static Result expect(const char* what, const std::vector<Mesh>& meshes, views::O
     std::vector<double> want = {w[0] / total, w[1] / total, (w[2] + own) / total};
     for (size_t g = 0; g < nG; ++g) want.push_back(w[3 + g] / total);
     if (o.transmission) want.push_back(gz / total);   // glazing
-    const size_t shares = want.size();
-    if (o.distMean) want.push_back(logMean(W, WL));
-    if (o.distMin) want.push_back(least(M));
-    for (size_t g = 0; o.distGroup && g < nG; ++g) {
-      if (o.distMean) want.push_back(logMean(w[3 + g], wl[3 + g]));
-      if (o.distMin) want.push_back(least(mn[3 + g]));
+    const size_t shares = want.size(), isoAt = dist & views::DistIsovist ? shares : SIZE_MAX;
+    if (dist & views::DistIsovist) want.push_back(iso);
+    if (dist & views::DistMean) want.push_back(logMean(W, WL));
+    if (dist & views::DistMin) want.push_back(least(M));
+    for (size_t g = 0; (dist & views::DistGroup) && g < nG; ++g) {
+      if (dist & views::DistMean) want.push_back(logMean(w[3 + g], wl[3 + g]));
+      if (dist & views::DistMin) want.push_back(least(mn[3 + g]));
     }
     const size_t dists = want.size();
     for (double x : rc) want.push_back(x / total);
@@ -280,15 +300,18 @@ static Result expect(const char* what, const std::vector<Mesh>& meshes, views::O
     for (size_t k = 0; k < want.size() && want.size() * nS == C; ++k) {
       const size_t col = k * nS + i % nS;
       const double got = r.values[(i / nS) * C + col], x = want[k];
-      const bool dist = k >= shares && k < dists;
-      const double e = std::isnan(x) || std::isnan(got) ? (std::isnan(x) && std::isnan(got) ? 0 : INFINITY) : dist ? std::fabs(got - x) / x : std::fabs(got - x);
-      if (e > (dist ? tol : 1e-9)) {
+      const bool isoCol = k == isoAt, relative = k >= shares && k < dists;
+      // the isovist: the device's float directions (det of neighbours ~1e-6 relative per tetrahedron) at most 1e-5 off
+      const double e = std::isnan(x) || std::isnan(got) ? (std::isnan(x) && std::isnan(got) ? 0 : INFINITY)
+                       : relative ? std::fabs(got - x) / std::max(std::fabs(x), 1e-300) : std::fabs(got - x);
+      if (e > (isoCol ? std::max(tol, 1e-5) : relative ? tol : 1e-9) && !(x == 0 && got == 0)) {
         if (badCols++ < 3) std::printf("views: %s: sensor %zu %s %.17g, host %.17g\n", what, i, r.columns[col].c_str(), got, x);
-      } else if (dist) worstCol = std::max(worstCol, e);
+      } else if (isoCol) worstIso = std::max(worstIso, x == 0 ? 0 : e);
+      else if (relative) worstCol = std::max(worstCol, e);
     }
   }
-  std::printf("views: %s: %zu rays end as the host traces them (at most %.2f of the tolerance off), columns within %.1e, margin %.1e\n",
-              what, nSens * K, worstRay, worstCol, margin);
+  std::printf("views: %s: %zu rays end as the host traces them (at most %.2f of the tolerance off), columns within %.1e, isovist %.1e, margin %.1e\n",
+              what, nSens * K, worstRay, worstCol, worstIso, margin);
   CHECK(badRays == 0 && badCols == 0 && margin > 1e-6);   // the device's directions are float, ~2e-8 rad off
   return r;
 }
@@ -326,6 +349,10 @@ static void check_rules() {
       {"--fov H must be in (0, 180]", [](views::Options& o) { o.fovH = 0; }},
       {"needs -90 <= LO < HI <= 90", [](views::Options& o) { o.elevLo = 50; }},
       {"needs -90 <= LO < HI <= 90", [](views::Options& o) { o.elevHi = 91; }},
+      {"or LO = HI = 0", [](views::Options& o) { o.elevLo = o.elevHi = 10; }},   // flat only at the horizon
+      {"isovist needs at least 3 columns and 2 rows", [](views::Options& o) { o.fovH = 360; o.elevLo = -1; o.elevHi = 1; }},   // one ring
+      {"isovist needs at least 3 columns", [](views::Options& o) { o.elevLo = o.elevHi = 0; o.fovH = 4; o.distance = views::DistIsovist; }},
+      {"group adds per-group columns", [](views::Options& o) { o.distance = views::DistGroup | views::DistIsovist; }},
       {"--cell must be positive", [](views::Options& o) { o.cell = 0; }},
       {"--cell must be positive", [](views::Options& o) { o.cell = INFINITY; }},
       {"--north and --offset must be finite", [](views::Options& o) { o.north = NAN; }},
@@ -348,6 +375,8 @@ static void check_rules() {
       {"is reserved", [](views::Options& o) { o.targets = {{"t0", "reach6"}}; }},
       {"is reserved", [](views::Options& o) { o.targets = {{"t0", "a"}, {"t1", "a_distance"}}; }},   // a's distance column
       {"is reserved", [](views::Options& o) { o.targets = {{"t0", "a_distance_min"}}; }},
+      {"is reserved", [](views::Options& o) { o.targets = {{"t0", "volume"}}; }},   // the isovist's column names
+      {"is reserved", [](views::Options& o) { o.targets = {{"t0", "area"}}; }},
       {"no mesh of that name", [](views::Options& o) { o.targets = {{"nope", "a"}}; }},
       {"several meshes have that name", [](views::Options& o) { o.targets = {{"dup", "a"}}; }},
       {"a target twice", [](views::Options& o) { o.targets = {{"t0", "a"}, {"t1", "b"}, {"t0", "b"}}; }},
@@ -383,11 +412,25 @@ static void check_rules() {
   for (const char* bad : {"a", "=x", "a=", "a=x;"}) CHECK(parse({"f.obj", "--target", bad}, a, err) == 1 && err.find("NAME=GROUP") != std::string::npos);
   CHECK(parse({"f.obj", "--distance", "group"}, a, err) == 1);
   CHECK(parse({"f.obj", "--distance", "none,mean"}, a, err) == 1 && parse({"f.obj", "--distance", "mean,max"}, a, err) == 1);
-  CHECK(parse({"f.obj", "--distance", "none"}, a, err) == 0 && !a.opt.distMean && !a.opt.distMin && !a.opt.distGroup);
-  CHECK(parse({"f.obj", "--distance", "min,group"}, a, err) == 0 && !a.opt.distMean && a.opt.distMin && a.opt.distGroup);
-  CHECK(parse({"f.obj"}, a, err) == 0 && a.opt.distMean && a.opt.distMin && !a.opt.distGroup && a.opt.jitter && a.opt.virtualGround &&
+  CHECK(parse({"f.obj", "--distance", "none"}, a, err) == 0 && a.opt.distance == 0);
+  CHECK(parse({"f.obj", "--distance", "min,group"}, a, err) == 0 && a.opt.distance == (views::DistMin | views::DistGroup));
+  CHECK(parse({"f.obj", "--distance", "isovist,mean"}, a, err) == 0 && a.opt.distance == (views::DistIsovist | views::DistMean));
+  CHECK(parse({"f.obj", "--distance", "volume"}, a, err) == 1 && parse({"f.obj", "--distance", "isovist,group"}, a, err) == 1);
+  CHECK(parse({"f.obj"}, a, err) == 0 && a.opt.distance == views::DistAuto && a.opt.jitter && a.opt.virtualGround &&
         a.opt.fovH == 120 && a.opt.elevLo == -70 && a.opt.elevHi == 50 && a.opt.cell == 2 && a.opt.farDist == 1000 && a.opt.reach.empty());
   CHECK(parse({"f.obj", "--fov", "360"}, a, err) == 0 && a.opt.fovH == 360 && a.opt.elevLo == -70 && a.opt.elevHi == 50);
+  // DistAuto: the isovist all around, mean and min about the normal; a flat field (H,0,0), one row
+  {
+    views::Field fd;
+    views::Options fo;
+    CHECK(views::field({}, fo, fd, err) && fd.dist == (views::DistMean | views::DistMin) && !fd.flat && fd.nEl == 60);
+    fo.fovH = 360;
+    CHECK(views::field({}, fo, fd, err) && fd.dist == views::DistIsovist);
+    CHECK(parse({"f.obj", "--fov", "360,0,0"}, a, err) == 0 && a.opt.elevLo == 0 && a.opt.elevHi == 0 && views::field({}, a.opt, fd, err) && fd.flat &&
+          fd.nEl == 1 && fd.nAz == 180);
+    CHECK(parse({"f.obj", "--fov", "360,-1,1"}, a, err) == 1 && err.find("isovist") != std::string::npos);   // one ring: no mesh
+    CHECK(parse({"f.obj", "--fov", "360,-1,1", "--distance", "mean"}, a, err) == 0);
+  }
   CHECK(parse({"f.obj", "--fov", "360,-30,30", "--cell", "1"}, a, err) == 0 && a.opt.elevLo == -30 && a.opt.elevHi == 30 && a.opt.cell == 1);
   CHECK(parse({"f.obj", "--reach", "en17037"}, a, err) == 0 && a.opt.reach == std::vector<double>({6, 20, 50}));
   CHECK(parse({"f.obj", "--jitter", "off", "--virtual-ground", "off", "--ground-z", "-2.5", "--far", "300"}, a, err) == 0 && !a.opt.jitter &&
@@ -506,6 +549,7 @@ static void check_glass(std::string& err) {
   in.targets = {{"tree", "green"}};
   in.optics = {{"window", -1, 0, 0.64, true}};
   in.reach = {6};
+  in.distance = views::DistIsovist | views::DistMean | views::DistMin;
   const Result shut = expect("interior, --transmission off: the window blocks", rm, in);
   in.transmission = true;
   const Result lit = expect("interior, --transmission on: out through the window", rm, in);
@@ -521,6 +565,61 @@ static void check_glass(std::string& err) {
   blocking.noOcclude = {};
   const Result rb = expect("interior, the grid blocking", rm, blocking);
   CHECK(at(rb, 5, "distance_min_front") < 0.5 && at(lit, 5, "distance_min_front") > 0.5);
+}
+
+// The isovist where the answer is known: open fields (every ray at --far: a regular polygon, a fan, the mesh inscribed in a
+// sphere), and tests/room.obj shut from its measure grid (the floor's area at eye height, the room's volume), jittered.
+static void check_isovist(const char* testsDir, std::string& err) {
+  const Mesh s = quad("s", true, {-1, 0, 0, 1, 0, 0, 1, 0, 2, -1, 0, 2});   // a facade looking -y
+  {   // flat at --far 50: 180 segments of 2 deg all around, 59 over a 120 deg fan about the normal
+    views::Options o;
+    o.selfOcclude = false;
+    o.fovH = 360; o.elevLo = o.elevHi = 0; o.farDist = 50;
+    const Result r = expect("isovist: open, flat all around", {s}, o);
+    CHECK(r.columns == std::vector<std::string>({"sky_front", "ground_front", "obstruction_front", "area_front"}));
+    CHECK(at(r, 0, "sky_front") == 1 && std::fabs(at(r, 0, "area_front") / (0.5 * 2500 * 180 * std::sin(2 * kDeg)) - 1) <= 1e-5);
+    o.fovH = 120;
+    o.distance = views::DistIsovist | views::DistMean;
+    const Result f = expect("isovist: open, a flat 120 deg fan", {s}, o);
+    CHECK(at(f, 0, "distance_front") == 50 && std::fabs(at(f, 0, "area_front") / (0.5 * 2500 * 59 * std::sin(2 * kDeg)) - 1) <= 1e-5);
+  }
+  {   // the whole sphere, no virtual ground, --far 10: the mesh inscribed in a 10 m ball (and without its poles' caps)
+    views::Options o;
+    o.selfOcclude = false;
+    o.fovH = 360; o.elevLo = -90; o.elevHi = 90; o.farDist = 10; o.offset = 0.5; o.virtualGround = false;
+    const Result r = expect("isovist: open, the whole sphere", {s}, o);
+    o.jitter = true;
+    Result rj;
+    CHECK(views::run({s}, o, rj, err));
+    const double ball = 4. / 3 * 3.14159265358979323846 * 1000, v = at(r, 0, "volume_front") / ball, vj = at(rj, 0, "volume_front") / ball;
+    std::printf("views: isovist: a 10 m ball at 2 deg: %.6f of 4/3 pi r^3, jittered %.6f\n", v, vj);
+    CHECK(std::fabs(v - 1) <= 1e-3 && std::fabs(vj - 1) <= 2e-3);
+  }
+  {   // the shut room (6.3 x 5.1 x 2.9 m) from its 12 grid points 1.2 m up (convex: each sees all of it)
+    std::vector<Mesh> ms, room;
+    CHECK(read_obj(std::string(testsDir) + "/room_grid.obj", ms, err) && read_obj(std::string(testsDir) + "/room.obj", room, err));
+    for (Mesh& m : room) { m.sensor = false; ms.push_back(m); }
+    views::Options o;
+    o.fovH = 360; o.offset = 0.4; o.noOcclude = {"grid"};
+    o.elevLo = o.elevHi = 0; o.cell = 0.5;
+    Result ra, rv;
+    CHECK(views::run(ms, o, ra, err));
+    o.elevLo = -90; o.elevHi = 90; o.cell = 1;
+    CHECK(views::run(ms, o, rv, err));
+    double worstA = 0, worstV = 0;
+    for (size_t e = 0; e < 12; ++e) {
+      worstA = std::max(worstA, std::fabs(at(ra, e, "area_front") / (6.3 * 5.1) - 1));
+      worstV = std::max(worstV, std::fabs(at(rv, e, "volume_front") / (6.3 * 5.1 * 2.9) - 1));
+    }
+    std::printf("views: isovist: the shut room from 12 points: area (0.5 deg) within %.1e, volume (1 deg) within %.1e\n", worstA, worstV);
+    CHECK(worstA <= 5e-4 && worstV <= 5e-3);   // measured 1.1e-4, 1.3e-3: the polygon / mesh cuts the room's corners
+    o.cell = 3;   // the host model: the whole sphere, the default field, flat
+    expect("isovist: the shut room, the whole sphere", ms, o);
+    o.elevLo = -70; o.elevHi = 50;
+    expect("isovist: the shut room, 360,-70,50", ms, o);
+    o.elevLo = o.elevHi = 0;
+    expect("isovist: the shut room, flat", ms, o);
+  }
 }
 
 int check_views(const char* testsDir) {
@@ -593,12 +692,13 @@ int check_views(const char* testsDir) {
       // sky in front and its own surface behind (360, offset 0), no ray is ground (none points below the horizon)
     views::Options oh = o1;
     oh.fovH = 360; oh.elevLo = -1; oh.elevHi = 1; oh.jitter = false;
+    oh.distance = views::DistMean;   // one ring: no isovist mesh
     Result rh;
     CHECK(views::run({faces}, oh, rh, err) && std::fabs(at(rh, 0, "sky_front") - 0.5) <= 1e-12 && std::fabs(at(rh, 0, "obstruction_front") - 0.5) <= 1e-12);
     for (size_t e = 0; e < 7; ++e) CHECK(at(rh, e, "ground_front") == 0);
   }
   {   // a degenerate face (no area, no normal) traces no ray, in view mode and 360 at an offset: all own surface, as 360
-      // at offset 0 gives it (obstruction 1, no distance, no reach)
+      // at offset 0 gives it (obstruction 1, no distance, no reach, an isovist of 0: every ray ends at the eye)
     Mesh deg = mesh("deg", true);
     face(deg, {0, 0, 1, 1, 0, 1, 2, 0, 1});
     face(deg, {-1, 0, 0, 1, 0, 0, 1, 0, 2, -1, 0, 2});
@@ -607,10 +707,11 @@ int check_views(const char* testsDir) {
       od.fovH = fov;
       od.offset = 0.5;
       od.reach = {6};
+      od.distance = views::DistIsovist | views::DistMean | views::DistMin;
       Result rd;
       CHECK(views::run({deg}, od, rd, err) && at(rd, 0, "obstruction_front") == 1 && at(rd, 0, "sky_front") == 0 && at(rd, 0, "ground_front") == 0 &&
             std::isnan(at(rd, 0, "distance_front")) && std::isnan(at(rd, 0, "distance_min_front")) && at(rd, 0, "reach_6_front") == 0 &&
-            at(rd, 1, "sky_front") > 0.4);
+            at(rd, 0, "volume_front") == 0 && at(rd, 1, "volume_front") > 0 && at(rd, 1, "sky_front") > 0.4);
     }
   }
   {   // a canopy 3 m over the roof, on one side: what the roof sees of it turns with --north (its right: east turned)
@@ -640,14 +741,16 @@ int check_views(const char* testsDir) {
   o2.offset = 0.5;
   o2.selfOcclude = false;
   o2.targets = {{"lake", "water"}};
+  o2.distance = views::DistIsovist | views::DistMean | views::DistMin;
   const Result r2 = expect("360 over a 2 km target quad", {eye, lake}, o2);
-  CHECK(r2.columns == std::vector<std::string>({"sky_front", "ground_front", "obstruction_front", "water_front", "distance_front", "distance_min_front"}));
+  CHECK(r2.columns == std::vector<std::string>({"sky_front", "ground_front", "obstruction_front", "water_front", "volume_front", "distance_front",
+                                                "distance_min_front"}));
   CHECK(std::fabs(at(r2, 0, "sky_front") - kSky) <= 1e-9 && std::fabs(at(r2, 0, "water_front") - (1 - kSky)) <= 1e-9 && at(r2, 0, "ground_front") == 0);
   CHECK(std::fabs(at(r2, 0, "distance_min_front") / (10 / -sLow) - 1) <= 1e-6);
   {   // --ground-z 5: the plane ends the downward rays 5 m down, the quad below it is hidden (not in view: NaN)
     views::Options gz = o2;
     gz.groundZ = 5;
-    gz.distGroup = true;
+    gz.distance |= views::DistGroup;
     const Result r = expect("360 over a 2 km target quad, --ground-z 5", {eye, lake}, gz);
     CHECK(at(r, 0, "water_front") == 0 && std::fabs(at(r, 0, "ground_front") - (1 - kSky)) <= 1e-9);
     CHECK(std::fabs(at(r, 0, "distance_min_front") / (5 / -sLow) - 1) <= 1e-6 && std::isnan(at(r, 0, "water_distance_front")) &&
@@ -688,7 +791,7 @@ int check_views(const char* testsDir) {
     const std::vector<Mesh> st = {quad("facade", true, {-1, 0, 0, 1, 0, 0, 1, 0, 2, -1, 0, 2}), quad("a", false, {-3, -10, 0.5, 5, -10, 0.5, 5, -10, 4, -3, -10, 4}),
                                   quad("b", false, {8, -30, 0.2, 20, -30, 0.2, 20, -30, 6, 8, -30, 6})};
     views::Options o3 = args.opt;
-    o3.distGroup = true;
+    o3.distance = views::DistMean | views::DistMin | views::DistGroup;
     o3.reach = {6, 20, 50};
     const Result r = expect("two rectangle targets", st, o3);
     CHECK(r.columns == std::vector<std::string>({"sky_front", "ground_front", "obstruction_front", "water_front", "park_front", "distance_front",
@@ -717,14 +820,14 @@ int check_views(const char* testsDir) {
     CHECK(at(r30, 0, "reach_50_front") > 0.3 && at(r30, 0, "park_distance_front") == 30 && at(r30, 0, "park_distance_min_front") == 30);
     // --distance none: the shares and the reach only
     views::Options on = o3;
-    on.distMean = on.distMin = on.distGroup = false;
+    on.distance = 0;
     const Result rn = expect("two rectangle targets, --distance none", st, on);
     CHECK(rn.columns == std::vector<std::string>({"sky_front", "ground_front", "obstruction_front", "water_front", "park_front", "reach_6_front",
                                                   "reach_20_front", "reach_50_front"}));
     // 16 groups, the most there are: 16 strips 10 m ahead
     std::vector<Mesh> strips = {st[0]};
     views::Options o16;
-    o16.distGroup = true;
+    o16.distance = views::DistMean | views::DistMin | views::DistGroup;
     for (int k = 0; k < 16; ++k) {
       strips.push_back(quad("s", false, {k - 8.0, -10, 0.3, k - 7.2, -10, 0.3, k - 7.2, -10, 3, k - 8.0, -10, 3}));
       strips.back().name += std::to_string(k);
@@ -741,7 +844,7 @@ int check_views(const char* testsDir) {
   views::Options o;
   o.sides = Sides::Both;
   o.targets = {{"box", "cube"}};
-  o.distGroup = true;
+  o.distance = views::DistMean | views::DistMin | views::DistGroup;
   o.reach = {1, 3};
   Result a, b;
   CHECK(views::run(m, o, a, err) && a.stats.rays == 16u * 2 * 3600);   // 16 faces x 2 sides x 60 x 60 cells
@@ -874,5 +977,6 @@ int check_views(const char* testsDir) {
     if (f) std::fclose(f);
   }
   check_glass(err);
+  check_isovist(testsDir, err);
   return failures;
 }

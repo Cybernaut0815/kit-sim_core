@@ -28,7 +28,8 @@ dir.z; exact zeros agree on both sides). Geometry lying on the plane itself is c
 past it. The virtual ground is a surface too: a ray meeting it at |cos| = |dir.z| < 0.05 keeps its class check but not
 its distance (the core's float32 direction is ~3e-8 off in dir.z, x 1 / |dir.z| in the plane distance: 8 cm at 350 m
 for a ray 0.02 deg below the horizon). Also hard: the output columns recomputed from the dump itself (shares, reach
-1e-9; log means 1e-6 relative: the core takes float logs; minima exact).
+1e-9; log means 1e-6 relative: the core takes float logs; minima exact; the isovist, volume or area through the rays'
+ends, 1e-5 relative: the core's float directions). A flat field (`--fov H,0,0`) culls no own surface.
 ladybug: Ladybug's LB View Percent types 0 (HorizontalRadial, `--fov 360,-1,1`), 2 (Spherical, `360,-90,90`) and 3
 (SkyExposure, `360,0,90`, the receivers block), its rays and weights from ladybug-core's view_sphere at resolutions 1
 and 3, traced with rtrace from the eyes of a views run at --jitter off (a ray counts when it hits nothing; jitter
@@ -82,6 +83,8 @@ CASES = {
     'street_ground_z': ([STREET / 'facade.obj'], [STREET / 'context.obj'], TARGETS + ['--ground-z', '6', '--cell', '3']),
     'room_glass': ([ROOM_GRID], [ROOM], ROOM_FLAGS + ['--transmission', 'on']),   # out through the window
     'room_shut': ([ROOM_GRID], [ROOM], ROOM_FLAGS),                               # the window blocks
+    'room_2d': ([ROOM_GRID], [ROOM], ['--fov', '360,0,0'] + ROOM_FLAGS[2:] + ['--transmission', 'on', '--far', '50',
+                                                                          '--distance', 'isovist,mean,min']),   # horizontal
 }
 # LB View Percent type -> (name, views --fov, views' unobstructed classes); sensor sets (receivers, context, --offset)
 LB_TYPES = {0: ('HorizontalRadial', '360,-1,1', ('sky', 'ground')), 2: ('Spherical', '360,-90,90', ('sky', 'ground')),
@@ -310,8 +313,8 @@ def eyes(rec, flags, C):
     return offset_ray(P32, N32), N32
 
 
-def rays(view, N32):
-    """__raygen__view at --jitter off -> unit directions [S x K x 3], d = row * nAz + column."""
+def local_dirs(view):
+    """params.h view_local at --jitter off -> the directions in the field's own frame (x right, y forward, z up) [K x 3]."""
     H, LO, HI = view['fov']
     nEl, nAz = view['grid']
     dEl, k = (HI - LO) / nEl, np.arange(nEl)
@@ -323,6 +326,13 @@ def rays(view, N32):
     sa = np.where(q == 2 * arg, np.array([0.0, 1, 0, -1])[q.astype(int) % 4], np.sin(np.pi * arg))
     ca = np.where(q == 2 * arg, np.array([1.0, 0, -1, 0])[q.astype(int) % 4], np.cos(np.pi * arg))
     c = np.sqrt(np.maximum(0, 1 - s * s))
+    return np.stack([(c[:, None] * sa[None, :]).ravel(), (c[:, None] * ca[None, :]).ravel(), np.repeat(s, nAz)], axis=1)
+
+
+def rays(view, N32):
+    """__raygen__view at --jitter off -> unit directions [S x K x 3], d = row * nAz + column."""
+    H = view['fov'][0]
+    loc = local_dirs(view)
     rad = view['north'] * KDEG
     cn, sn = float(F32(np.cos(rad))), float(F32(np.sin(rad)))
     n = N32.astype(np.float64)
@@ -336,8 +346,7 @@ def rays(view, N32):
         east /= np.maximum(np.linalg.norm(east, axis=1, keepdims=True), 1e-300)   # 0 only where side is taken
         r = np.where((np.sqrt(N32[:, 0] * N32[:, 0] + N32[:, 1] * N32[:, 1]) > F32(1e-3))[:, None], side, east)
     u = np.cross(r, f)
-    cs, cc = (c[:, None] * sa[None, :]).ravel(), (c[:, None] * ca[None, :]).ravel()      # per direction d
-    sd = np.repeat(s, nAz)
+    cs, cc, sd = loc[:, 0], loc[:, 1], loc[:, 2]                                            # per direction d
     D = cs[None, :, None] * r[:, None, :] + cc[None, :, None] * f[:, None, :] + sd[None, :, None] * u[:, None, :]
     return D / np.linalg.norm(D, axis=2, keepdims=True)
 
@@ -351,7 +360,7 @@ def expect(view, o32, N32, C, gz, dirs, octree, vground, panes=None):
     nd = (dirs * N32.astype(np.float64)[:, None, :]).sum(axis=2)
     own = np.zeros((S, K), bool)
     sign = (np.abs(dz) < SIGN) & (dz != 0)      # dir.z decides sky / ground and the virtual ground; exact zeros agree
-    if view['fov'][0] == 360 and view['offset'] == 0:
+    if view['fov'][0] == 360 and view['offset'] == 0 and view['fov'][1:] != [0, 0]:   # a flat field culls nothing
         own = nd <= 0
         sign |= (np.abs(nd) < SIGN) & (nd != 0)
         cls[own] = 254
@@ -389,13 +398,15 @@ def expect(view, o32, N32, C, gz, dirs, octree, vground, panes=None):
 
 def columns(man, vals, cls, dep):
     """The output columns recomputed from the dump -> {share: worst share / reach diff, mean: worst log-mean relative
-    diff, min: minima differing}, as src/views.cpp store() and gpu.cu k_view compute them."""
+    diff, min: minima differing, iso: worst volume / area relative diff}, as src/views.cpp store() and gpu.cu k_view
+    compute them."""
     v = man['view']
     H, LO, HI = v['fov']
     nEl, nAz = v['grid']
+    flat = LO == HI == 0
     far32, near32 = F32(v['far']), F32(0.1)
     k = np.arange(nEl)
-    wr = (H / nAz) * KDEG * (np.sin((HI - k * ((HI - LO) / nEl)) * KDEG) - np.sin((HI - (k + 1) * ((HI - LO) / nEl)) * KDEG))
+    wr = (H / nAz) * KDEG * (np.ones(nEl) if flat else np.sin((HI - k * ((HI - LO) / nEl)) * KDEG) - np.sin((HI - (k + 1) * ((HI - LO) / nEl)) * KDEG))
     w = np.repeat(wr / (wr * nAz).sum(), nAz)
     own = cls == 254
     glazed = ~own & (cls >= 128)
@@ -421,14 +432,32 @@ def columns(man, vals, cls, dep):
         exp[f'{name}_distance'], exp[f'{name}_distance_min'] = logmean(cls == 3 + g), least(cls == 3 + g)
     for D in v['reach']:
         exp['reach_%g' % D] = (w * (~own & (dep >= F32(D)))).sum(axis=1) / total
+    # the isovist through the rays' ends (min(t, far) along the field-frame directions, own surface at the eye): segments
+    # to the next column (flat), tetrahedra eye-A-B-C and eye-B-D-C per quad; 360 wraps the columns
+    U = local_dirs(v).reshape(nEl, nAz, 3)
+    G = np.where(own, 0, np.minimum(dep.astype(np.float64), v['far'])).reshape(-1, nEl, nAz)
+    U1, G1 = np.roll(U, -1, axis=1), np.roll(G, -1, axis=2)
+    if flat:
+        part = 0.5 * G * G1 * (U[..., 1] * U1[..., 0] - U[..., 0] * U1[..., 1])
+    else:
+        def det(x, y, z):
+            return np.einsum('...i,...i', x, np.cross(y, z))
+        part = (G[:, :-1] * G1[:, :-1] * G[:, 1:] * det(U[:-1], U1[:-1], U[1:])
+                + G1[:, :-1] * G1[:, 1:] * G[:, 1:] * det(U1[:-1], U1[1:], U[1:])) / 6
+    if H != 360:
+        part[..., -1] = 0                       # a fan's last column has no next
+    exp['area' if flat else 'volume'] = part.sum(axis=(1, 2))
     nS = 2 if any(c.endswith('_back') for c in man['columns']) and any(c.endswith('_front') for c in man['columns']) else 1
-    worst = {'share': 0.0, 'mean': 0.0, 'min': 0}
+    worst = {'share': 0.0, 'mean': 0.0, 'min': 0, 'iso': 0.0}
     for j, col in enumerate(man['columns']):
         name = col.rsplit('_', 1)[0]
         e = exp[name][(j % nS)::nS]
         a = vals[:, j]
         both = np.isnan(a) & np.isnan(e)
-        if name.endswith('distance_min'):
+        if name in ('volume', 'area'):
+            with np.errstate(invalid='ignore', divide='ignore'):
+                worst['iso'] = max(worst['iso'], float(np.nanmax(np.where(e == a, 0, np.abs(a / e - 1)), initial=0)))
+        elif name.endswith('distance_min'):
             worst['min'] += int((~both & (a != e)).sum())
         elif name.endswith('distance'):
             rel = np.inf if (np.isnan(a) != np.isnan(e)).any() else np.nanmax(np.abs(a / e - 1), initial=0)
@@ -465,7 +494,7 @@ def case_rays(exe, name, receivers, context, flags):
     nDist = int((same & use & fin & dok).sum())
     worst = columns(man, vals, gcls, gdep)
     cmatch, dmatch = nSame / max(nUse, 1), nDist / nFin if nFin else 1.0
-    colok = worst['share'] <= 1e-9 and worst['mean'] <= 1e-6 and worst['min'] == 0
+    colok = worst['share'] <= 1e-9 and worst['mean'] <= 1e-6 and worst['min'] == 0 and worst['iso'] <= 1e-5
     ok = cmatch >= MATCH and dmatch >= MATCH and colok
     rel = np.where(same & use & fin & np.isfinite(dt), dt / lim, 0)
     names = dict(enumerate(v['classes'])) | {254: 'own'}
@@ -475,7 +504,8 @@ def case_rays(exe, name, receivers, context, flags):
             + ', '.join(f'{n} {k}' for k, n in why.items()) + '), '
             f'class {100 * cmatch:.3f} %, distance {100 * dmatch:.3f} % of {nFin} (worst {rel.max():.2g} x tol; '
             f'{int(nodist.sum())} grazing the virtual ground: class only), '
-            f'columns: shares {worst["share"]:.1e}, log means {worst["mean"]:.1e}, minima off {worst["min"]}')
+            f'columns: shares {worst["share"]:.1e}, log means {worst["mean"]:.1e}, minima off {worst["min"]}, '
+            f'isovist {worst["iso"]:.1e}')
     detail = []
     bad = np.argwhere(use & ~(same & dok))
     nEl, nAz = v['grid']
@@ -510,7 +540,7 @@ def ladybug(exe):
         octree = radiance(d, blocking, C)
         eye = eyes(rec, ['--offset', off], C)[0].astype(np.float64) + C
         for typ, (tname, fov, unob) in LB_TYPES.items():
-            flags = ['--fov', fov, '--offset', off, '--jitter', 'off']
+            flags = ['--fov', fov, '--offset', off, '--jitter', 'off', '--distance', 'none']   # 360,-1,1: no isovist
             man, vals = run_views(exe, receivers, context, flags, d / f'type{typ}')
             ours = 100 * sum(vals[:, man['columns'].index(f'{c}_front')] for c in unob)
             line = f'info ladybug type {typ} {tname} {sname} ({len(eye)} sensors): views {" ".join(flags)} {ours.mean():.2f} %'

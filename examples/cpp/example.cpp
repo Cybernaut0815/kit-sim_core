@@ -95,6 +95,24 @@ int main(int argc, char** argv) {
                 mean(v, k, "distance_front"), mean(v, k, "reach_6_front"), mean(v, k, "reach_20_front"),
                 mean(v, k, "reach_50_front"));
 
+  // isovists in tests/room.obj (a 6.3 x 5.1 x 2.9 m room) from its measure grid, the eye 0.4 m above it: the volume
+  // all around (fovH 360, elevation -90..90: m3) and the area of horizontal rays only (elevation 0..0: m2). The isovist
+  // is 360 mode's default column; vo.distance = DistMean | DistMin gives the distances instead, farDist caps both.
+  std::vector<daylight::Mesh> room;
+  const std::string tests = argc > 1 ? argv[1] : "tests";
+  if (!daylight::read_obj(tests + "/room_grid.obj", room, err) || !daylight::read_obj(tests + "/room.obj", room, err)) return fail(err);
+  for (size_t k = 1; k < room.size(); ++k) room[k].sensor = false;   // room, window, tree: context
+  daylight::views::Options io;
+  io.fovH = 360; io.elevLo = -90; io.elevHi = 90;
+  io.offset = 0.4;
+  io.noOcclude = {"grid"};   // measured, not seen
+  daylight::Result iv, ia;
+  if (!daylight::views::run(room, io, iv, err)) return fail(err);
+  io.elevLo = io.elevHi = 0;
+  if (!daylight::views::run(room, io, ia, err)) return fail(err);
+  std::printf("isovists in the room: volume %.1f m3 all around, area %.1f m2 at eye height\n", mean(iv, 0, "volume_front"),
+              mean(ia, 0, "area_front"));
+
   // Failures return false with err: here a cancelled run, then a target name the meshes do not resolve
   cancel = true;
   if (!daylight::views::run(meshes, vo, v, err)) std::printf("cancelled run: %s\n", err.c_str());

@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: Apache-2.0 AND LicenseRef-Commons-Clause-1.0
 # daylight.exe and views.exe on tests/box.obj (OBJ groups "ground": four 2 m quads at z 0, "box": a 1 m box floating
 # above the fourth; both are sensors and block), a few flag sets each, then both on an interior with a glass window
-# (tests/room.obj, its measure grid tests/room_grid.obj) (docs/examples.md#cli). Values (text) and
+# (tests/room.obj, its measure grid tests/room_grid.obj) and its isovists (docs/examples.md#cli). Values (text) and
 # manifests go to examples/cli/out; per sensor mesh the mean of each column is printed.
 # Run after the build, from anywhere: pwsh examples/cli/run.ps1 (DAYLIGHT_EXE, VIEWS_EXE: other exes)
 $repo = Split-Path -Parent (Split-Path -Parent $PSScriptRoot)
@@ -48,14 +48,21 @@ Invoke-Run $daylight noon "--clear-sky $berlin --quantity irradiance,illuminance
 # views: 120 deg about each face's normal (the default field); rays ending on the mesh "ground" count for the group
 # "lawn"; reach: the shares of the field that see 6, 20 and 50 m (EN 17037)
 Invoke-Run $views view '--fov 120 --target ground=lawn --reach en17037' 'sky ground lawn obstruction distance reach_20'
-# views: a standing eye 1.6 m above each ground quad, all around; the box is the group "cube". Only the ground's rows
-# are printed: the box's faces get eyes 1.6 m out too.
-$eye = '--fov 360 --offset 1.6 --target ground=lawn --target box=cube --reach en17037'
+# views: a standing eye 1.6 m above each ground quad, all around; the box is the group "cube"; the log-mean distance
+# (all around the default column is the isovist, below). Only the ground's rows are printed: the box's faces get eyes
+# 1.6 m out too.
+$eye = '--fov 360 --offset 1.6 --target ground=lawn --target box=cube --reach en17037 --distance mean'
 Invoke-Run $views eye $eye 'sky ground lawn cube distance reach_20' ground
 # an interior, tests/room.obj (a room, its window, a tree outside) with the measure grid tests/room_grid.obj at 0.8 m,
 # which --no-occlude keeps out of the rays; the window is glass: views looks through it (--transmission on: glazing =
-# the share of the field seen through glass), all around from 0.4 m above the grid; daylight: the light through it
+# the share of the field seen through glass), all around from 0.4 m above the grid, the volume seen out to 20 m (--far)
+# and the log-mean distance; daylight: the light through it
 $room = 'tests/room_grid.obj --context tests/room.obj'
 $glass = '--no-occlude grid --optics window=0,0.64,glass --transmission on'
-Invoke-Run $views interior "--fov 360 --offset 0.4 --target tree=green $glass --reach en17037" 'sky ground green glazing distance reach_6' '*' $room
+Invoke-Run $views interior "--fov 360 --offset 0.4 --target tree=green $glass --reach en17037 --distance isovist,mean --far 20" 'sky ground green glazing volume distance reach_6' '*' $room
 Invoke-Run $daylight interior_light "--clear-sky $berlin $glass --quantity radiation,sunhours" '' '*' $room
+# isovists in the shut room (the window blocks; 6.3 x 5.1 x 2.9 m): the volume all around (--fov 360,-90,90, m3) and
+# the area of horizontal rays only (--fov 360,0,0, m2). The isovist is 360 mode's default column; --distance mean,min
+# gives the distances instead, --far M caps both.
+Invoke-Run $views isovist_3d '--fov 360,-90,90 --offset 0.4 --no-occlude grid' 'volume' '*' $room
+Invoke-Run $views isovist_2d '--fov 360,0,0 --offset 0.4 --no-occlude grid' 'area' '*' $room

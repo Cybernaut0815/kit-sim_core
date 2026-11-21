@@ -21,7 +21,7 @@ static const double kPi = 3.14159265358979323846;
 static int failures = 0;
 #define CHECK(cond) do { if (!(cond)) { std::printf("%s:%d: CHECK(%s) failed\n", __FILE__, __LINE__, #cond); ++failures; } } while (0)
 
-Mesh box_mesh(const char* name, double x0, double y0, double z0, double x1, double y1, double z1, bool soup);   // check_mesh.cpp
+SimulationMesh box_mesh(const char* name, double x0, double y0, double z0, double x1, double y1, double z1, bool soup);   // check_mesh.cpp
 
 static float3 f3(double x, double y, double z) { return float3{float(x), float(y), float(z)}; }
 static float3 unit(double x, double y, double z) { double l = std::sqrt(x * x + y * y + z * z); return f3(x / l, y / l, z / l); }
@@ -33,8 +33,8 @@ static void quad(Tris& t, float3 a, float3 b, float3 c, float3 d, uint32_t slot 
   t.slot.insert(t.slot.end(), {slot, slot});
 }
 // One square face (2 half x 2 half, facing +z) per x, centred at (x, 0, z).
-static Mesh squares(const char* name, bool sensor, double z, double half, std::initializer_list<double> xs) {
-  Mesh m; m.name = name; m.sensor = sensor;
+static SimulationMesh squares(const char* name, bool sensor, double z, double half, std::initializer_list<double> xs) {
+  SimulationMesh m; m.name = name; m.sensor = sensor;
   for (double x : xs) {
     const int b = int(m.numPoints());
     m.points.insert(m.points.end(), {x - half, -half, z, x + half, -half, z, x + half, half, z, x - half, half, z});
@@ -691,7 +691,7 @@ int check_gpu(const char* testsDir) {
 
   // run() keeps its GPU context for the process and, with Options::sceneKey, the resident GAS: same numbers, no rebuild
   {
-    std::vector<Mesh> meshes;
+    std::vector<SimulationMesh> meshes;
     std::string e2;
     CHECK(read_obj(std::string(testsDir) + "/box.obj", meshes, e2));
     Options o;
@@ -709,7 +709,7 @@ int check_gpu(const char* testsDir) {
     o.sceneKey = "box-2";
     CHECK(run(meshes, nullptr, o, r3, e2) && !r3.sceneReused);   // new key: rebuilt, identical values
     size_t faces = 0;
-    for (const Mesh& m : meshes) faces += m.numFaces();
+    for (const SimulationMesh& m : meshes) faces += m.numFaces();
     CHECK(r1.values.size() == faces && faces > 0);
     CHECK(r1.values == r2.values);
     CHECK(r1.values == r3.values);
@@ -760,8 +760,8 @@ int check_gpu(const char* testsDir) {
     ov.quantities = {Quantity::Radiation, Quantity::SunHours};
     ov.lat = 42.35; ov.lon = -71.07; ov.tz = -5; ov.stepMin = 30;
     CHECK(parse_hoy("06-21T08:00", false, ov.t0, e2) && parse_hoy("06-21T18:00", false, ov.t1, e2));
-    std::vector<Mesh> copies = meshes;
-    std::vector<MeshView> views;
+    std::vector<SimulationMesh> copies = meshes;
+    std::vector<SimulationMeshView> views;
     for (size_t k = 0; k < meshes.size(); ++k) {
       copies[k].name = "renamed-" + std::to_string(k);
       copies[k].sensor = k == 1;   // the box measures, the ground only shades
@@ -809,12 +809,12 @@ int check_gpu(const char* testsDir) {
 
     // scene_acquire records the build order: each blocking mesh's triangles once the gaps of skipped faces are closed (a
     // collinear pentagon draws none of its 3); without rays it only looks the scene up
-    Mesh gap;
+    SimulationMesh gap;
     gap.name = "gap";
     gap.points = {0, 0, 0, 1, 0, 0, 2, 0, 0, 3, 0, 0, 4, 0, 0, 0, 5, 0};
     gap.counts = {5, 3};
     gap.indices = {0, 1, 2, 3, 4, 0, 1, 5};
-    const std::vector<MeshView> mv{{&gap, "gap", false}, {&meshes[0], "ground", true}, {&meshes[1], "box", true}};
+    const std::vector<SimulationMeshView> mv{{&gap, "gap", false}, {&meshes[0], "ground", true}, {&meshes[1], "box", true}};
     const auto all = [](size_t) { return true; };
     Scene sc, seen;
     Result rs;
@@ -838,7 +838,7 @@ int check_gpu(const char* testsDir) {
     o.transmission = true;
     std::string e2;
     CHECK(parse_hoy("06-21T12:00", false, o.t0, e2));
-    const auto sun = [&](const std::vector<Mesh>& ms, const Options& op) {
+    const auto sun = [&](const std::vector<SimulationMesh>& ms, const Options& op) {
       Result r; std::string e;
       if (!run(ms, nullptr, op, r, e)) { std::printf("run: %s\n", e.c_str()); ++failures; }
       return r;
@@ -846,9 +846,9 @@ int check_gpu(const char* testsDir) {
     const auto b255 = [](int b) { return double(float(b) / 255.f); };   // what a byte adds: dt (1 h) x byte / 255
 
     // two meshes x two slots: A/0 tau 1, A/1 tau 0.5, B/0 tau 0.25 (NAME/SLOT over NAME), B/1 opaque (NAME)
-    Mesh A = squares("A", false, 1, 20, {0, 100}), B = squares("B", false, 1, 20, {200, 300});
+    SimulationMesh A = squares("A", false, 1, 20, {0, 100}), B = squares("B", false, 1, 20, {200, 300});
     A.slot = {0, 1}; B.slot = {0, 1};
-    const std::vector<Mesh> ab{squares("ground", true, 0, 0.5, {0, 100, 200, 300}), A, B};
+    const std::vector<SimulationMesh> ab{squares("ground", true, 0, 0.5, {0, 100, 200, 300}), A, B};
     o.optics = {{"A", 0, 0, 1, false}, {"A", 1, 0.2, 0.5, false}, {"B", -1, 0.2, 0, false}, {"B", 0, 0.2, 0.25, false}};
     Result r = sun(ab, o);
     CHECK(r.values == std::vector<double>({1, b255(128), b255(64), 0}));
@@ -861,10 +861,10 @@ int check_gpu(const char* testsDir) {
     // glass wall south of a sensor, turned 30 deg about z (normal (-sin 30, cos 30, 0), so every term of the device's
     // cosine counts): --fresnel off passes tau like porous; on passes glass_TR at the sun's incidence (~75 deg)
     const double s30 = 0.5, c30 = std::sqrt(0.75);
-    Mesh wall; wall.name = "wall"; wall.sensor = false;
+    SimulationMesh wall; wall.name = "wall"; wall.sensor = false;
     wall.points = {-20 * c30, -1 - 20 * s30, 0, 20 * c30, -1 + 20 * s30, 0, 20 * c30, -1 + 20 * s30, 10, -20 * c30, -1 - 20 * s30, 10};
     wall.counts = {4}; wall.indices = {0, 1, 2, 3};
-    const std::vector<Mesh> gw{squares("ground", true, 0, 0.5, {0}), wall};
+    const std::vector<SimulationMesh> gw{squares("ground", true, 0, 0.5, {0}), wall};
     Options gl = o; gl.optics = {{"wall", -1, 0, 0.64, true}};
     Options gloff = gl; gloff.fresnel = false;
     Options por = o; por.optics = {{"wall", -1, 0, 0.64, false}};
@@ -879,11 +879,11 @@ int check_gpu(const char* testsDir) {
 
     // thin solids: a 20 x 20 x 0.01 m pane box (indexed, a soup, and wound inward) passes tau once; the 3 m cube twice; a
     // double-faced sheet once. --cull-backfaces: every closed solid is crossed through one front face, tau once
-    Mesh flip = box_mesh("flip", 290, -10, 1, 310, 10, 1.01, false);
+    SimulationMesh flip = box_mesh("flip", 290, -10, 1, 310, 10, 1.01, false);
     for (size_t f = 0; f < 6; ++f) std::swap(flip.indices[4 * f + 1], flip.indices[4 * f + 3]);
-    Mesh twin = squares("twin", false, 1, 10, {400});
+    SimulationMesh twin = squares("twin", false, 1, 10, {400});
     twin.counts.push_back(4); twin.indices.insert(twin.indices.end(), {3, 2, 1, 0});
-    std::vector<Mesh> th{squares("ground", true, 0, 0.5, {0, 100, 200, 300, 400}), box_mesh("pane", -10, -10, 1, 10, 10, 1.01, false),
+    std::vector<SimulationMesh> th{squares("ground", true, 0, 0.5, {0, 100, 200, 300, 400}), box_mesh("pane", -10, -10, 1, 10, 10, 1.01, false),
                          box_mesh("soup", 90, -10, 1, 110, 10, 1.01, true), box_mesh("cube", 198.5, -1.5, 1, 201.5, 1.5, 4, false), flip, twin};
     for (size_t k = 1; k < th.size(); ++k) th[k].sensor = false;
     Options tho = o;
@@ -933,7 +933,7 @@ int check_gpu(const char* testsDir) {
     std::remove(od.dumpBitsPath.c_str());
 
     // residency: a tau edit on the same key reuses the scene; a slot that starts to transmit rebuilds; no key never reuses
-    const std::vector<Mesh> lid{squares("ground", true, 0, 0.5, {0}), squares("lid", false, 1, 20, {0})};
+    const std::vector<SimulationMesh> lid{squares("ground", true, 0, 0.5, {0}), squares("lid", false, 1, 20, {0})};
     Options k1 = o; k1.sceneKey = "lid";
     k1.optics = {{"lid", -1, 0.2, 0.3, false}}; r = sun(lid, k1);
     CHECK(!r.sceneReused && r.values.size() == 1 && std::fabs(r.values[0] - 0.3) <= 0.5 / 255 + 1e-6);
@@ -957,15 +957,15 @@ int check_gpu(const char* testsDir) {
     // other's value); the per-slot layout keys a resident scene of its own
     Weather cs;
     CHECK(clear_sky_weather(42.35, -71.07, -5, 3, 0, cs, e2));
-    const auto go = [&](const std::vector<Mesh>& ms, const Options& op) {
+    const auto go = [&](const std::vector<SimulationMesh>& ms, const Options& op) {
       Result rr; std::string e;
       if (!run(ms, &cs, op, rr, e)) { std::printf("run: %s\n", e.c_str()); ++failures; }
       return rr;
     };
-    Mesh s2; s2.name = "s2";
+    SimulationMesh s2; s2.name = "s2";
     s2.points = {0.5, -0.5, 1, 1.5, -0.5, 1, 1.5, 0.5, 1, 0.5, 0.5, 1, -0.5, 4.5, 1, 0.5, 4.5, 1, 0.5, 5.5, 1, -0.5, 5.5, 1};
     s2.counts = {4, 4}; s2.indices = {3, 2, 1, 0, 4, 5, 6, 7};   // face 0 looks down at (1, 0, 1), face 1 up at (0, 5, 1)
-    const std::vector<Mesh> halves{s2, squares("east", false, 0, 500, {500}), squares("west", false, 0, 500, {-500})};
+    const std::vector<SimulationMesh> halves{s2, squares("east", false, 0, 500, {500}), squares("west", false, 0, 500, {-500})};
     Options ob;
     ob.quantities = {Quantity::Radiation, Quantity::Direct, Quantity::SunHours};
     ob.selfOcclude = false; ob.bounceSamples = 65536;
@@ -1020,7 +1020,7 @@ int check_gpu(const char* testsDir) {
     // slot in the GAS, so its one hit record must carry the glass
     double mT, mR;
     glass_means(float(tn_from_Tn(0.64)), mT, mR);
-    const std::vector<Mesh> gp{squares("face", true, 0.5, 0.5, {0}), squares("pane", false, 3, 1000, {0})};
+    const std::vector<SimulationMesh> gp{squares("face", true, 0.5, 0.5, {0}), squares("pane", false, 3, 1000, {0})};
     Options og = ob; og.quantities = {Quantity::Radiation}; og.seriesPath.clear(); og.bounceSamples = 4096; og.optics = {{"pane", -1, 0, 0.64, true}};
     Options ov = og; ov.bounces = 0; ov.optics.clear(); ov.sides = Sides::Back; ov.patchSamples = 64;
     const Result rm = go(gp, og), rv = go({gp[0]}, ov);
@@ -1041,7 +1041,7 @@ int check_gpu(const char* testsDir) {
     Options o;
     o.quantities = {Quantity::Radiation, Quantity::SunHours};
     CHECK(parse_hoy("06-01T00:00", false, o.t0, e) && parse_hoy("07-01T00:00", false, o.t1, e));
-    Mesh wall, flush;
+    SimulationMesh wall, flush;
     wall.name = "wall"; flush.name = "flush";
     wall.points = {-1000, 0, 0, 1000, 0, 0, 1000, 0, 2000, -1000, 0, 2000};   // facing -y
     wall.counts = {4}; wall.indices = {0, 1, 2, 3};
@@ -1052,8 +1052,8 @@ int check_gpu(const char* testsDir) {
       flush.points.insert(flush.points.end(), {x - 0.5, 0, z - 0.5, x + 0.5, 0, z - 0.5, x + 0.5, 0, z + 0.5, x - 0.5, 0, z + 0.5});
       flush.counts.push_back(4); flush.indices.insert(flush.indices.end(), {b, b + 1, b + 2, b + 3});
     }
-    for (const std::vector<Mesh>& scene : {std::vector<Mesh>{squares("ground", true, 0, 1000, {0}), squares("spots", true, 0, 0.5, {0.3, 7, 300, -950})},
-                                           std::vector<Mesh>{wall, flush}}) {
+    for (const std::vector<SimulationMesh>& scene : {std::vector<SimulationMesh>{squares("ground", true, 0, 1000, {0}), squares("spots", true, 0, 0.5, {0.3, 7, 300, -950})},
+                                           std::vector<SimulationMesh>{wall, flush}}) {
       Result own, open;
       Options no = o; no.selfOcclude = false;
       CHECK(run(scene, &cs, o, own, e) && run(scene, &cs, no, open, e));
@@ -1071,7 +1071,7 @@ int check_gpu(const char* testsDir) {
     std::string e;
     Weather cs;
     CHECK(clear_sky_weather(42.35, -71.07, -5, 3, 0, cs, e));
-    const auto go = [&](const std::vector<Mesh>& ms, const Options& op) {
+    const auto go = [&](const std::vector<SimulationMesh>& ms, const Options& op) {
       Result r; std::string er;
       if (!run(ms, &cs, op, r, er)) { std::printf("run: %s\n", er.c_str()); ++failures; }
       return r;
@@ -1079,9 +1079,9 @@ int check_gpu(const char* testsDir) {
     Options o;
     o.quantities = {Quantity::Radiation, Quantity::SunHours};
     CHECK(parse_hoy("06-21T00:00", false, o.t0, e) && parse_hoy("06-22T00:00", false, o.t1, e));
-    Mesh room = squares("room", true, 0, 0.5, {0, 100});
+    SimulationMesh room = squares("room", true, 0, 0.5, {0, 100});
     for (size_t j = 0; j < 4; ++j) room.points[14 + 3 * j] = 1;   // the second square 1 m up: the room spans z 0..1
-    const std::vector<Mesh> all{room, squares("lid", true, 1, 0.5, {0}), squares("shade", false, 2, 0.5, {100})}, bare{all[0], all[2]};
+    const std::vector<SimulationMesh> all{room, squares("lid", true, 1, 0.5, {0}), squares("shade", false, 2, 0.5, {100})}, bare{all[0], all[2]};
     Options lid = o, both = o, none = o;
     lid.noOcclude = {"lid"}; both.noOcclude = {"room", "lid"}; none.selfOcclude = false;
     const Result shaded = go(all, o), rb = go(bare, o), rl = go(all, lid), r2 = go(all, both), rn = go(all, none);

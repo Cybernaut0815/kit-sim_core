@@ -38,7 +38,7 @@ The same roles and flags as views ([views.md](views.md#mesh-roles)), so one set 
 
 | role | CLI | C++ |
 |---|---|---|
-| sensor: analysed (a row per element), casts shade | positional `FILE...` | `Mesh::sensor = true` (`MeshView::sensor`) |
+| sensor: analysed (a row per element), casts shade | positional `FILE...` | `SimulationMesh::sensor = true` (`SimulationMeshView::sensor`) |
 | context: casts shade, never analysed | `--context FILE` | `sensor = false` |
 | analysed but invisible to rays (casts no shade), e.g. a grid of measuring points in a room | `--no-occlude NAME` (one sensor mesh), `--no-self-occlude` (every sensor mesh) | `noOcclude`, `selfOcclude = false` |
 | glass or porous: light passes by its transmittance | `--optics NAME[/SLOT]=RHO,TAU[,glass\|porous]` with `--transmission on` | `optics`, `transmission = true` |
@@ -60,8 +60,8 @@ callers. The C ABI and the bindings take the flags verbatim, except mesh paths, 
 
 | flag | value | default | meaning | `Options` |
 |---|---|---|---|---|
-| `FILE...` | `.dmesh` `.obj` `.usd*` | required (or `--bench`) | sensor meshes: analysed, and blocking unless `--no-self-occlude` (or `--no-occlude` names them) | `Mesh::sensor = true` |
-| `--context FILE` | mesh file, repeatable | none | blocks rays only, never analysed | `Mesh::sensor = false` |
+| `FILE...` | `.dmesh` `.obj` `.usd*` | required (or `--bench`) | sensor meshes: analysed, and blocking unless `--no-self-occlude` (or `--no-occlude` names them) | `SimulationMesh::sensor = true` |
+| `--context FILE` | mesh file, repeatable | none | blocks rays only, never analysed | `SimulationMesh::sensor = false` |
 | `--on` | `faces` \| `vertices` | `faces` | element = polygon (sensor at the centroid, face normal) or point (area-weighted vertex normal) | `onVertices` |
 | `--mode` | `physical` \| `ladybug` | `physical` | sky/sun model, see [modes.md](modes.md) | `mode` |
 | `--quantity` | `Q[,Q...]` | `radiation` | one output column per quantity: `radiation` kWh/m2 over the run, `direct` (sun only: beam x transmittance), `diffuse` (sky + ground, x transmittance; with `--bounces` also the light the model reflects, its reflected sun included), `irradiance` mean W/m2 (instantaneous for a single `--time`), `illuminance` mean lux (physical mode), `sunhours` equivalent full-sun hours (an hour behind a surface transmitting 0.6 counts 0.6; with every surface opaque, the default, an exact count of sunlit hours). Transmittance is 1 for open sky and 0 behind an opaque surface; between only with `--transmission on`. Reflected light (`--bounces`) adds to radiation, diffuse, irradiance and illuminance, never to direct or sun hours | `quantities` |

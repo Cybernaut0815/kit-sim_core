@@ -1,10 +1,10 @@
 # SPDX-License-Identifier: Apache-2.0 AND LicenseRef-Commons-Clause-1.0
 """The daylight and views tools in-process through daylight_c.dll (docs/c-abi.md): the CLIs' own flags, meshes as
 handles instead of files, the values and manifest the CLI would write, and the GPU scene kept resident across runs over
-the same Mesh objects::
+the same SimulationMesh objects::
 
-    from daylight.native import Mesh, run
-    with Mesh.load('tests/box.obj') as box:
+    from daylight.native import SimulationMesh, run
+    with SimulationMesh.load('tests/box.obj') as box:
         r = run('daylight', ['--epw', 'site.epw', '--quantity', 'radiation'], box)
         v = run('views', ['--fov', '360', '--offset', '1.6'], box)          # v.stats['scene_reused'] is True
     print(r.manifest['columns'], r.values.shape)
@@ -23,7 +23,7 @@ from ._native import RUNTIME, STATS, USAGE, DaylightError, check, lib, text
 from ._native import path as _path
 from .core import _tool
 
-__all__ = ['Control', 'DaylightError', 'Mesh', 'Result', 'run', 'usage']
+__all__ = ['Control', 'DaylightError', 'SimulationMesh', 'Result', 'run', 'usage']
 
 _STATS = (('scene_reused', bool), ('prep_ms', float), ('sky_ms', float), ('build_ms', float), ('trace_ms', float),
           ('reduce_ms', float), ('bounce_ms', float), ('rays', int), ('launches', int), ('gas_bytes', int))
@@ -55,10 +55,10 @@ class _Handle:
         self.close()
 
 
-class Mesh(_Handle):
-    """Meshes the core holds (dl_mesh), copied once, never changed: runs over the same Mesh objects in the same roles
+class SimulationMesh(_Handle):
+    """Meshes the core holds (dl_mesh), copied once, never changed: runs over the same SimulationMesh objects in the same roles
     and order reuse the GPU scene. `names`: what the manifest, --target, --optics and --no-occlude call them (an OBJ's
-    groups; a Mesh from arrays holds one mesh, or none without faces)."""
+    groups; a SimulationMesh from arrays holds one mesh, or none without faces)."""
 
     def __init__(self, name, points, counts, indices, slots=None):
         """One mesh from the .dmesh arrays: points [N, 3] world metres Z up, counts [F] (>= 3), 0-based indices
@@ -124,7 +124,7 @@ def usage(tool):
 def run(tool, args, sensors, context=(), control=None):
     """One run of `tool`, 'daylight' (docs/daylight.md) or 'views' (docs/views.md): `args` its CLI flags (str as UTF-8, an
     os.PathLike in the narrow encoding the core opens files with; mesh files, --context, --out, --bench and -h are
-    refused), `sensors` / `context` a Mesh or an iterable of them in place of the CLI's mesh files and --context files,
+    refused), `sensors` / `context` a SimulationMesh or an iterable of them in place of the CLI's mesh files and --context files,
     `control` None or a Control. -> Result, values and manifest bit for bit the CLI's (numbers read and written with
     '.' whatever C locale is set). DaylightError: status 1 for bad flags or names the meshes do not resolve, 2 when the
     run fails (a file, the GPU, 'cancelled'). Runs take turns (one GPU run per process); each releases the GIL."""
@@ -150,9 +150,9 @@ def _run(tool, args, sensors, context, control):
 
 
 def _meshes(ms):
-    ms = [ms] if isinstance(ms, Mesh) else list(ms)
-    if not all(isinstance(m, Mesh) for m in ms):
-        raise TypeError('sensors / context: a Mesh or Mesh objects (Mesh(...), Mesh.load(path))')
+    ms = [ms] if isinstance(ms, SimulationMesh) else list(ms)
+    if not all(isinstance(m, SimulationMesh) for m in ms):
+        raise TypeError('sensors / context: a SimulationMesh or SimulationMesh objects (SimulationMesh(...), SimulationMesh.load(path))')
     return ms
 
 

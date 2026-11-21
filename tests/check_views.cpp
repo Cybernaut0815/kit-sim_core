@@ -28,17 +28,17 @@ static const double kDeg = 3.14159265358979323846 / 180;
 static const double kSky = 0.4490987851112869;   // sin 50 / (sin 50 + sin 70): the default field's share above the horizon
 static std::string tmpPath;                       // the runs' dumps, under tests/ (removed after each run)
 
-static Mesh mesh(const char* name, bool sensor) { Mesh m; m.name = name; m.sensor = sensor; return m; }
+static SimulationMesh mesh(const char* name, bool sensor) { SimulationMesh m; m.name = name; m.sensor = sensor; return m; }
 // Appends a face over the given corners (x y z each), counterclockwise seen from the side it faces.
-static void face(Mesh& m, std::initializer_list<double> xyz) {
+static void face(SimulationMesh& m, std::initializer_list<double> xyz) {
   const int b = int(m.numPoints());
   m.points.insert(m.points.end(), xyz);
   m.counts.push_back(int(xyz.size() / 3));
   for (int k = 0; k < m.counts.back(); ++k) m.indices.push_back(b + k);
 }
-static Mesh quad(const char* name, bool sensor, std::initializer_list<double> xyz) { Mesh m = mesh(name, sensor); face(m, xyz); return m; }
+static SimulationMesh quad(const char* name, bool sensor, std::initializer_list<double> xyz) { SimulationMesh m = mesh(name, sensor); face(m, xyz); return m; }
 // A 2 x 2 m face from corner (x, y, z), facing -y turned az degrees towards +x and tilted tilt degrees up.
-static void tilted(Mesh& m, double x, double y, double z, double az, double tilt) {
+static void tilted(SimulationMesh& m, double x, double y, double z, double az, double tilt) {
   const double n[3] = {std::sin(az * kDeg) * std::cos(tilt * kDeg), -std::cos(az * kDeg) * std::cos(tilt * kDeg), std::sin(tilt * kDeg)};
   const double e[3] = {std::cos(az * kDeg), std::sin(az * kDeg), 0};   // along the bottom edge
   const double v[3] = {n[1] * e[2] - n[2] * e[1], n[2] * e[0] - n[0] * e[2], n[0] * e[1] - n[1] * e[0]};   // n x e: up the face
@@ -83,7 +83,7 @@ struct Quad { double lo[3], hi[3]; int axis; uint8_t cls; bool pass = false; };
 struct End { uint8_t cls = 255; double t = INFINITY, cosInc = 1, off = 0; bool glazed = false; };
 
 // Whether rays pass face f of m: --transmission on and its --optics row (NAME/SLOT > NAME > *) is glass with TAU > 0.
-static bool glass_face(const views::Options& o, const Mesh& m, size_t f) {
+static bool glass_face(const views::Options& o, const SimulationMesh& m, size_t f) {
   if (!o.transmission) return false;
   const int s = m.slot.empty() ? 0 : m.slot[f];
   const Optics* best = nullptr;
@@ -147,7 +147,7 @@ static End trace(const double o[3], const double d[3], const double n[3], bool c
 // of the host's, measured across the surface it ends on; every column as views.h defines it (shares and reach 1e-9,
 // distances tol relative). margin: how close any ray comes to another class (radians off a quad's edge, the horizon or the
 // culled plane; relative to a reach distance), which must stay well above the device's float error.
-static Result expect(const char* what, const std::vector<Mesh>& meshes, views::Options o, double tol = 1e-6) {
+static Result expect(const char* what, const std::vector<SimulationMesh>& meshes, views::Options o, double tol = 1e-6) {
   o.jitter = false;
   o.dumpPath = tmpPath;
   Result r;
@@ -162,7 +162,7 @@ static Result expect(const char* what, const std::vector<Mesh>& meshes, views::O
   double c[3];
   bbox_centre(views_of(meshes), c);
   double low = o.groundZ;
-  for (const Mesh& m : meshes)
+  for (const SimulationMesh& m : meshes)
     for (size_t i = 2; std::isnan(o.groundZ) && i < m.points.size(); i += 3) low = std::fmin(low, m.points[i]);
   const double plane = float(low - c[2]);
   std::vector<std::string> groups;   // in order of first appearance
@@ -170,7 +170,7 @@ static Result expect(const char* what, const std::vector<Mesh>& meshes, views::O
   std::vector<Quad> quads;
   std::vector<float3> P, N;
   const size_t nS = o.sides == Sides::Both ? 2 : 1;
-  for (const Mesh& m : meshes) {
+  for (const SimulationMesh& m : meshes) {
     uint8_t cl = 2;
     for (const views::Target& tg : o.targets)
       if (tg.mesh == m.name) cl = uint8_t(3 + (std::find(groups.begin(), groups.end(), tg.group) - groups.begin()));
@@ -337,7 +337,7 @@ static int parse(const std::vector<const char*>& args, views::cli::Args& a, std:
 
 // The rules run() and the CLI enforce before any GPU work, each with the words of its message.
 static void check_rules() {
-  std::vector<Mesh> ms = {quad("s", true, {-1, 0, 0, 1, 0, 0, 1, 0, 2, -1, 0, 2}), quad("dup", false, {0, -5, 0, 1, -5, 0, 1, -5, 1, 0, -5, 1})};
+  std::vector<SimulationMesh> ms = {quad("s", true, {-1, 0, 0, 1, 0, 0, 1, 0, 2, -1, 0, 2}), quad("dup", false, {0, -5, 0, 1, -5, 0, 1, -5, 1, 0, -5, 1})};
   ms.push_back(ms.back());
   for (int k = 0; k < 17; ++k) {
     ms.push_back(quad("t", false, {double(k), -8, 0, k + 0.5, -8, 0, k + 0.5, -8, 1, double(k), -8, 1}));
@@ -397,7 +397,7 @@ static void check_rules() {
     if (ok || err.find(rule.words) == std::string::npos) std::printf("views: rule \"%s\": %s\n", rule.words, ok ? "ran" : err.c_str());
   }
   {
-    std::vector<Mesh> context = {ms[1]};
+    std::vector<SimulationMesh> context = {ms[1]};
     views::Options o;
     Result r;
     std::string err;
@@ -458,10 +458,10 @@ static void check_rules() {
 // rays ignore (--no-occlude), against the host model.
 static void check_glass(std::string& err) {
   // a facade looking -y, a pane 2.3 m out, a park wall 9.1 m out
-  const Mesh facade = quad("s", true, {-1, 0, 0, 1, 0, 0, 1, 0, 2, -1, 0, 2});
-  const Mesh pane = quad("pane", false, {-1.7, -2.3, 0.4, 2.9, -2.3, 0.4, 2.9, -2.3, 2.6, -1.7, -2.3, 2.6});
-  const Mesh park = quad("park", false, {-6.2, -9.1, 0, 7.3, -9.1, 0, 7.3, -9.1, 5.3, -6.2, -9.1, 5.3});
-  const std::vector<Mesh> ms = {facade, pane, park};
+  const SimulationMesh facade = quad("s", true, {-1, 0, 0, 1, 0, 0, 1, 0, 2, -1, 0, 2});
+  const SimulationMesh pane = quad("pane", false, {-1.7, -2.3, 0.4, 2.9, -2.3, 0.4, 2.9, -2.3, 2.6, -1.7, -2.3, 2.6});
+  const SimulationMesh park = quad("park", false, {-6.2, -9.1, 0, 7.3, -9.1, 0, 7.3, -9.1, 5.3, -6.2, -9.1, 5.3});
+  const std::vector<SimulationMesh> ms = {facade, pane, park};
   views::Options o;
   o.targets = {{"park", "green"}};
   o.optics = {{"pane", -1, 0, 0.64, true}};
@@ -476,7 +476,7 @@ static void check_glass(std::string& err) {
   const Result rp = expect("porous, --transmission on: the pane still blocks", ms, porous);
   CHECK(at(rp, 0, "glazing_front") == 0 && at(rp, 0, "green_front") == at(off, 0, "green_front"));
   {   // a mixed mesh: face slot 1 glass, slot 0 opaque (its triangles found by triangulating it again)
-    Mesh wall = mesh("wall", false);
+    SimulationMesh wall = mesh("wall", false);
     face(wall, {-1.7, -2.3, 0.4, 0.6, -2.3, 0.4, 0.6, -2.3, 2.6, -1.7, -2.3, 2.6});
     face(wall, {0.6, -2.3, 0.4, 2.9, -2.3, 0.4, 2.9, -2.3, 2.6, 0.6, -2.3, 2.6});
     wall.slot = {0, 1};
@@ -486,7 +486,7 @@ static void check_glass(std::string& err) {
     CHECK(at(rs, 0, "glazing_front") > 0 && at(rs, 0, "glazing_front") < at(through, 0, "glazing_front"));
   }
   {   // double glazing: two panes passed
-    Mesh pane2 = pane;
+    SimulationMesh pane2 = pane;
     pane2.name = "pane2";
     for (size_t i = 1; i < pane2.points.size(); i += 3) pane2.points[i] = -2.47;
     views::Options od = on;
@@ -523,7 +523,7 @@ static void check_glass(std::string& err) {
 
   // an interior: a 6.3 x 5.1 x 2.9 m room with a window in its south wall, a tree outside, a measure grid at 0.8 m (the
   // eye 0.4 m above it), all around: --no-occlude grid keeps the grid out of the rays
-  Mesh room = mesh("room", false);
+  SimulationMesh room = mesh("room", false);
   face(room, {0, 0, 0, 6.3, 0, 0, 6.3, 5.1, 0, 0, 5.1, 0});
   face(room, {0, 0, 2.9, 0, 5.1, 2.9, 6.3, 5.1, 2.9, 6.3, 0, 2.9});
   face(room, {0, 5.1, 0, 6.3, 5.1, 0, 6.3, 5.1, 2.9, 0, 5.1, 2.9});
@@ -533,15 +533,15 @@ static void check_glass(std::string& err) {
   face(room, {0, 0, 2.21, 6.3, 0, 2.21, 6.3, 0, 2.9, 0, 0, 2.9});
   face(room, {0, 0, 0.93, 2.07, 0, 0.93, 2.07, 0, 2.21, 0, 0, 2.21});
   face(room, {4.13, 0, 0.93, 6.3, 0, 0.93, 6.3, 0, 2.21, 4.13, 0, 2.21});
-  const Mesh window = quad("window", false, {2.07, 0, 0.93, 4.13, 0, 0.93, 4.13, 0, 2.21, 2.07, 0, 2.21});
-  const Mesh tree = quad("tree", false, {0.9, -7.3, 0, 5.2, -7.3, 0, 5.2, -7.3, 4.4, 0.9, -7.3, 4.4});
-  Mesh grid = mesh("grid", true);
+  const SimulationMesh window = quad("window", false, {2.07, 0, 0.93, 4.13, 0, 0.93, 4.13, 0, 2.21, 2.07, 0, 2.21});
+  const SimulationMesh tree = quad("tree", false, {0.9, -7.3, 0, 5.2, -7.3, 0, 5.2, -7.3, 4.4, 0.9, -7.3, 4.4});
+  SimulationMesh grid = mesh("grid", true);
   for (int j = 0; j < 3; ++j)
     for (int i = 0; i < 4; ++i) {
       const double x = 0.75 + 1.2 * i, y = 0.65 + 1.3 * j;
       face(grid, {x, y, 0.8, x + 1.2, y, 0.8, x + 1.2, y + 1.3, 0.8, x, y + 1.3, 0.8});
     }
-  const std::vector<Mesh> rm = {grid, room, window, tree};
+  const std::vector<SimulationMesh> rm = {grid, room, window, tree};
   views::Options in;
   in.fovH = 360;
   in.offset = 0.4;
@@ -570,7 +570,7 @@ static void check_glass(std::string& err) {
 // The isovist where the answer is known: open fields (every ray at --far: a regular polygon, a fan, the mesh inscribed in a
 // sphere), and tests/room.obj shut from its measure grid (the floor's area at eye height, the room's volume), jittered.
 static void check_isovist(const char* testsDir, std::string& err) {
-  const Mesh s = quad("s", true, {-1, 0, 0, 1, 0, 0, 1, 0, 2, -1, 0, 2});   // a facade looking -y
+  const SimulationMesh s = quad("s", true, {-1, 0, 0, 1, 0, 0, 1, 0, 2, -1, 0, 2});   // a facade looking -y
   {   // flat at --far 50: 180 segments of 2 deg all around, 59 over a 120 deg fan about the normal
     views::Options o;
     o.selfOcclude = false;
@@ -596,9 +596,9 @@ static void check_isovist(const char* testsDir, std::string& err) {
     CHECK(std::fabs(v - 1) <= 1e-3 && std::fabs(vj - 1) <= 2e-3);
   }
   {   // the shut room (6.3 x 5.1 x 2.9 m) from its 12 grid points 1.2 m up (convex: each sees all of it)
-    std::vector<Mesh> ms, room;
+    std::vector<SimulationMesh> ms, room;
     CHECK(read_obj(std::string(testsDir) + "/room_grid.obj", ms, err) && read_obj(std::string(testsDir) + "/room.obj", room, err));
-    for (Mesh& m : room) { m.sensor = false; ms.push_back(m); }
+    for (SimulationMesh& m : room) { m.sensor = false; ms.push_back(m); }
     views::Options o;
     o.fovH = 360; o.offset = 0.4; o.noOcclude = {"grid"};
     o.elevLo = o.elevHi = 0; o.cell = 0.5;
@@ -628,7 +628,7 @@ int check_views(const char* testsDir) {
   std::string err;
   {   // without a GPU nothing below can run
     Result r;
-    std::vector<Mesh> one = {quad("s", true, {-1, 0, 0, 1, 0, 0, 1, 0, 2, -1, 0, 2})};
+    std::vector<SimulationMesh> one = {quad("s", true, {-1, 0, 0, 1, 0, 0, 1, 0, 2, -1, 0, 2})};
     views::Options o;
     o.cell = 30;
     if (!views::run(one, o, r, err)) {
@@ -641,7 +641,7 @@ int check_views(const char* testsDir) {
   // 1, 4: faces in an empty scene (--no-self-occlude): a facade 1 m over the lowest point, a roof, a tilted, a turned and a
   // tilted-down face, a ceiling 1.5 m up and a face looking down at the lowest point (its eye, nudged along its normal by
   // offset_ray, a hair below the virtual plane)
-  Mesh faces = mesh("faces", true);
+  SimulationMesh faces = mesh("faces", true);
   face(faces, {-1, 0, 0, 1, 0, 0, 1, 0, 2, -1, 0, 2});
   face(faces, {5, 0, 2, 6, 0, 2, 6, 1, 2, 5, 1, 2});
   tilted(faces, 8, 0, 0.5, 0, 30);
@@ -684,7 +684,7 @@ int check_views(const char* testsDir) {
     expect("vertices in an empty scene", {faces}, ov);
   }
   {   // a screen 5 cm in front of a facade: hits nearer than 0.1 m count as 0.1 m in the log mean
-    const std::vector<Mesh> scr = {quad("s", true, {-1, 0, 0, 1, 0, 0, 1, 0, 2, -1, 0, 2}),
+    const std::vector<SimulationMesh> scr = {quad("s", true, {-1, 0, 0, 1, 0, 0, 1, 0, 2, -1, 0, 2}),
                                    quad("screen", false, {-5, -0.05, -1, 5, -0.05, -1, 5, -0.05, 3, -5, -0.05, 3})};
     expect("a screen 5 cm in front", scr, views::Options{});
   }
@@ -699,7 +699,7 @@ int check_views(const char* testsDir) {
   }
   {   // a degenerate face (no area, no normal) traces no ray, in view mode and 360 at an offset: all own surface, as 360
       // at offset 0 gives it (obstruction 1, no distance, no reach, an isovist of 0: every ray ends at the eye)
-    Mesh deg = mesh("deg", true);
+    SimulationMesh deg = mesh("deg", true);
     face(deg, {0, 0, 1, 1, 0, 1, 2, 0, 1});
     face(deg, {-1, 0, 0, 1, 0, 0, 1, 0, 2, -1, 0, 2});
     for (const double fov : {120.0, 360.0}) {
@@ -715,7 +715,7 @@ int check_views(const char* testsDir) {
     }
   }
   {   // a canopy 3 m over the roof, on one side: what the roof sees of it turns with --north (its right: east turned)
-    std::vector<Mesh> canopy = {faces, quad("canopy", false, {6, 1.2, 5, 30, 1.2, 5, 30, 30, 5, 6, 30, 5})};
+    std::vector<SimulationMesh> canopy = {faces, quad("canopy", false, {6, 1.2, 5, 30, 1.2, 5, 30, 30, 5, 6, 30, 5})};
     views::Options n0 = o1, n30 = o1;
     n30.north = 30;
     const Result a = expect("faces under a canopy", canopy, n0), b = expect("faces under a canopy, --north 30", canopy, n30);
@@ -723,7 +723,7 @@ int check_views(const char* testsDir) {
     CHECK(o0 > 0.01 && o30 > 0.01 && std::fabs(o0 - o30) > 0.01);
     // a roof a hair off flat (its north edge 0.1 mm up: float noise, the normal 1e-4 off vertical) takes the flat roof's
     // frame, so it sees the canopy as the flat one does (its tilt's own frame would turn the field 180 deg)
-    Mesh roofs = mesh("roofs", true);
+    SimulationMesh roofs = mesh("roofs", true);
     face(roofs, {5, 0, 2, 6, 0, 2, 6, 1, 2, 5, 1, 2});
     face(roofs, {5, 0, 2, 6, 0, 2, 6, 1, 2.0001, 5, 1, 2.0001});
     const Result rr = expect("a flat and a nearly flat roof under a canopy", {roofs, canopy[1]}, n0);
@@ -734,8 +734,8 @@ int check_views(const char* testsDir) {
   // quad lies on the virtual plane: every ray below the horizon ends on it (the shallowest 573 m away), at 10 / sin, as
   // the hardware meets so large a triangle (End::off: the shallow rays' ends ~1e-4 m off its plane)
   const double sLow = (std::sin(-70 * kDeg) + std::sin(-68 * kDeg)) / 2;   // the lowest row's middle, in sine
-  const Mesh eye = quad("eye", true, {-0.1, 0, 9.9, 0.1, 0, 9.9, 0.1, 0, 10.1, -0.1, 0, 10.1});
-  const Mesh lake = quad("lake", false, {-1000, -1000, 0, 1000, -1000, 0, 1000, 1000, 0, -1000, 1000, 0});
+  const SimulationMesh eye = quad("eye", true, {-0.1, 0, 9.9, 0.1, 0, 9.9, 0.1, 0, 10.1, -0.1, 0, 10.1});
+  const SimulationMesh lake = quad("lake", false, {-1000, -1000, 0, 1000, -1000, 0, 1000, 1000, 0, -1000, 1000, 0});
   views::Options o2;
   o2.fovH = 360;
   o2.offset = 0.5;
@@ -757,7 +757,7 @@ int check_views(const char* testsDir) {
           std::isnan(at(r, 0, "water_distance_min_front")));
   }
   {   // walls 2 km north and south: what was sky there is an obstruction now, its distances still count as --far
-    Mesh walls = mesh("walls", false);
+    SimulationMesh walls = mesh("walls", false);
     face(walls, {-5000, 2000, -1000, 5000, 2000, -1000, 5000, 2000, 1020, -5000, 2000, 1020});
     face(walls, {-5000, -2000, -1000, -5000, -2000, 1020, 5000, -2000, 1020, 5000, -2000, -1000});
     const Result r = expect("360 over a 2 km target quad, walls 2 km away", {eye, lake, walls}, o2);
@@ -770,10 +770,10 @@ int check_views(const char* testsDir) {
   // them, their own surface below; float error puts the quad (and their own faces) on rays near the plane, none may end
   // there. Jittered too: rays a hair over the plane
   {
-    Mesh spots = mesh("spots", true);
+    SimulationMesh spots = mesh("spots", true);
     const double xy[3][2] = {{0, 0}, {0.37, -0.21}, {300, -400}};
     for (const auto& p : xy) face(spots, {p[0] - 0.1, p[1] - 0.1, 0, p[0] + 0.1, p[1] - 0.1, 0, p[0] + 0.1, p[1] + 0.1, 0, p[0] - 0.1, p[1] + 0.1, 0});
-    const std::vector<Mesh> plaza = {spots, quad("plaza", false, {-1000, -1000, 0, 1000, -1000, 0, 1000, 1000, 0, -1000, 1000, 0})};
+    const std::vector<SimulationMesh> plaza = {spots, quad("plaza", false, {-1000, -1000, 0, 1000, -1000, 0, 1000, 1000, 0, -1000, 1000, 0})};
     views::Options o5;
     o5.fovH = 360;
     Result r = expect("own plane: sensors in a 2 km quad", plaza, o5), rj;
@@ -788,7 +788,7 @@ int check_views(const char* testsDir) {
   {
     views::cli::Args args;
     CHECK(parse({"facade.obj", "--target", "a=water;b=park"}, args, err) == 0);
-    const std::vector<Mesh> st = {quad("facade", true, {-1, 0, 0, 1, 0, 0, 1, 0, 2, -1, 0, 2}), quad("a", false, {-3, -10, 0.5, 5, -10, 0.5, 5, -10, 4, -3, -10, 4}),
+    const std::vector<SimulationMesh> st = {quad("facade", true, {-1, 0, 0, 1, 0, 0, 1, 0, 2, -1, 0, 2}), quad("a", false, {-3, -10, 0.5, 5, -10, 0.5, 5, -10, 4, -3, -10, 4}),
                                   quad("b", false, {8, -30, 0.2, 20, -30, 0.2, 20, -30, 6, 8, -30, 6})};
     views::Options o3 = args.opt;
     o3.distance = views::DistMean | views::DistMin | views::DistGroup;
@@ -825,7 +825,7 @@ int check_views(const char* testsDir) {
     CHECK(rn.columns == std::vector<std::string>({"sky_front", "ground_front", "obstruction_front", "water_front", "park_front", "reach_6_front",
                                                   "reach_20_front", "reach_50_front"}));
     // 16 groups, the most there are: 16 strips 10 m ahead
-    std::vector<Mesh> strips = {st[0]};
+    std::vector<SimulationMesh> strips = {st[0]};
     views::Options o16;
     o16.distance = views::DistMean | views::DistMin | views::DistGroup;
     for (int k = 0; k < 16; ++k) {
@@ -838,7 +838,7 @@ int check_views(const char* testsDir) {
   }
 
   // 7, 8, 9 on tests/box.obj (a ground and a box over it, both sensors; both sides, a target, group distances, reach)
-  std::vector<Mesh> m;
+  std::vector<SimulationMesh> m;
   CHECK(read_obj(std::string(testsDir) + "/box.obj", m, err) && m.size() == 2);
   if (m.size() != 2) return failures;
   views::Options o;
@@ -859,7 +859,7 @@ int check_views(const char* testsDir) {
     CHECK(progress.load() == 1.0);
   }
   {   // 841 sensors at cell 6 (38 words: 215 sensors in the first launch, then more): sub-launches seed as chunks do
-    std::vector<Mesh> grid = {mesh("grid", true)};
+    std::vector<SimulationMesh> grid = {mesh("grid", true)};
     for (int k = 0; k < 29 * 29; ++k) {
       const double x = k % 29, y = k / 29;
       face(grid[0], {x, y, 0, x + 1, y, 0, x + 1, y + 1, 0, x, y + 1, 0});
@@ -913,7 +913,7 @@ int check_views(const char* testsDir) {
   keyed.targets = o.targets;
   CHECK(views::run(m, keyed, rt, err) && rt.sceneReused && same(rt, a));
   {   // meshes renamed under the key: the scene lacks the names, built afresh (once), the same numbers
-    std::vector<MeshView> mv = views_of(m);
+    std::vector<SimulationMeshView> mv = views_of(m);
     mv[0].name = "g2"; mv[1].name = "b2";
     views::Options renamed = keyed;
     renamed.targets = {{"b2", "cube"}};
@@ -922,7 +922,7 @@ int check_views(const char* testsDir) {
     CHECK(views::run(mv, renamed, rn2, err) && rn2.sceneReused);
   }
   {   // meshes reordered under the key (its scene built in the other order): labels by name, the reordered rows
-    const std::vector<MeshView> rev = {views_of(m)[1], views_of(m)[0]};
+    const std::vector<SimulationMeshView> rev = {views_of(m)[1], views_of(m)[0]};
     Result r1r, r2r;
     CHECK(views::run(rev, o, r1r, err));   // keyless
     CHECK(views::run(views_of(m), keyed, rt, err));   // the key's scene in the order ground, box
@@ -930,7 +930,7 @@ int check_views(const char* testsDir) {
   }
   {   // the names swapped under the key ("ground" now names the box): the scene holds "ground" for the other mesh, so it
       // is built afresh and the box is the target, as in a keyless run
-    std::vector<MeshView> sw = views_of(m);
+    std::vector<SimulationMeshView> sw = views_of(m);
     std::swap(sw[0].name, sw[1].name);
     views::Options swapped = keyed;
     swapped.targets = {{"ground", "cube"}};
@@ -952,7 +952,7 @@ int check_views(const char* testsDir) {
   }
   {   // from a 2 cm facade (360, offset 0) a target wall 10 m out, +-30 m high, spans azimuths 90..180 exactly: jittered
       // rays stay in their cells, so it takes exactly a quarter of the field
-    const std::vector<Mesh> qs = {quad("p", true, {-0.01, 0, -0.01, 0.01, 0, -0.01, 0.01, 0, 0.01, -0.01, 0, 0.01}),
+    const std::vector<SimulationMesh> qs = {quad("p", true, {-0.01, 0, -0.01, 0.01, 0, -0.01, 0.01, 0, 0.01, -0.01, 0, 0.01}),
                                   quad("w", false, {10, 0, -30, 0, -10, -30, 0, -10, 30, 10, 0, 30})};
     views::Options oq;
     oq.fovH = 360;
@@ -961,7 +961,7 @@ int check_views(const char* testsDir) {
     CHECK(views::run(qs, oq, rq, err) && std::fabs(at(rq, 0, "w_front") - 0.25) <= 1e-12);
   }
   {   // --dump-rays above 4 GB (29 x 29 faces x 1440 x 720 rays x 5 bytes) is refused before anything is traced or written
-    std::vector<Mesh> grid = {mesh("grid", true)};
+    std::vector<SimulationMesh> grid = {mesh("grid", true)};
     for (int k = 0; k < 29 * 29; ++k) {
       const double x = k % 29, y = k / 29;
       face(grid[0], {x, y, 0, x + 1, y, 0, x + 1, y + 1, 0, x, y + 1, 0});

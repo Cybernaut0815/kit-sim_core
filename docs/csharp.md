@@ -72,9 +72,9 @@ A `.gha` that Grasshopper loads from bytes (its COFF loading option) has no fold
 downloaded zip (`Unblock-File`) before unpacking it: .NET Framework refuses a DLL that carries the mark of the web. A
 `net48` project compiles C# 7.3 by default: `using (...) { }` blocks and a `Main` instead of the example's `using`
 declarations and top-level statements. Rhino is Z up and right-handed like the core; scale a model in millimetres to
-metres (`RhinoMath.UnitScale(doc.ModelUnitSystem, UnitSystem.Meters)`). A Rhino mesh goes in as `Mesh.Create`'s
+metres (`RhinoMath.UnitScale(doc.ModelUnitSystem, UnitSystem.Meters)`). A Rhino mesh goes in as `SimulationMesh.Create`'s
 arrays: its vertices (scaled) as `xyz`, per face 4 (`MeshFace.IsQuad`) or 3 as `counts`, and `A`, `B`, `C` (and `D`)
-as `indices`, so each Rhino face is a row, in order. `Rhino.Geometry` has a `Mesh` too: write `Daylight.Mesh`. Rhino 8,
+as `indices`, so each Rhino face is a row, in order. `Rhino.Geometry.Mesh` does not clash with `SimulationMesh` (the core's type is named so). Rhino 8,
 on .NET 7 / 8 by default, loads the same `Daylight.dll`.
 
 **Unity.** Put both DLLs in `Assets/Plugins/x86_64/` and set `daylight_c.dll` to Editor and Standalone, Windows x86_64
@@ -92,10 +92,10 @@ a 1 m box floating 0.5 m above the fourth), makes a facade from arrays and runs 
 ```csharp
     // Sensor meshes (analysed, and blocking): box.obj's ground (4 quads) and box (12 triangles), and a facade of two
     // 2 x 1 m panels at y = 3 facing south (-y) to the box: xyz (metres, Z up), vertices per face, 0-based indices.
-    using Mesh model = Mesh.Load(Path.Combine(repo, "tests", "box.obj"));
-    using Mesh facade = Mesh.Create("facade", new double[] { 0, 3, 0, 2, 3, 0, 2, 3, 1, 0, 3, 1, 2, 3, 2, 0, 3, 2 },
+    using SimulationMesh model = SimulationMesh.Load(Path.Combine(repo, "tests", "box.obj"));
+    using SimulationMesh facade = SimulationMesh.Create("facade", new double[] { 0, 3, 0, 2, 3, 0, 2, 3, 1, 0, 3, 1, 2, 3, 2, 0, 3, 2 },
                                     new[] { 4, 4 }, new[] { 0, 1, 2, 3, 3, 2, 4, 5 });
-    Mesh[] sensors = { model, facade };
+    SimulationMesh[] sensors = { model, facade };
 
     // daylight: a clear-sky year in Berlin (no weather file), kWh/m2 per face. The first run starts the GPU.
     var clock = Stopwatch.StartNew();
@@ -112,9 +112,9 @@ daylight: 421 ms, scene reused False
   facade  2 faces  radiation 1489.1 kWh/m2
 ```
 
-- `Mesh.Load` gives one handle holding the meshes of an `.obj` (one per `o` / `g` group, named by it) or a `.dmesh`
+- `SimulationMesh.Load` gives one handle holding the meshes of an `.obj` (one per `o` / `g` group, named by it) or a `.dmesh`
   (named by its stem); `model.Names` is `ground`, `box`. USD is not read in-process: pass its meshes as arrays.
-  `Mesh.Create(name, xyz, counts, indices)` copies arrays: 3 doubles per point (metres, Z up), vertices per face
+  `SimulationMesh.Create(name, xyz, counts, indices)` copies arrays: 3 doubles per point (metres, Z up), vertices per face
   (>= 3), 0-based indices in right-handed winding (the facade's normal points to -y, south at `--north 0`). The names
   are what the manifest, `--target`, `--optics` and `--no-occlude` use.
 - `Core.Run(tool, args, sensors, context = null, control = null)`: `args` are the CLI's flags without the program
@@ -179,7 +179,7 @@ views: 1 ms, scene reused True
   (sensor meshes block, and they are no target); ground is the virtual ground at z 0 between them and the facade and
   beyond them. The lower panel's nearest thing is that virtual ground at the field's lower edge, 0.5 / sin 70 =
   0.53 m; the upper one's is the box, 1.5 m ahead.
-- `SceneReused` is true: the views run used the scene the daylight run built (the same `Mesh` objects in the same roles
+- `SceneReused` is true: the views run used the scene the daylight run built (the same `SimulationMesh` objects in the same roles
   and order; daylight and views share an opaque scene, and targets are labels per run).
 
 ## Results
@@ -234,16 +234,16 @@ wall, 0.
 ## Speed
 
 The first run in a process starts the GPU (CUDA context and OptiX pipeline, about 0.35 s on an RTX 2060) and builds the
-scene: triangulation, upload, acceleration structure. Runs over the same `Mesh` objects in the same roles and order
+scene: triangulation, upload, acceleration structure. Runs over the same `SimulationMesh` objects in the same roles and order
 reuse it (`SceneReused`): no triangulation, upload or build, only the run itself. daylight and views share an opaque
 scene, and flags (quantities, times, the field, targets) leave it alone. In the example the first run, the clear-sky
 year included, took 0.4-0.9 s, the views run 1 ms and the sun hours, async, 2-5 ms; a CLI run of such a model pays
 0.6-0.7 s every time ([performance.md](performance.md#in-process-vs-cli)).
 
-The scene is built again for other `Mesh` objects (a new handle, even from the same arrays), other roles or order,
+The scene is built again for other `SimulationMesh` objects (a new handle, even from the same arrays), other roles or order,
 `--no-self-occlude`, another `--no-occlude` set, a slot that starts or stops transmitting (`--optics`,
 `--transmission on`), and with `--bounces` slots that start or stop differing. One scene stays resident: a run over
-other meshes replaces it. So keep the `Mesh` objects while the model stands (a Grasshopper component: across
+other meshes replaces it. So keep the `SimulationMesh` objects while the model stands (a Grasshopper component: across
 solutions, until its geometry input changes) and dispose them when it changes. Runs take turns: one GPU run per
 process at a time, a `Run` waits for the one before it.
 
@@ -285,22 +285,22 @@ catch (OperationCanceledException)   // the token cancelled RunAsync: its task e
 
 | exception | when |
 |---|---|
-| `DaylightException`, `Status` 1 | bad flags or values (`unknown flag --bogus`), bad arrays in `Mesh.Create`, names the flags do not resolve (`--target nosuch=g`), flags refused in-process: mesh paths, `--context`, `--out`, `--bench`, `-h` (`Core.Usage(tool)` gives the `-h` text) |
-| `DaylightException`, `Status` 2 | the run failed: a file (`cannot open EPW site.epw`, a `Mesh.Load` path), the GPU, `out of memory: ...`, `cancelled` |
+| `DaylightException`, `Status` 1 | bad flags or values (`unknown flag --bogus`), bad arrays in `SimulationMesh.Create`, names the flags do not resolve (`--target nosuch=g`), flags refused in-process: mesh paths, `--context`, `--out`, `--bench`, `-h` (`Core.Usage(tool)` gives the `-h` text) |
+| `DaylightException`, `Status` 2 | the run failed: a file (`cannot open EPW site.epw`, a `SimulationMesh.Load` path), the GPU, `out of memory: ...`, `cancelled` |
 | `OperationCanceledException` | `RunAsync`'s token was cancelled |
 | `DllNotFoundException` | `daylight_c.dll` missing or not loadable: the message says where it looked and what it needs; the next call tries again |
-| `ObjectDisposedException` | a disposed `Mesh` or `RunControl` given to a run |
+| `ObjectDisposedException` | a disposed `SimulationMesh` or `RunControl` given to a run |
 | `KeyNotFoundException` | `Result.Column` of a column the run does not have |
-| `ArgumentException` | a `Mesh.Load` path with a character outside the ANSI code page |
+| `ArgumentException` | a `SimulationMesh.Load` path with a character outside the ANSI code page |
 
-`Message` is the core's, as the CLI prints it. Flags travel as UTF-8 and `Mesh.Load` paths in the ANSI code page, so
+`Message` is the core's, as the CLI prints it. Flags travel as UTF-8 and `SimulationMesh.Load` paths in the ANSI code page, so
 paths inside flags (`--epw`, `--timeseries`, `--dump-*`) must be ASCII. Numbers in flags need `.` as the decimal point:
 `--lat`, `--lon`, `--tz`, `--ground`, `--turbidity` and `--altitude` read `52,52` as 52 without an error, so format
 numbers with `CultureInfo.InvariantCulture` (the example sets it for the whole program).
 
 ## Reference
 
-- [bindings/csharp/README.md](../bindings/csharp/README.md): the whole API (`Mesh`, `Core`, `Result`, `MeshRange`,
+- [bindings/csharp/README.md](../bindings/csharp/README.md): the whole API (`SimulationMesh`, `Core`, `Result`, `MeshRange`,
   `RunControl`, `DaylightException`), loading, hosts.
 - [daylight.md](daylight.md): every daylight flag, rows, columns, units, the manifest. [views.md](views.md): every
   views flag, the field, ray classes, distances, roles, outputs, worked examples.

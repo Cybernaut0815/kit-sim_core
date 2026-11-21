@@ -13,8 +13,8 @@ using namespace daylight;
 
 // Axis box [x0,x1] x [y0,y1] x [z0,z1], 6 outward quads; indexed (8 points) or a soup (4 points per face, as app
 // meshes arrive). Also used by check_gpu.cpp.
-Mesh box_mesh(const char* name, double x0, double y0, double z0, double x1, double y1, double z1, bool soup) {
-  Mesh m; m.name = name;
+SimulationMesh box_mesh(const char* name, double x0, double y0, double z0, double x1, double y1, double z1, bool soup) {
+  SimulationMesh m; m.name = name;
   const double X[2] = {x0, x1}, Y[2] = {y0, y1}, Z[2] = {z0, z1};
   static const int q[6][4] = {{0, 2, 3, 1}, {4, 5, 7, 6}, {0, 1, 5, 4}, {1, 3, 7, 5}, {3, 2, 6, 7}, {2, 0, 4, 6}};   // corner k: bit0 x, bit1 y, bit2 z
   const auto corner = [&](int k) { m.points.insert(m.points.end(), {X[k & 1], Y[(k >> 1) & 1], Z[k >> 2]}); };
@@ -25,8 +25,8 @@ Mesh box_mesh(const char* name, double x0, double y0, double z0, double x1, doub
   }
   return m;
 }
-static Mesh merged(const Mesh& a, const Mesh& b) {   // b's faces after a's, one mesh
-  Mesh m = a;
+static SimulationMesh merged(const SimulationMesh& a, const SimulationMesh& b) {   // b's faces after a's, one mesh
+  SimulationMesh m = a;
   const int base = int(a.numPoints());
   m.points.insert(m.points.end(), b.points.begin(), b.points.end());
   m.counts.insert(m.counts.end(), b.counts.begin(), b.counts.end());
@@ -46,8 +46,8 @@ static int failures = 0;
 static bool near3(float3 a, double x, double y, double z, double tol = 1e-6) {
   return std::fabs(a.x - x) < tol && std::fabs(a.y - y) < tol && std::fabs(a.z - z) < tol;
 }
-static Mesh polygon(std::initializer_list<double> xyz) {   // one face over all given points
-  Mesh m; m.name = "poly"; m.points = xyz; m.counts = {(int)(xyz.size() / 3)};
+static SimulationMesh polygon(std::initializer_list<double> xyz) {   // one face over all given points
+  SimulationMesh m; m.name = "poly"; m.points = xyz; m.counts = {(int)(xyz.size() / 3)};
   for (int i = 0; i < m.counts[0]; ++i) m.indices.push_back(i);
   return m;
 }
@@ -65,7 +65,7 @@ int check_mesh(const char* testsDir) {
   lb.mode = Mode::Ladybug;
 
   // --- box.obj: two meshes, counts, bbox centre, ground face 0 sensor in both modes
-  std::vector<Mesh> meshes;
+  std::vector<SimulationMesh> meshes;
   CHECK(read_obj(std::string(testsDir) + "/box.obj", meshes, err));
   CHECK(meshes.size() == 2);
   if (meshes.size() == 2) {
@@ -89,7 +89,7 @@ int check_mesh(const char* testsDir) {
 
   // --- non-planar quad: ladybug n = normalize(n1 + n2) by hand, differs from Newell (physical)
   {
-    Mesh q = polygon({0, 0, 0, 1, 0, 0, 1, 1, 0.2, 0, 1, 0});
+    SimulationMesh q = polygon({0, 0, 0, 1, 0, 0, 1, 1, 0.2, 0, 1, 0});
     // n1 = (P1-P0)x(P2-P0) = (1,0,0)x(1,1,0.2) = (0,-0.2,1); n2 = (P3-P2)x(P1-P2) = (-1,0,-0.2)x(0,-1,-0.2) = (-0.2,-0.2,1)
     double sx = -0.2, sy = -0.4, sz = 2, l = std::sqrt(sx * sx + sy * sy + sz * sz);
     Sensors a, b; warn.clear();
@@ -103,7 +103,7 @@ int check_mesh(const char* testsDir) {
 
   // --- concave L polygon: earcut -> 4 triangles, area 3
   {
-    Mesh L = polygon({0, 0, 0, 2, 0, 0, 2, 1, 0, 1, 1, 0, 1, 2, 0, 0, 2, 0});
+    SimulationMesh L = polygon({0, 0, 0, 2, 0, 0, 2, 1, 0, 1, 1, 0, 1, 2, 0, 0, 2, 0});
     L.counts = {3, 6}; L.indices = {0, 1, 2, 0, 1, 2, 3, 4, 5};   // a leading triangle, then the L
     Tris t; int skipped = 0;
     triangulate(L, zero, t, skipped);
@@ -120,19 +120,19 @@ int check_mesh(const char* testsDir) {
     // fan (0,i,i+1): tris (0,1,2) a=1 c=(4/3,1/3); (0,2,3) a=0.5 c=(1,2/3); (0,3,4) a=0.5 c=(2/3,1); (0,4,5) a=1 c=(1/3,4/3)
     CHECK(near3(s.p[1], (4.0 / 3 + 0.5 + 1.0 / 3 + 1.0 / 3) / 3, (1.0 / 3 + 1.0 / 3 + 0.5 + 4.0 / 3) / 3, 0));
     // concave chevron: fan triangle (0,2,3) lies outside -> signed weights; exact centroid by shoelace = (1, 0.7)
-    Mesh ch = polygon({0, 0, 0, 2, 0, 0, 2, 2, 0, 1, 0.5, 0, 0, 2, 0});
+    SimulationMesh ch = polygon({0, 0, 0, 2, 0, 0, 2, 2, 0, 1, 0.5, 0, 0, 2, 0});
     Sensors sc; warn.clear();
     CHECK(make_sensors(ch, phys, zero, sc, warn) == 1 && near3(sc.p[0], 1, 0.7, 0) && near3(sc.n[0], 0, 0, 1));
     Sensors e; warn.clear();                    // ladybug: n-gon is an error, nothing emitted
     CHECK(make_sensors(L, lb, zero, e, warn) == 0 && e.p.empty() && warn.rfind("error:", 0) == 0);
-    int sk = 0; Tris d; Mesh deg = polygon({0, 0, 0, 1, 1, 1, 2, 2, 2, 3, 3, 3, 4, 4, 4});   // collinear 5-gon
+    int sk = 0; Tris d; SimulationMesh deg = polygon({0, 0, 0, 1, 1, 1, 2, 2, 2, 3, 3, 3, 4, 4, 4});   // collinear 5-gon
     triangulate(deg, zero, d, sk);
     CHECK(sk == 1 && d.i.empty());
   }
 
   // --- unit cube of 6 quads: corner (1,1,1) vertex normal == normalize(1,1,1) (area-weighted) in physical mode
   {
-    Mesh cube; cube.name = "cube";
+    SimulationMesh cube; cube.name = "cube";
     cube.points = {0, 0, 0, 1, 0, 0, 1, 1, 0, 0, 1, 0, 0, 0, 1, 1, 0, 1, 1, 1, 1, 0, 1, 1};
     cube.counts = {4, 4, 4, 4, 4, 4};
     cube.indices = {0, 3, 2, 1, 4, 5, 6, 7, 0, 1, 5, 4, 1, 2, 6, 5, 2, 3, 7, 6, 3, 0, 4, 7};   // outward
@@ -144,14 +144,14 @@ int check_mesh(const char* testsDir) {
     Options lv = lb; lv.onVertices = true; Sensors sl; warn.clear();   // same cube under ladybug quad rules
     CHECK(make_sensors(cube, lv, zero, sl, warn) == 8 && near3(sl.n[6], k, k, k));
     // unequal areas prove the weighting: tri +Z area 0.5, tri +Y area 2 -> vn0 = normalize(0, 2, 0.5) in both modes
-    Mesh two; two.points = {0, 0, 0, 1, 0, 0, 0, 1, 0, 0, 0, 2, 2, 0, 0}; two.counts = {3, 3}; two.indices = {0, 1, 2, 0, 3, 4};
+    SimulationMesh two; two.points = {0, 0, 0, 1, 0, 0, 0, 1, 0, 0, 0, 2, 2, 0, 0}; two.counts = {3, 3}; two.indices = {0, 1, 2, 0, 3, 4};
     double w = std::sqrt(4.25);
     for (const Options* o : {&ov, &lv}) { Sensors sw; warn.clear(); CHECK(make_sensors(two, *o, zero, sw, warn) == 5 && near3(sw.n[0], 0, 2 / w, 0.5 / w)); }
   }
 
   // --- sides and offset
   {
-    Mesh tri = polygon({0, 0, 0, 2, 0, 0, 0, 2, 0});
+    SimulationMesh tri = polygon({0, 0, 0, 2, 0, 0, 0, 2, 0});
     Options both = phys; both.sides = Sides::Both; both.offset = 0.1;
     Sensors s; warn.clear();
     CHECK(make_sensors(tri, both, zero, s, warn) == 1 && s.p.size() == 2 && s.n.size() == 2);
@@ -159,7 +159,7 @@ int check_mesh(const char* testsDir) {
     CHECK(near3(s.p[0], 2.0 / 3, 2.0 / 3, 0.1) && near3(s.p[1], 2.0 / 3, 2.0 / 3, -0.1));
     Options back = phys; back.sides = Sides::Back; Sensors b; warn.clear();
     CHECK(make_sensors(tri, back, zero, b, warn) == 1 && b.p.size() == 1 && near3(b.n[0], 0, 0, -1) && near3(b.p[0], 2.0 / 3, 2.0 / 3, 0));
-    Mesh deg = polygon({0, 0, 0, 1, 1, 1, 2, 2, 2});   // degenerate: normal 0, warned
+    SimulationMesh deg = polygon({0, 0, 0, 1, 1, 1, 2, 2, 2});   // degenerate: normal 0, warned
     Sensors d; warn.clear();
     CHECK(make_sensors(deg, phys, zero, d, warn) == 1 && near3(d.n[0], 0, 0, 0) && warn.find("1 degenerate") != std::string::npos);
     Options dv = phys; dv.onVertices = true; Sensors dd; warn.clear();
@@ -180,7 +180,7 @@ int check_mesh(const char* testsDir) {
                  "g fourth\nf 1 2 3 # tail\nf 1 2\n"        // a 2-vertex face is kept and skipped later
                  "g fifth\nv 1e-3 -2.5E-1 +0\nv 0.1234567890123456 0 0\nf -2 +1 2\nf -1 1 2", f);   // 16 digits: from_chars path; no final newline
       std::fclose(f);
-      std::vector<Mesh> ms;
+      std::vector<SimulationMesh> ms;
       CHECK(read_obj(tmp, ms, err));
       CHECK(ms.size() == 5);
       if (ms.size() == 5) {
@@ -220,7 +220,7 @@ int check_mesh(const char* testsDir) {
       if (arrays) { std::fwrite(P, 8, 15, f); std::fwrite(C, 4, 2, f); std::fwrite(I, 4, 7, f); }
       std::fclose(f);
     };
-    std::vector<Mesh> ms;
+    std::vector<SimulationMesh> ms;
     write("DLM1", 2, true);
     CHECK(read_dmesh(tmp, ms, err) && ms.size() == 1);
     if (ms.size() == 1) {
@@ -265,7 +265,7 @@ int check_mesh(const char* testsDir) {
 
   // --- global slots: triangulate() tags each triangle with mesh base + face slot
   {
-    Mesh m = polygon({0, 0, 0, 1, 0, 0, 1, 1, 0, 0, 1, 0});
+    SimulationMesh m = polygon({0, 0, 0, 1, 0, 0, 1, 1, 0, 0, 1, 0});
     m.counts = {3, 4}; m.indices = {0, 1, 2, 0, 1, 2, 3}; m.slot = {2, 0};
     Tris t; int skipped = 0;
     triangulate(m, zero, t, skipped, 5);
@@ -278,22 +278,22 @@ int check_mesh(const char* testsDir) {
   // --- thin solids: a 20 x 20 x 0.01 m pane box, indexed and as a soup (welded), flipped (inward), open, the 3 m cube,
   //     two touching panes in one slot, a frame (slot 0) sharing the glass box's (slot 1) corners, double-faced meshes
   {
-    const Mesh pane = box_mesh("pane", 0, 0, 1, 20, 20, 1.01, false), soup = box_mesh("pane", 0, 0, 1, 20, 20, 1.01, true);
+    const SimulationMesh pane = box_mesh("pane", 0, 0, 1, 20, 20, 1.01, false), soup = box_mesh("pane", 0, 0, 1, 20, 20, 1.01, true);
     CHECK(soup.numPoints() == 24 && pane.numPoints() == 8);
     CHECK(thin_solid(pane, 0, zero) == kSlotThin && thin_solid(soup, 0, zero) == kSlotThin);
     const double far[3] = {1e5, -3e5, 50};   // recentring changes nothing
     CHECK(thin_solid(soup, 0, far) == kSlotThin);
-    Mesh flipped = soup;
+    SimulationMesh flipped = soup;
     for (size_t f = 0; f < 6; ++f) std::swap(flipped.indices[4 * f + 1], flipped.indices[4 * f + 3]);
     CHECK(thin_solid(flipped, 0, zero) == (kSlotThin | kSlotInward));
-    Mesh open = pane; open.counts.pop_back(); open.indices.resize(20);
+    SimulationMesh open = pane; open.counts.pop_back(); open.indices.resize(20);
     CHECK(thin_solid(open, 0, zero) == 0 && thin_solid(pane, 1, zero) == 0);   // open; a slot without faces
-    Mesh bent = pane; std::swap(bent.indices[1], bent.indices[3]);              // the bottom wound against the others,
+    SimulationMesh bent = pane; std::swap(bent.indices[1], bent.indices[3]);              // the bottom wound against the others,
     const double mid[3] = {10, 10, 1.005};                                     // centred so the volume still reads thin
     CHECK(thin_solid(bent, 0, mid) == 0);
     CHECK(thin_solid(box_mesh("cube", -1.5, -1.5, 1, 1.5, 1.5, 4, false), 0, zero) == 0);   // closed, 2V/S = 1 m
     CHECK(thin_solid(merged(box_mesh("a", 0, 0, 0, 1, 1, 0.01, true), box_mesh("b", 1, 0, 0, 2, 1, 0.01, true)), 0, zero) == kSlotThin);
-    Mesh win = box_mesh("window", 0, 0, 0, 1, 1, 0.01, false);   // glass: corners 0..7; frame ring in z = 0 around it
+    SimulationMesh win = box_mesh("window", 0, 0, 0, 1, 1, 0.01, false);   // glass: corners 0..7; frame ring in z = 0 around it
     win.points.insert(win.points.end(), {-0.1, -0.1, 0, 1.1, -0.1, 0, 1.1, 1.1, 0, -0.1, 1.1, 0});
     win.counts.insert(win.counts.end(), {4, 4, 4, 4});
     win.indices.insert(win.indices.end(), {8, 9, 1, 0, 9, 10, 3, 1, 10, 11, 2, 3, 11, 8, 0, 2});
@@ -301,11 +301,11 @@ int check_mesh(const char* testsDir) {
     CHECK(thin_solid(win, 1, zero) == kSlotThin && thin_solid(win, 0, zero) == 0);
     // double-faced: every face repeated with the opposite winding (SketchUp's two-sided export), its twin after or
     // before it, indexed or a soup; a pane box exported so (volumes cancel): closed, no volume -> twin, never inward
-    Mesh twin = polygon({0, 0, 1, 2, 0, 1, 2, 2, 1, 0, 2, 1});
+    SimulationMesh twin = polygon({0, 0, 1, 2, 0, 1, 2, 2, 1, 0, 2, 1});
     twin.counts.push_back(4); twin.indices.insert(twin.indices.end(), {3, 2, 1, 0});
-    Mesh twinFirst = twin; twinFirst.indices = {3, 2, 1, 0, 0, 1, 2, 3};
-    Mesh twinSoup = twin; twinSoup.points.insert(twinSoup.points.end(), {0, 2, 1, 2, 2, 1, 2, 0, 1, 0, 0, 1}); twinSoup.indices = {0, 1, 2, 3, 4, 5, 6, 7};
-    for (const Mesh* m : {&twin, &twinFirst, &twinSoup}) CHECK(thin_solid(*m, 0, zero) == (kSlotThin | kSlotTwin) && thin_solid(*m, 0, far) == (kSlotThin | kSlotTwin));
+    SimulationMesh twinFirst = twin; twinFirst.indices = {3, 2, 1, 0, 0, 1, 2, 3};
+    SimulationMesh twinSoup = twin; twinSoup.points.insert(twinSoup.points.end(), {0, 2, 1, 2, 2, 1, 2, 0, 1, 0, 0, 1}); twinSoup.indices = {0, 1, 2, 3, 4, 5, 6, 7};
+    for (const SimulationMesh* m : {&twin, &twinFirst, &twinSoup}) CHECK(thin_solid(*m, 0, zero) == (kSlotThin | kSlotTwin) && thin_solid(*m, 0, far) == (kSlotThin | kSlotTwin));
     CHECK(thin_solid(merged(pane, flipped), 0, zero) == (kSlotThin | kSlotTwin));
   }
 
@@ -374,11 +374,11 @@ int check_mesh(const char* testsDir) {
 
   // --- resolution: precedence NAME/SLOT > NAME > * > built-in (rho 0.2, tau 0), glass tn, and every error
   {
-    Mesh fe = polygon({0, 0, 0, 1, 0, 0, 0, 1, 0}); fe.name = "Facade/East";
-    Mesh wall = polygon({0, 0, 0, 1, 0, 0, 0, 1, 0}); wall.name = "wall";
+    SimulationMesh fe = polygon({0, 0, 0, 1, 0, 0, 0, 1, 0}); fe.name = "Facade/East";
+    SimulationMesh wall = polygon({0, 0, 0, 1, 0, 0, 0, 1, 0}); wall.name = "wall";
     wall.counts = {3, 3, 3}; wall.indices = {0, 1, 2, 0, 1, 2, 0, 1, 2}; wall.slot = {0, 2, 0};   // slots 0..2 (1 unused)
-    Mesh roof = polygon({0, 0, 0, 1, 0, 0, 0, 1, 0}); roof.name = "roof";
-    const std::vector<Mesh> ms{fe, wall, roof};
+    SimulationMesh roof = polygon({0, 0, 0, 1, 0, 0, 0, 1, 0}); roof.name = "roof";
+    const std::vector<SimulationMesh> ms{fe, wall, roof};
     std::vector<Slot> s;
     CHECK(resolve_optics(ms, {}, s, err) && s.size() == 5);
     for (const Slot& x : s) CHECK(x.rho == 0.2f && x.tau == 0 && x.flags == 0);
@@ -390,8 +390,8 @@ int check_mesh(const char* testsDir) {
       CHECK(s[3].rho == 0 && s[3].tau == 0.64f && s[3].flags == kSlotGlass && std::fabs(s[3].tn - 0.6975761815) < 1e-7);   // wall/2: NAME/SLOT
       CHECK(s[4].rho == 0.3f && s[4].tau == 0);                                             // roof: *
     }
-    Mesh twin = roof;
-    const struct { std::vector<Mesh> m; std::vector<Optics> r; const char* what; } bad[] = {
+    SimulationMesh twin = roof;
+    const struct { std::vector<SimulationMesh> m; std::vector<Optics> r; const char* what; } bad[] = {
         {ms, {{"Facade", -1, 0.2, 0, false}}, "no mesh of that name"},
         {{fe, roof, twin}, {{"roof", -1, 0.2, 0, false}}, "several meshes have that name"},
         {ms, {{"wall", 3, 0.2, 0, false}}, "slot out of range (the mesh has slots 0..2)"},
@@ -403,10 +403,10 @@ int check_mesh(const char* testsDir) {
       CHECK(!resolve_optics(b.m, b.r, s, err) && err.find(b.what) != std::string::npos);
     }
     CHECK(resolve_optics({fe, roof, twin}, {{"fe", -1, 0.2, 0, false}}, s, err) == false);   // unknown, with a repeated name elsewhere
-    Mesh odd = wall; odd.slot.pop_back();                                                 // Mesh::slot not one per face
+    SimulationMesh odd = wall; odd.slot.pop_back();                                                 // SimulationMesh::slot not one per face
     err.clear(); CHECK(!resolve_optics({odd}, {}, s, err) && err.find("2 slots for 3 faces") != std::string::npos);
     // --no-occlude names: a flag per mesh (a name given twice counts once); unknown, ambiguous and context names refused
-    Mesh city = roof; city.name = "city"; city.sensor = false;
+    SimulationMesh city = roof; city.name = "city"; city.sensor = false;
     std::vector<char> open;
     CHECK(resolve_no_occlude({fe, wall, roof, city}, {"roof", "Facade/East", "roof"}, open, err) && open == std::vector<char>({1, 0, 1, 0}));
     CHECK(resolve_no_occlude({fe, roof, twin, city}, {}, open, err) && open == std::vector<char>(4, 0));   // nothing named: no lookup

@@ -7,7 +7,7 @@
 
 namespace daylight::views {
 
-// Rays ending on mesh `mesh` (Mesh::name, as --no-occlude) count for `group` ([A-Za-z0-9_-]+, not sky, ground,
+// Rays ending on mesh `mesh` (SimulationMesh::name, as --no-occlude) count for `group` ([A-Za-z0-9_-]+, not sky, ground,
 // obstruction, glazing, volume, area, distance*, reach*, *_distance or *_distance_min); several meshes may share a group,
 // at most 16 groups.
 struct Target { std::string mesh, group; };
@@ -37,7 +37,7 @@ struct Options : RunOptions {
 // nEl rows x nAz columns of rays per sensor, a flat field (LO = HI = 0), the distance columns (opt.distance, DistAuto
 // resolved) and the virtual ground's height (opt.groundZ, else the meshes' lowest point).
 struct Field { unsigned nAz = 0, nEl = 0, dist = 0; bool flat = false; double groundZ = NAN; };
-bool field(const std::vector<MeshView>& meshes, const Options& opt, Field& f, std::string& err);
+bool field(const std::vector<SimulationMeshView>& meshes, const Options& opt, Field& f, std::string& err);
 
 // Rows as daylight's run(): sensor meshes in input order, a row per face or point. Columns <name>_<side> (sides inner):
 // the shares sky, ground, obstruction and one per group (first appearance), summing to 1; glazing (--transmission on);
@@ -46,7 +46,7 @@ bool field(const std::vector<MeshView>& meshes, const Options& opt, Field& f, st
 // traced: all own surface, as a degenerate element's); per group <g>_distance, <g>_distance_min (NaN: not in view);
 // reach_<D>. Result::nSky, nSun and durationHours stay 0. Fails on bad options, target or --no-occlude names the meshes
 // do not resolve, and memory running out ("out of memory: ...", never the process). One call at a time per process.
-bool run(const std::vector<MeshView>& meshes, const Options& opt, Result& out, std::string& err);
-bool run(const std::vector<Mesh>& meshes, const Options& opt, Result& out, std::string& err);
+bool run(const std::vector<SimulationMeshView>& meshes, const Options& opt, Result& out, std::string& err);
+bool run(const std::vector<SimulationMesh>& meshes, const Options& opt, Result& out, std::string& err);
 
 }  // namespace daylight::views

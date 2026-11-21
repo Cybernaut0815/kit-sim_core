@@ -28,11 +28,11 @@ V cross(V a, V b) { return {a.y * b.z - a.z * b.y, a.z * b.x - a.x * b.z, a.x * 
 double dot(V a, V b) { return a.x * b.x + a.y * b.y + a.z * b.z; }
 double len(V a) { return std::sqrt(dot(a, a)); }
 V unit(V a) { double l = len(a); return l > 0 ? a * (1 / l) : V{0, 0, 0}; }
-V pt(const Mesh& m, int i) { return {m.points[3 * i], m.points[3 * i + 1], m.points[3 * i + 2]}; }
+V pt(const SimulationMesh& m, int i) { return {m.points[3 * i], m.points[3 * i + 1], m.points[3 * i + 2]}; }
 float3 f3(V a) { return float3{(float)a.x, (float)a.y, (float)a.z}; }
 
 // Newell normal of polygon idx[0..n-1]: |N| = 2 * area, direction by winding.
-V newell(const Mesh& m, const int* idx, int n) {
+V newell(const SimulationMesh& m, const int* idx, int n) {
   V N{0, 0, 0};
   for (int i = 0; i < n; ++i) {
     V a = pt(m, idx[i]), b = pt(m, idx[(i + 1) % n]);
@@ -42,7 +42,7 @@ V newell(const Mesh& m, const int* idx, int n) {
 }
 
 // Unit normal, area and centroid of one face by the mode rules. Degenerate (area < 1e-12) -> n = 0.
-void face_geom(const Mesh& m, const int* idx, int n, bool ladybug, V& nrm, double& area, V& cen) {
+void face_geom(const SimulationMesh& m, const int* idx, int n, bool ladybug, V& nrm, double& area, V& cen) {
   nrm = {0, 0, 0}; area = 0; cen = {0, 0, 0};
   if (n < 3) return;
   V P0 = pt(m, idx[0]);
@@ -75,9 +75,9 @@ std::string stem(const std::string& path) {
   return path.substr(b, d == std::string::npos || d < b ? std::string::npos : d - b);
 }
 
-// What --optics / --no-occlude NAME resolve against: mesh index per Mesh::name, SIZE_MAX when several meshes share it.
+// What --optics / --no-occlude NAME resolve against: mesh index per SimulationMesh::name, SIZE_MAX when several meshes share it.
 using Names = std::unordered_map<std::string, size_t>;
-Names mesh_names(const std::vector<MeshView>& meshes) {
+Names mesh_names(const std::vector<SimulationMeshView>& meshes) {
   Names byName;
   for (size_t k = 0; k < meshes.size(); ++k) if (!byName.emplace(meshes[k].name, k).second) byName[meshes[k].name] = SIZE_MAX;
   return byName;
@@ -104,7 +104,7 @@ void par_for(size_t n, const std::function<void(size_t)>& f) {
   if (first) std::rethrow_exception(first);
 }
 
-void bbox_centre(const std::vector<MeshView>& meshes, double c[3]) {
+void bbox_centre(const std::vector<SimulationMeshView>& meshes, double c[3]) {
   std::vector<std::array<double, 6>> box(meshes.size());   // per mesh lo xyz, hi xyz; combined in order (min/max: exact)
   par_for(meshes.size(), [&](size_t k) {
     std::array<double, 6> b = {INFINITY, INFINITY, INFINITY, -INFINITY, -INFINITY, -INFINITY};
@@ -117,13 +117,13 @@ void bbox_centre(const std::vector<MeshView>& meshes, double c[3]) {
   for (int k = 0; k < 3; ++k) c[k] = lo[k] <= hi[k] ? (lo[k] + hi[k]) / 2 : 0;
 }
 
-size_t tri_cap(const Mesh& m) {
+size_t tri_cap(const SimulationMesh& m) {
   size_t n = 0;
   for (int k : m.counts) n += k >= 3 ? size_t(k - 2) : 0;
   return n;
 }
 
-void triangulate(const Mesh& m, const double c[3], Tris& out, int& skipped, uint32_t slotBase, bool withSlots) {
+void triangulate(const SimulationMesh& m, const double c[3], Tris& out, int& skipped, uint32_t slotBase, bool withSlots) {
   const size_t v0 = out.v.size(), t0 = out.i.size(), cap = tri_cap(m);
   out.v.resize(v0 + m.numPoints());
   out.i.resize(t0 + cap);
@@ -134,7 +134,7 @@ void triangulate(const Mesh& m, const double c[3], Tris& out, int& skipped, uint
   if (withSlots) out.slot.resize(t0 + n);
 }
 
-size_t triangulate_into(const Mesh& m, const double c[3], float3* vOut, uint3* tri, uint32_t* slots, unsigned base, uint32_t slotBase, int& skipped) {
+size_t triangulate_into(const SimulationMesh& m, const double c[3], float3* vOut, uint3* tri, uint32_t* slots, unsigned base, uint32_t slotBase, int& skipped) {
   V C{c[0], c[1], c[2]};
   for (size_t i = 0; i < m.numPoints(); ++i) vOut[i] = f3(pt(m, (int)i) - C);
   uint32_t slot = slotBase;
@@ -167,7 +167,7 @@ size_t triangulate_into(const Mesh& m, const double c[3], float3* vOut, uint3* t
   return made;
 }
 
-size_t slot_count(const Mesh& m) { return m.slot.empty() ? 1 : size_t(*std::max_element(m.slot.begin(), m.slot.end())) + 1; }
+size_t slot_count(const SimulationMesh& m) { return m.slot.empty() ? 1 : size_t(*std::max_element(m.slot.begin(), m.slot.end())) + 1; }
 
 bool optics_rows_ok(const std::vector<Optics>& rows, std::string& err) {
   for (const Optics& o : rows) {
@@ -190,10 +190,10 @@ bool optics_ok(const Options& opt, std::string& err) {
   return true;
 }
 
-bool resolve_optics(const std::vector<MeshView>& meshes, const std::vector<Optics>& rows, std::vector<Slot>& out, std::string& err) {
+bool resolve_optics(const std::vector<SimulationMeshView>& meshes, const std::vector<Optics>& rows, std::vector<Slot>& out, std::string& err) {
   std::vector<size_t> base(meshes.size() + 1, 0);
   for (size_t k = 0; k < meshes.size(); ++k) {
-    const Mesh& m = *meshes[k].mesh;
+    const SimulationMesh& m = *meshes[k].mesh;
     if (!m.slot.empty() && m.slot.size() != m.numFaces()) { err = "mesh " + meshes[k].name + ": " + std::to_string(m.slot.size()) + " slots for " + std::to_string(m.numFaces()) + " faces"; return false; }
     base[k + 1] = base[k] + slot_count(m);
   }
@@ -225,7 +225,7 @@ bool resolve_optics(const std::vector<MeshView>& meshes, const std::vector<Optic
   return true;
 }
 
-bool resolve_no_occlude(const std::vector<MeshView>& meshes, const std::vector<std::string>& names, std::vector<char>& open, std::string& err) {
+bool resolve_no_occlude(const std::vector<SimulationMeshView>& meshes, const std::vector<std::string>& names, std::vector<char>& open, std::string& err) {
   open.assign(meshes.size(), 0);
   if (names.empty()) return true;
   const Names byName = mesh_names(meshes);
@@ -239,7 +239,7 @@ bool resolve_no_occlude(const std::vector<MeshView>& meshes, const std::vector<s
   return true;
 }
 
-bool resolve_targets(const std::vector<MeshView>& meshes, const std::vector<views::Target>& targets, bool selfOcclude,
+bool resolve_targets(const std::vector<SimulationMeshView>& meshes, const std::vector<views::Target>& targets, bool selfOcclude,
                      const std::vector<char>& open, std::vector<std::string>& groups, std::vector<uint8_t>& cls, std::string& err) {
   groups.clear();
   cls.assign(meshes.size(), 2);
@@ -272,7 +272,7 @@ bool resolve_targets(const std::vector<MeshView>& meshes, const std::vector<view
   return true;
 }
 
-unsigned thin_solid(const Mesh& m, unsigned s, const double c[3]) {
+unsigned thin_solid(const SimulationMesh& m, unsigned s, const double c[3]) {
   using Key = std::array<long long, 3>;
   const V C{c[0], c[1], c[2]};
   std::vector<Key> keys;   // welded position of every corner of the slot's faces, face after face
@@ -303,7 +303,7 @@ unsigned thin_solid(const Mesh& m, unsigned s, const double c[3]) {
   return kSlotThin | (2 * std::fabs(vol) / area < 1e-5 ? kSlotTwin : vol < 0 ? kSlotInward : 0u);   // thinner than the weld grid: no volume
 }
 
-size_t make_sensors(const Mesh& m, const Options& opt, const double c[3], Sensors& out, std::string& warn) {
+size_t make_sensors(const SimulationMesh& m, const Options& opt, const double c[3], Sensors& out, std::string& warn) {
   const size_t at = out.p.size(), n = (opt.onVertices ? m.numPoints() : m.numFaces()) * (opt.sides == Sides::Both ? 2 : 1);
   out.p.resize(at + n);
   out.n.resize(at + n);
@@ -312,7 +312,7 @@ size_t make_sensors(const Mesh& m, const Options& opt, const double c[3], Sensor
   return made;
 }
 
-size_t make_sensors_into(const Mesh& m, const RunOptions& opt, bool ladybug, const double c[3], float3* pOut, float3* nOut, std::string& warn) {
+size_t make_sensors_into(const SimulationMesh& m, const RunOptions& opt, bool ladybug, const double c[3], float3* pOut, float3* nOut, std::string& warn) {
   const V C{c[0], c[1], c[2]};
   int degenerate = 0, zeroVn = 0;
   std::vector<V> vn;
@@ -348,7 +348,7 @@ size_t make_sensors_into(const Mesh& m, const RunOptions& opt, bool ladybug, con
   return opt.onVertices ? m.numPoints() : m.numFaces();
 }
 
-bool read_obj(const std::string& path, std::vector<Mesh>& out, std::string& err) {
+bool read_obj(const std::string& path, std::vector<SimulationMesh>& out, std::string& err) {
   // ponytail: whole file in RAM, memory-map if a > RAM OBJ ever matters.
   std::FILE* f = std::fopen(path.c_str(), "rb");
   if (!f) { err = "cannot open " + path; return false; }
@@ -360,7 +360,7 @@ bool read_obj(const std::string& path, std::vector<Mesh>& out, std::string& err)
   if (!ok) { err = "cannot read " + path; return false; }
   std::vector<double> V3;              // global v
   std::vector<int> remap, touched;     // global -> local point index per current mesh
-  Mesh cur; cur.name = stem(path);
+  SimulationMesh cur; cur.name = stem(path);
   auto finish = [&]() {
     if (!cur.counts.empty()) {
       std::sort(touched.begin(), touched.end());   // original vertex order within the mesh (per-vertex outputs stay 1:1)
@@ -375,7 +375,7 @@ bool read_obj(const std::string& path, std::vector<Mesh>& out, std::string& err)
     }
     for (int g : touched) remap[g] = -1;
     touched.clear();
-    cur = Mesh();
+    cur = SimulationMesh();
   };
   auto ws = [](const char*& s) { while (*s == ' ' || *s == '\t' || *s == '\r') ++s; };
   auto tok = [](const char*& s) { while (*s && *s != ' ' && *s != '\t' && *s != '\r' && *s != '\n') ++s; };   // to the token end (skips /vt/vn)
@@ -435,7 +435,7 @@ bool read_obj(const std::string& path, std::vector<Mesh>& out, std::string& err)
   return true;
 }
 
-bool mesh_ok(const Mesh& m, const std::string& label, std::string& err) {
+bool mesh_ok(const SimulationMesh& m, const std::string& label, std::string& err) {
   uint64_t sum = 0;
   for (int c : m.counts) { if (c < 3) { err = label + ": face with fewer than 3 vertices"; return false; } sum += (uint64_t)c; }
   if (sum != m.indices.size()) { err = label + ": sum(counts) != n_indices"; return false; }
@@ -446,8 +446,8 @@ bool mesh_ok(const Mesh& m, const std::string& label, std::string& err) {
 
 namespace {
 
-// One .dmesh image in memory -> Mesh named `name`; `label` names the source in error messages (the path for files).
-bool parse_dmesh(const char* data, size_t size, const std::string& name, const std::string& label, std::vector<Mesh>& out, std::string& err) {
+// One .dmesh image in memory -> SimulationMesh named `name`; `label` names the source in error messages (the path for files).
+bool parse_dmesh(const char* data, size_t size, const std::string& name, const std::string& label, std::vector<SimulationMesh>& out, std::string& err) {
   struct Header { char magic[4]; uint32_t flags; uint64_t nPoints, nFaces, nIndices; };   // flags bit 0: slot block
   static_assert(sizeof(Header) == 32 && sizeof(int) == 4, "dmesh layout");
   Header h{};
@@ -459,7 +459,7 @@ bool parse_dmesh(const char* data, size_t size, const std::string& name, const s
         32 + 24 * h.nPoints + 4 * h.nFaces + 4 * h.nIndices <= size)) { err = label + ": truncated"; return false; }
   const uint64_t nSlots = (h.flags & 1) ? h.nFaces : 0;
   if (32 + 24 * h.nPoints + 4 * h.nFaces + 4 * h.nIndices + 2 * nSlots > size) { err = label + ": truncated slot block"; return false; }
-  Mesh m; m.name = name;
+  SimulationMesh m; m.name = name;
   m.points.resize(3 * h.nPoints); m.counts.resize(h.nFaces); m.indices.resize(h.nIndices); m.slot.resize(nSlots);
   const char* p = data + sizeof h;
   std::memcpy(m.points.data(), p, 24 * h.nPoints); p += 24 * h.nPoints;
@@ -473,11 +473,11 @@ bool parse_dmesh(const char* data, size_t size, const std::string& name, const s
 
 }  // namespace
 
-bool read_dmesh(const char* data, size_t size, const std::string& name, std::vector<Mesh>& out, std::string& err) {
+bool read_dmesh(const char* data, size_t size, const std::string& name, std::vector<SimulationMesh>& out, std::string& err) {
   return parse_dmesh(data, size, name, name, out, err);
 }
 
-bool read_dmesh(const std::string& path, std::vector<Mesh>& out, std::string& err) {
+bool read_dmesh(const std::string& path, std::vector<SimulationMesh>& out, std::string& err) {
   std::FILE* f = std::fopen(path.c_str(), "rb");
   if (!f) { err = "cannot open " + path; return false; }
   std::fseek(f, 0, SEEK_END);

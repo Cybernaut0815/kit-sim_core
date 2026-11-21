@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0 AND LicenseRef-Commons-Clause-1.0
 // daylight-mesh/native (Node only): the daylight and views tools in-process through daylight_c.dll (src/daylight_c.h,
-// docs/c-abi.md) via koffi 3. Mesh handles keep their GPU scene resident between runs; run() keeps the event loop free.
+// docs/c-abi.md) via koffi 3. SimulationMesh handles keep their GPU scene resident between runs; run() keeps the event loop free.
 import { existsSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -50,7 +50,7 @@ let dl: ReturnType<typeof bind> | undefined, dllPath = '';
 
 /**
  * Loads daylight_c.dll for this process, once: `dll`, else env DAYLIGHT_DLL, else <repo>/build/RelWithDebInfo/
- * daylight_c.dll (found from this file, in src/ or lib/). Mesh, run and usage call it without a path. Throws when the
+ * daylight_c.dll (found from this file, in src/ or lib/). SimulationMesh, run and usage call it without a path. Throws when the
  * library does not load, has another ABI version, or another path is loaded already. Kept loaded while Node runs (the
  * static CUDA runtime does not support unloading); koffi frees it as Node exits, measured harmless.
  */
@@ -78,8 +78,8 @@ export function usage(tool: Tool): string {
   return native().dl_usage(toolId(tool)) ?? '';
 }
 
-// Module state of each Mesh: its handle (null once freed) and the runs using it.
-const state = new WeakMap<Mesh, { handle: bigint | null; runs: number }>();
+// Module state of each SimulationMesh: its handle (null once freed) and the runs using it.
+const state = new WeakMap<SimulationMesh, { handle: bigint | null; runs: number }>();
 const finalizer = new FinalizationRegistry<bigint>((handle) => native().dl_mesh_free(handle));
 type Typed = Float64Array | Int32Array | Uint16Array;
 const typed = <T extends Typed>(C: { new (n: number): T; from(a: ArrayLike<number>): T }, a: ArrayLike<number>) =>
@@ -89,7 +89,7 @@ const typed = <T extends Typed>(C: { new (n: number): T; from(a: ArrayLike<numbe
  * Meshes on the C side (copied once). Pass them to any number of runs: runs over the same handles in the same roles and
  * order reuse the GPU scene (stats.sceneReused). Freed by free(), else when garbage collected.
  */
-export class Mesh {
+export class SimulationMesh {
   /** Names of the meshes the handle holds, in order (an OBJ's groups): what --target, --optics, --no-occlude and the
    *  manifest call them. Empty for a mesh without faces. */
   readonly names: string[];
@@ -105,27 +105,27 @@ export class Mesh {
   /** A mesh from the .dmesh arrays: xyz per point in world metres, Z up; vertices per face (>= 3); 0-based indices,
    *  right-handed; an optics slot per face (absent: slot 0). Throws the core's message (a bad index, a short face). */
   static create(name: string, positions: ArrayLike<number>, counts: ArrayLike<number>, indices: ArrayLike<number>,
-    slots?: ArrayLike<number>): Mesh {
+    slots?: ArrayLike<number>): SimulationMesh {
     if (positions.length % 3) throw new Error(`${name}: positions must be xyz triples`);
     if (slots && slots.length !== counts.length) { // the core reads one per face
       throw new Error(`${name}: slots must hold one value per face (${counts.length}), not ${slots.length}`);
     }
     const xyz = typed(Float64Array, positions), c = typed(Int32Array, counts), i = typed(Int32Array, indices);
     const s = slots ? typed(Uint16Array, slots) : null;
-    return new Mesh(native().dl_mesh_create(name, xyz, xyz.length / 3, c, c.length, i, i.length, s));
+    return new SimulationMesh(native().dl_mesh_create(name, xyz, xyz.length / 3, c, c.length, i, i.length, s));
   }
 
   /** An ObjMesh (fromThree, fromGLB): its triangles and slots, its name as it is (run(exe) passes names through
    *  dmeshStems; do the same for flags that must work with both). */
-  static fromObj(m: ObjMesh): Mesh {
+  static fromObj(m: ObjMesh): SimulationMesh {
     const counts = new Int32Array(Math.floor(m.indices.length / 3)).fill(3);
-    return Mesh.create(m.name, m.positions, counts, m.indices, m.slots);
+    return SimulationMesh.create(m.name, m.positions, counts, m.indices, m.slots);
   }
 
   /** The meshes of a .obj (one per o/g group, named by it) or .dmesh (named by its stem), read as the CLI reads them.
    *  ASCII paths only: koffi sends UTF-8, the C runtime reads the ANSI code page (the CLI's argv is ANSI already). */
-  static load(path: string): Mesh {
-    return new Mesh(native().dl_mesh_load(path));
+  static load(path: string): SimulationMesh {
+    return new SimulationMesh(native().dl_mesh_load(path));
   }
 
   /** Frees the handle now (again: nothing); throws while a run uses it. */
@@ -205,13 +205,13 @@ function post(job: Omit<Job, 'id'>): Promise<Reply> {
 /**
  * One run of `tool` with its CLI flags (`args`, without the program name; mesh paths, --context, --out, --bench and -h
  * are refused) over mesh handles: `sensors` in place of the CLI's mesh arguments, `context` of its --context meshes.
- * Flags go as UTF-8 (mesh names match Mesh.names); file paths in them (--epw, ...) must be ASCII, as for Mesh.load.
+ * Flags go as UTF-8 (mesh names match SimulationMesh.names); file paths in them (--epw, ...) must be ASCII, as for SimulationMesh.load.
  * Runs go one at a time on a worker thread, so the event loop stays free. Aborting `signal` cancels: the run stops at
  * its next check, and the call rejects with DaylightError 2 "cancelled" (also when the run got past its last check).
  * `onProgress` gets the share of sensors traced, 0..1, polled every 100 ms and once at the end. The meshes stay
  * referenced (free() throws) until it settles. Rejects with a DaylightError.
  */
-export async function run(tool: Tool, args: string[], input: { sensors: Mesh[]; context?: Mesh[] },
+export async function run(tool: Tool, args: string[], input: { sensors: SimulationMesh[]; context?: SimulationMesh[] },
   opts: { signal?: AbortSignal; onProgress?: (p: number) => void } = {}): Promise<NativeResult> {
   const d = native(), meshes = [...input.sensors, ...(input.context ?? [])];
   const handles = meshes.map((m) => state.get(m)?.handle ?? null); // a freed mesh: the core's "NULL mesh handle"

@@ -90,8 +90,8 @@ start once per host process, and keep the scene of meshes that are run again on 
 both tools on the same meshes:
 
 ```python
-from daylight import Mesh, native            # uv run --project bindings/python python, from the repo root
-with Mesh.load('tests/box.obj') as box:      # the meshes "ground" and "box", both sensors
+from daylight import SimulationMesh, native            # uv run --project bindings/python python, from the repo root
+with SimulationMesh.load('tests/box.obj') as box:      # the meshes "ground" and "box", both sensors
     sun = native.run('daylight', ['--clear-sky', '--lat', '52.52', '--lon', '13.41'], box)
     view = native.run('views', ['--reach', 'en17037'], box)       # the same meshes: the GPU scene is reused
 print(sun.values.shape, view.values.shape, view.stats['scene_reused'])   # (16, 1) (16, 8) True

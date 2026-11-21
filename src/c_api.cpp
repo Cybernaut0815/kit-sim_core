@@ -21,7 +21,7 @@
 
 using namespace daylight;
 
-struct dl_mesh { uint64_t serial = 0; std::vector<Mesh> meshes; };   // never changes: the serial names the content
+struct dl_mesh { uint64_t serial = 0; std::vector<SimulationMesh> meshes; };   // never changes: the serial names the content
 struct dl_control { std::atomic<bool> cancel{false}; std::atomic<double> progress{0}; };
 struct dl_result { int64_t rows = 0, cols = 0; std::string manifest; std::vector<double> values; double stats[DL_STATS] = {}; };
 
@@ -125,7 +125,7 @@ dl_mesh* dl_mesh_create(const char* name, const double* xyz, int64_t n_points, c
     if (!name) return fail(DL_USAGE, "dl_mesh_create: name is NULL");
     if (n_points < 0 || n_faces < 0 || n_indices < 0 || (n_points && !xyz) || (n_faces && !counts) || (n_indices && !indices))
       return fail(DL_USAGE, "dl_mesh_create: a negative count or a NULL array");
-    Mesh m;
+    SimulationMesh m;
     m.name = name;
     m.points.assign(xyz, xyz + 3 * n_points);
     m.counts.assign(counts, counts + n_faces);
@@ -200,7 +200,7 @@ int32_t dl_run(int32_t tool, int32_t argc, const char* const* argv, dl_mesh* con
     std::vector<char*> av;
     for (std::string& s : store) av.push_back(s.data());
     // the meshes in the CLI's order (sensors, then context) without copies; the key names the handles in that order
-    std::vector<MeshView> mv;
+    std::vector<SimulationMeshView> mv;
     std::string key = "dl";
     for (int32_t pass = 0; pass < 2; ++pass) {
       dl_mesh* const* hs = pass ? context : sensors;
@@ -208,7 +208,7 @@ int32_t dl_run(int32_t tool, int32_t argc, const char* const* argv, dl_mesh* con
       for (int32_t k = 0; k < n; ++k) {
         if (!hs[k]) return fail(DL_USAGE, "dl_run: a NULL mesh handle");
         key += (pass ? " c" : " s") + std::to_string(hs[k]->serial);
-        for (const Mesh& m : hs[k]->meshes) mv.push_back({&m, m.name, pass == 0});
+        for (const SimulationMesh& m : hs[k]->meshes) mv.push_back({&m, m.name, pass == 0});
       }
     }
     const CLocale cLocale;

@@ -7,12 +7,12 @@ daylight ([daylight.md](daylight.md)) and views ([views.md](views.md)), with the
 
 | way | import | runs on | how |
 |---|---|---|---|
-| in-process | `daylight-mesh/native`: `Mesh`, `run(tool, args, { sensors, context }, { signal, onProgress })` | Node on the GPU host | `daylight_c.dll` ([c-abi.md](c-abi.md)) through koffi, on a worker thread; meshes copied once, their scene kept on the GPU between runs |
+| in-process | `daylight-mesh/native`: `SimulationMesh`, `run(tool, args, { sensors, context }, { signal, onProgress })` | Node on the GPU host | `daylight_c.dll` ([c-abi.md](c-abi.md)) through koffi, on a worker thread; meshes copied once, their scene kept on the GPU between runs |
 | process runner | `daylight-mesh`: `run(exe, { sensors, context, args })` | Node on the GPU host | `daylight.exe` or `views.exe` as a child process: a `.dmesh` per mesh in a temp folder, the `.npy` read back |
 | server | `daylight-mesh`: `runRemote(url, { sensors, context, epw, args, ... })` | browsers (and Node) | a daylight job on the web app's `daylight_server`, which runs the core in-process on the GPU host; views is not served |
 
 CUDA cannot run in a browser, so browsers use the server. All three return the values as columns, `data[c][row]`
-for `columns[c]`, and the manifest. Meshes come from arrays (`Mesh.create`, `ObjMesh`), files (`Mesh.load`), three.js
+for `columns[c]`, and the manifest. Meshes come from arrays (`SimulationMesh.create`, `ObjMesh`), files (`SimulationMesh.load`), three.js
 (`fromThree`) or glTF (`fromGLB`); `applyToThree` colours a three.js mesh by its values
 ([three.js and glTF](#meshes-from-threejs-or-gltf)).
 
@@ -49,11 +49,11 @@ clear-sky year in Berlin:
 
 ```ts
 import { fileURLToPath } from 'node:url';
-import { DaylightError, Mesh, run, type NativeResult } from '../../bindings/ts/src/native.ts';
+import { DaylightError, SimulationMesh, run, type NativeResult } from '../../bindings/ts/src/native.ts';
 
 // Meshes are copied to the C side once; runs over the same handles in the same roles and order reuse the GPU scene.
-const site = Mesh.load(fileURLToPath(new URL('../../tests/box.obj', import.meta.url))); // OBJ groups: ground, box
-const facade = Mesh.create('facade', // a 4 x 3 m wall at y = 3 facing south (-y), two 1.5 m rows
+const site = SimulationMesh.load(fileURLToPath(new URL('../../tests/box.obj', import.meta.url))); // OBJ groups: ground, box
+const facade = SimulationMesh.create('facade', // a 4 x 3 m wall at y = 3 facing south (-y), two 1.5 m rows
   [-2, 3, 0, 2, 3, 0, 2, 3, 1.5, -2, 3, 1.5, 2, 3, 3, -2, 3, 3], // xyz per point: metres, Z up
   [4, 4], // vertices per face
   [0, 1, 2, 3, 3, 2, 4, 5]); // 0-based, counter-clockwise seen from the front
@@ -90,8 +90,8 @@ daylight: 436 ms, scene reused false
   facade 1554 kWh/m2, 3522 h (mean per face)
 ```
 
-- `Mesh.load(path)` reads a `.obj` (a mesh per `o`/`g` group, named by it) or a `.dmesh` (named by its stem) as the
-  CLI does; ASCII paths. `Mesh.create(name, positions, counts, indices, slots?)` takes the `.dmesh` arrays
+- `SimulationMesh.load(path)` reads a `.obj` (a mesh per `o`/`g` group, named by it) or a `.dmesh` (named by its stem) as the
+  CLI does; ASCII paths. `SimulationMesh.create(name, positions, counts, indices, slots?)` takes the `.dmesh` arrays
   ([input.md](input.md)): xyz in metres, Z up; vertices per face (any polygon, >= 3); 0-based indices, right-handed
   (counter-clockwise seen from the front); an optional optics slot per face. `mesh.names` is what the manifest and
   `--target`, `--optics`, `--no-occlude` call the meshes.
@@ -157,16 +157,16 @@ their `.dmesh` stems ([Views](#views) has the rule).
 `fromThree(objects)` takes every descendant three.js `Mesh` (named by its `name`, else its `uuid`; world matrices
 applied, Y up turned to Z up, mirrored transforms rewound), `fromGLB(bytes)` every triangle primitive of a `.glb` (named
 `node/mesh`); `{ scale }` multiplies the coordinates into metres. Both give `ObjMesh`es for the process runner and the
-server, or handles through `Mesh.fromObj` (which keeps the name as it is: what `--target`, `--optics` and
+server, or handles through `SimulationMesh.fromObj` (which keeps the name as it is: what `--target`, `--optics` and
 `--no-occlude` name). views takes the same meshes.
 
 ```ts
 import { applyToThree, fromGLB, fromThree } from 'daylight-mesh';
-import { Mesh, run } from 'daylight-mesh/native';
+import { SimulationMesh, run } from 'daylight-mesh/native';
 import fs from 'node:fs/promises';
 
-const roof = Mesh.fromObj(fromThree([roofMesh])[0]);                          // a three.js Mesh without child meshes
-const city = (await fromGLB(await fs.readFile('city.glb'))).map(Mesh.fromObj); // a handle per primitive
+const roof = SimulationMesh.fromObj(fromThree([roofMesh])[0]);                          // a three.js Mesh without child meshes
+const city = (await fromGLB(await fs.readFile('city.glb'))).map(SimulationMesh.fromObj); // a handle per primitive
 const r = await run('daylight', ['--epw', 'site.epw'], { sensors: [roof], context: city });
 await applyToThree(roofMesh, r.data[r.columns.indexOf('radiation_front')]);   // a value per triangle: flat colours
 ```
@@ -268,7 +268,7 @@ views.exe: 568 ms, columns sky_front ground_front obstruction_front water_front 
 
 - `run(exe, ...)` writes each `ObjMesh` as `<stem>.dmesh`, the stems being `dmeshStems` of the sensors' and then the
   context's names (`[^A-Za-z0-9._-]` to `_`, made unique ignoring case): the core and the manifest name the meshes so,
-  and `--target`, `--optics` and `--no-occlude` must too. `Mesh.fromObj` keeps a name as it is: where one flag list
+  and `--target`, `--optics` and `--no-occlude` must too. `SimulationMesh.fromObj` keeps a name as it is: where one flag list
   serves both runners, name the meshes by `dmeshStems` first.
 - `--reach en17037` adds `reach_6`, `reach_20` and `reach_50`: the share of the field that sees at least 6, 20 and
   50 m, EN 17037's view distance levels (a share of the whole field, the street below included at its plane distance).
@@ -285,7 +285,7 @@ views.exe: 568 ms, columns sky_front ground_front obstruction_front water_front 
 | reuse | `stats`: `sceneReused`, `prepMs`, `skyMs`, `buildMs`, `traceMs`, `reduceMs`, `bounceMs`, `rays`, `launches`, `gasBytes` | none | `cache`: `response` (`hit`, `miss`), `scene` (`built`, `reused`), `weather` |
 
 - Rows: one per element of every sensor mesh, the meshes in the order given (a handle's meshes in its order: an OBJ's
-  groups), the elements in mesh order: a face (`Mesh.create`: an entry of `counts`, so a quad is one row; `ObjMesh`,
+  groups), the elements in mesh order: a face (`SimulationMesh.create`: an entry of `counts`, so a quad is one row; `ObjMesh`,
   `fromThree`, `fromGLB`: a triangle) or, with `--on vertices`, a point. Nothing is reordered or dropped; context
   meshes have no rows. `manifest.meshes[k]` is `{ name, first, count }`: mesh k's rows are `first` to
   `first + count - 1` (`rows()` and `means()` in the examples).
@@ -320,9 +320,9 @@ The examples on an RTX 2060, and the same calls repeated:
 
 - The first in-process run pays the GPU start (the CUDA context and the OptiX pipeline, about 0.35 s), once per
   process: the DLL stays loaded until Node exits.
-- Keep the `Mesh` objects and pass them again: runs over the same handles in the same roles and order reuse the scene
+- Keep the `SimulationMesh` objects and pass them again: runs over the same handles in the same roles and order reuse the scene
   on the GPU (`stats.sceneReused`: no triangulation, upload or acceleration-structure build), daylight and views
-  alike. The key is the handles, not their contents (a new `Mesh` of the same arrays builds again), with
+  alike. The key is the handles, not their contents (a new `SimulationMesh` of the same arrays builds again), with
   `--no-self-occlude` and the `--no-occlude` set; one scene stays resident, so alternating between two sets of meshes
   rebuilds each time.
 - Every process-runner call pays the process, the GPU start, the files and the scene, about 0.5 s before tracing:
@@ -353,14 +353,14 @@ facade.free();
 | cancel | `signal` (an `AbortController`, `AbortSignal.timeout(ms)`): the run stops at its next check and rejects with 2 `cancelled` | none | `signal`: the job is deleted on the server |
 | progress | `onProgress(p)`: the share of sensors traced, 0..1, every 100 ms and once at the end | none | `onStatus(job)`: `state`, queue `position`, `progress`, `eta_s`; `onUpload(done, total)` |
 
-- `Mesh.create`, `Mesh.fromObj` and `Mesh.load` throw an `Error` with the core's message (`facade: vertex index out of
+- `SimulationMesh.create`, `SimulationMesh.fromObj` and `SimulationMesh.load` throw an `Error` with the core's message (`facade: vertex index out of
   range`, `cannot open`); `init` throws when the DLL is missing (`no such file (init(path) or DAYLIGHT_DLL)`), has
   another ABI version, or another path is loaded already.
 - `mesh.free()` throws while a run uses the mesh; a freed mesh fails a run with 1 (`NULL mesh handle`).
 
 ## Reference
 
-- [bindings/ts/README.md](../bindings/ts/README.md): the full API of both entries (`init`, `usage`, `Mesh`, `run`,
+- [bindings/ts/README.md](../bindings/ts/README.md): the full API of both entries (`init`, `usage`, `SimulationMesh`, `run`,
   `DaylightError`; `fromThree`, `fromGLB`, `toDmesh`, `toObj`, `dmeshStems`, `run`, `runRemote`, `meshIds`,
   `colormap`, `applyToThree`, `parseNpy`, `parseValues`), the `.dmesh` layout, the tests and timings; `lib/*.d.ts`
   carry the same as doc comments.
@@ -379,6 +379,6 @@ so Node runs them without a build step.
 
 | file | shows | run |
 |---|---|---|
-| [examples/typescript/native.ts](../examples/typescript/native.ts) | in-process: `Mesh.load`, `Mesh.create`, daylight (clear-sky year) and views (a target) on one resident scene, rows per mesh, progress, a timeout, an error | `node examples/typescript/native.ts` (Node >= 22.18) |
+| [examples/typescript/native.ts](../examples/typescript/native.ts) | in-process: `SimulationMesh.load`, `SimulationMesh.create`, daylight (clear-sky year) and views (a target) on one resident scene, rows per mesh, progress, a timeout, an error | `node examples/typescript/native.ts` (Node >= 22.18) |
 | [examples/javascript/native.mjs](../examples/javascript/native.mjs) | the same in plain JavaScript, from `bindings/ts/lib` | `node examples/javascript/native.mjs` (Node >= 20) |
 | [examples/typescript/cli.ts](../examples/typescript/cli.ts) | the process runner: `daylight.exe` and `views.exe` on `ObjMesh`es, `--target` by `dmeshStems`, `--reach en17037` | `node examples/typescript/cli.ts` (Node >= 22.18) |

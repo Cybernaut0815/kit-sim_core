@@ -25,10 +25,10 @@ try
 {
     // Sensor meshes (analysed, and blocking): box.obj's ground (4 quads) and box (12 triangles), and a facade of two
     // 2 x 1 m panels at y = 3 facing south (-y) to the box: xyz (metres, Z up), vertices per face, 0-based indices.
-    using Mesh model = Mesh.Load(Path.Combine(repo, "tests", "box.obj"));
-    using Mesh facade = Mesh.Create("facade", new double[] { 0, 3, 0, 2, 3, 0, 2, 3, 1, 0, 3, 1, 2, 3, 2, 0, 3, 2 },
+    using SimulationMesh model = SimulationMesh.Load(Path.Combine(repo, "tests", "box.obj"));
+    using SimulationMesh facade = SimulationMesh.Create("facade", new double[] { 0, 3, 0, 2, 3, 0, 2, 3, 1, 0, 3, 1, 2, 3, 2, 0, 3, 2 },
                                     new[] { 4, 4 }, new[] { 0, 1, 2, 3, 3, 2, 4, 5 });
-    Mesh[] sensors = { model, facade };
+    SimulationMesh[] sensors = { model, facade };
 
     // daylight: a clear-sky year in Berlin (no weather file), kWh/m2 per face. The first run starts the GPU.
     var clock = Stopwatch.StartNew();
@@ -51,7 +51,7 @@ try
     // isovists in tests/room.obj (a 6.3 x 5.1 x 2.9 m room) from its measure grid, the eye 0.4 m above it: the volume
     // all around (--fov 360,-90,90: m3) and the area of horizontal rays only (--fov 360,0,0: m2). The isovist is 360
     // mode's default column; --distance mean,min gives the distances instead, --far M caps both.
-    using Mesh grid = Mesh.Load(Path.Combine(repo, "tests", "room_grid.obj")), room = Mesh.Load(Path.Combine(repo, "tests", "room.obj"));
+    using SimulationMesh grid = SimulationMesh.Load(Path.Combine(repo, "tests", "room_grid.obj")), room = SimulationMesh.Load(Path.Combine(repo, "tests", "room.obj"));
     Result vol = Core.Run(Tool.Views, new[] { "--fov", "360,-90,90", "--offset", "0.4", "--no-occlude", "grid" }, new[] { grid }, new[] { room });
     Result area = Core.Run(Tool.Views, new[] { "--fov", "360,0,0", "--offset", "0.4", "--no-occlude", "grid" }, new[] { grid }, new[] { room });
     Console.WriteLine($"isovists in the room: volume {vol.Column("volume_front").Average():F1} m3 all around, " +

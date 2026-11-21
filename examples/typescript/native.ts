@@ -3,11 +3,11 @@
 // clear-sky year, a view target, rows per mesh from the manifest ranges, the resident scene, progress, cancel, errors.
 // Run from the repo root after the build: node examples/typescript/native.ts (Node >= 22.18 strips the types)
 import { fileURLToPath } from 'node:url';
-import { DaylightError, Mesh, run, type NativeResult } from '../../bindings/ts/src/native.ts';
+import { DaylightError, SimulationMesh, run, type NativeResult } from '../../bindings/ts/src/native.ts';
 
 // Meshes are copied to the C side once; runs over the same handles in the same roles and order reuse the GPU scene.
-const site = Mesh.load(fileURLToPath(new URL('../../tests/box.obj', import.meta.url))); // OBJ groups: ground, box
-const facade = Mesh.create('facade', // a 4 x 3 m wall at y = 3 facing south (-y), two 1.5 m rows
+const site = SimulationMesh.load(fileURLToPath(new URL('../../tests/box.obj', import.meta.url))); // OBJ groups: ground, box
+const facade = SimulationMesh.create('facade', // a 4 x 3 m wall at y = 3 facing south (-y), two 1.5 m rows
   [-2, 3, 0, 2, 3, 0, 2, 3, 1.5, -2, 3, 1.5, 2, 3, 3, -2, 3, 3], // xyz per point: metres, Z up
   [4, 4], // vertices per face
   [0, 1, 2, 3, 3, 2, 4, 5]); // 0-based, counter-clockwise seen from the front
@@ -47,7 +47,7 @@ sky.forEach((s, i) => console.log(`  facade row ${i}: sky ${s.toFixed(3)}, cube 
 // around (--fov 360,-90,90: m3) and the area of horizontal rays only (--fov 360,0,0: m2). The isovist is 360 mode's
 // default column; --distance mean,min gives the distances instead, --far M caps both.
 const tests = (file: string) => fileURLToPath(new URL(`../../tests/${file}`, import.meta.url));
-const grid = Mesh.load(tests('room_grid.obj')), room = Mesh.load(tests('room.obj')); // room: room, window, tree
+const grid = SimulationMesh.load(tests('room_grid.obj')), room = SimulationMesh.load(tests('room.obj')); // room: room, window, tree
 const eye = ['--offset', '0.4', '--no-occlude', 'grid']; // the grid is measured, not seen
 const vol = await run('views', ['--fov', '360,-90,90', ...eye], { sensors: [grid], context: [room] });
 const area = await run('views', ['--fov', '360,0,0', ...eye], { sensors: [grid], context: [room] });

@@ -9,7 +9,7 @@ import { fileURLToPath } from 'node:url';
 import { Worker } from 'node:worker_threads';
 import { describe, expect, it } from 'vitest';
 import { run as runExe } from '../src/index.js';
-import { DaylightError, Mesh, init, run, usage, type NativeResult } from '../src/native.js';
+import { DaylightError, SimulationMesh, init, run, usage, type NativeResult } from '../src/native.js';
 
 const repo = (p: string) => fileURLToPath(new URL(`../../../${p}`, import.meta.url));
 const dll = process.env.DAYLIGHT_DLL || repo('build/RelWithDebInfo/daylight_c.dll');
@@ -30,9 +30,9 @@ function sameAsCli(r: NativeResult, name: string) {
 }
 
 describe.skipIf(!existsSync(dll))('native (daylight_c.dll)', { timeout: 60_000 }, () => {
-  const facade = () => Mesh.create('facade', quad, [4], [0, 1, 2, 3]);
-  let boxMesh: Mesh | undefined;
-  const box = () => (boxMesh ??= Mesh.load(join(tests, 'box.obj')));
+  const facade = () => SimulationMesh.create('facade', quad, [4], [0, 1, 2, 3]);
+  let boxMesh: SimulationMesh | undefined;
+  const box = () => (boxMesh ??= SimulationMesh.load(join(tests, 'box.obj')));
   const slow = () => run('views', [...view360, '--cell', '0.5'], { sensors: [box()] }); // ~13 ms on an RTX 2060
   const fails = (p: Promise<unknown>, status: number, msg: RegExp) =>
     expect(p).rejects.toSatisfy((e) => e instanceof DaylightError && e.status === status && msg.test(e.message));
@@ -48,14 +48,14 @@ describe.skipIf(!existsSync(dll))('native (daylight_c.dll)', { timeout: 60_000 }
   it('mesh errors carry the core message; names; an empty mesh holds none; free twice is fine', () => {
     const f = facade(), tri = [0, 0, 0, 1, 0, 0, 0, 1, 0];
     expect(f.names).toEqual(['facade']);
-    expect(() => Mesh.create('bad', quad, [4], [0, 1, 2, 4])).toThrow('bad: vertex index out of range');
-    expect(() => Mesh.create('two', tri, [2], [0, 1])).toThrow(/fewer than 3 vertices/);
-    expect(() => Mesh.create('odd', [0, 0], [3], [0, 0, 0])).toThrow(/xyz triples/);
-    expect(() => Mesh.create('s', tri, [3], [0, 1, 2], [1, 2])).toThrow(/one value per face \(1\), not 2/);
-    expect(Mesh.create('empty', [], [], []).names).toEqual([]);
-    expect(() => Mesh.load(join(tests, 'nosuch.obj'))).toThrow(/cannot open/);
-    expect(() => Mesh.load('x.usd')).toThrow(/unknown extension/);
-    const t = Mesh.fromObj({ name: 't', positions: tri, indices: Uint32Array.of(0, 1, 2), slots: Uint16Array.of(3) });
+    expect(() => SimulationMesh.create('bad', quad, [4], [0, 1, 2, 4])).toThrow('bad: vertex index out of range');
+    expect(() => SimulationMesh.create('two', tri, [2], [0, 1])).toThrow(/fewer than 3 vertices/);
+    expect(() => SimulationMesh.create('odd', [0, 0], [3], [0, 0, 0])).toThrow(/xyz triples/);
+    expect(() => SimulationMesh.create('s', tri, [3], [0, 1, 2], [1, 2])).toThrow(/one value per face \(1\), not 2/);
+    expect(SimulationMesh.create('empty', [], [], []).names).toEqual([]);
+    expect(() => SimulationMesh.load(join(tests, 'nosuch.obj'))).toThrow(/cannot open/);
+    expect(() => SimulationMesh.load('x.usd')).toThrow(/unknown extension/);
+    const t = SimulationMesh.fromObj({ name: 't', positions: tri, indices: Uint32Array.of(0, 1, 2), slots: Uint16Array.of(3) });
     expect(t.names).toEqual(['t']);
     f.free();
     f.free();
@@ -148,7 +148,7 @@ describe.skipIf(!existsSync(dll))('native (daylight_c.dll)', { timeout: 60_000 }
   it.skipIf(!viewsExe)('run(views.exe) and run("views") agree on an ObjMesh: fromObj is toDmesh in-process', async () => {
     const m = { name: 'facade', positions: quad, indices: [0, 1, 2, 0, 2, 3] };
     const cli = await runExe(viewsExe, { sensors: [m], args: open });
-    const own = await run('views', open, { sensors: [Mesh.fromObj(m)] });
+    const own = await run('views', open, { sensors: [SimulationMesh.fromObj(m)] });
     expect(own.data).toEqual(cli.data);
     expect(own.manifest).toEqual(cli.manifest);
   });

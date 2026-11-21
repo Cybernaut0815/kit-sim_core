@@ -1,6 +1,6 @@
 # C++
 
-Both tools in-process from C++, on the library the CLIs are built from: fill `daylight::Mesh` and call `daylight::run`
+Both tools in-process from C++, on the library the CLIs are built from: fill `daylight::SimulationMesh` and call `daylight::run`
 (daylight: radiation, irradiance, illuminance, sun hours) or `daylight::views::run` (views: the shares of a field of
 view that end on sky, ground, obstructions or target groups, and distances). No files and no process; the GPU context,
 and the scene of meshes that are run again, stay resident between runs. Plain C and the other languages use the C ABI
@@ -40,13 +40,13 @@ Inputs (`daylight.h`):
 
 | function | |
 |---|---|
-| `read_obj(path, meshes, err)` | appends one `Mesh` per OBJ `o`/`g` group, named by it |
+| `read_obj(path, meshes, err)` | appends one `SimulationMesh` per OBJ `o`/`g` group, named by it |
 | `read_dmesh(path, meshes, err)`, `read_dmesh(data, size, name, meshes, err)` | one `.dmesh` mesh from a file (named by its stem) or from memory |
 | `read_epw(path, w, err)`, `read_epw(istream, label, w, err)` | EPW weather: hourly DNI / DHI and the location |
 | `clear_sky_weather(lat, lon, tz, turbidity, altitude, w, err)` | a cloudless year (Ineichen-Perez), as `--clear-sky` |
 | `read_usd(path, upAxis, metersPerUnit, meshes, err)` | USD stages: `bindings/cpp`, below |
 
-A `daylight::Mesh` holds `points` (xyz interleaved, world metres, Z up), `counts` (vertices per face, at least 3),
+A `daylight::SimulationMesh` holds `points` (xyz interleaved, world metres, Z up), `counts` (vertices per face, at least 3),
 `indices` (0-based, right-handed winding: the normals come from the geometry), `slot` (an optics slot per face; empty:
 slot 0), `name` (what `optics`, `noOcclude` and `targets` refer to, and what `Result::ranges` reports) and `sensor`
 (true: analysed, a row per element, and blocking; false: context, blocks rays only). Conventions: [input.md](input.md).
@@ -57,7 +57,7 @@ with `-DDAYLIGHT_USD=ON` (preset `vs2022-usd`) and link `daylight_usd`
 
 ```cpp
 #include "daylight_usd.h"
-std::vector<daylight::Mesh> meshes; std::string err;
+std::vector<daylight::SimulationMesh> meshes; std::string err;
 if (!daylight::read_usd("scene.usdc", 'A', -1, meshes, err)) throw std::runtime_error(err);  // 'A' = stage up axis, -1 = authored metersPerUnit
 for (auto& m : meshes) m.sensor = m.name.rfind("/World/Bldg", 0) == 0;   // prim path prefix picks the sensors
 ```
@@ -73,8 +73,8 @@ using V = std::array<double, 3>;
 
 // nu x nv quads from corner o along the edges u and v, row by row: points in metres, Z up; each quad wound o, o+u,
 // o+u+v, o+v (right-handed: counter-clockwise seen from the front), so its normal is u x v.
-daylight::Mesh grid(const char* name, V o, V u, V v, int nu, int nv) {
-  daylight::Mesh m{name};   // sensor = true: analysed (a row per face) and blocking
+daylight::SimulationMesh grid(const char* name, V o, V u, V v, int nu, int nv) {
+  daylight::SimulationMesh m{name};   // sensor = true: analysed (a row per face) and blocking
   for (int j = 0; j <= nv; ++j)
     for (int i = 0; i <= nu; ++i)
       for (int a = 0; a < 3; ++a) m.points.push_back(o[a] + u[a] * i / nu + v[a] * j / nv);
@@ -91,7 +91,7 @@ daylight::Mesh grid(const char* name, V o, V u, V v, int nu, int nv) {
 The meshes, then a clear-sky year of radiation and sun hours in Berlin:
 
 ```cpp
-std::vector<daylight::Mesh> meshes = {grid("facade", {-5, 4, 0}, {10, 0, 0}, {0, 0, 6}, 10, 6)};   // y = 4, faces -y
+std::vector<daylight::SimulationMesh> meshes = {grid("facade", {-5, 4, 0}, {10, 0, 0}, {0, 0, 6}, 10, 6)};   // y = 4, faces -y
 if (!daylight::read_obj(std::string(argc > 1 ? argv[1] : "tests") + "/box.obj", meshes, err)) return fail(err);
 meshes.push_back(grid("block", {-15, -14, 0}, {30, 0, 0}, {0, 0, 9}, 10, 3));   // across the street
 meshes.back().sensor = false;   // context: blocks rays, no rows; facade, ground and box (sensor = true) get rows
@@ -141,8 +141,8 @@ model is part of the time too.
 | `seriesPath`, `dumpBitsPath`, `dumpSky`, `dumpSun` | empty | the time series and validation dumps (files) |
 
 `weather` may be `nullptr` only when every quantity is `SunHours` (then `lat`, `lon` and `tz` give the place). Optics:
-`optics` holds the `--optics` rows (`daylight::Optics {mesh, slot, rho, tau, glass}`, mesh = `Mesh::name` or `"*"`,
-slot -1 = the whole mesh, face slots from `Mesh::slot`), `transmission` and `fresnel` the switches, `bounces` (0..20)
+`optics` holds the `--optics` rows (`daylight::Optics {mesh, slot, rho, tau, glass}`, mesh = `SimulationMesh::name` or `"*"`,
+slot -1 = the whole mesh, face slots from `SimulationMesh::slot`), `transmission` and `fresnel` the switches, `bounces` (0..20)
 and `bounceSamples` (64..65536) the reflected light. `run()` fails on rows or switches out of range (also ladybug mode
 with transmission or bounces) and on rows the meshes do not resolve (an unknown or ambiguous name, a slot out of range,
 a row given twice).
@@ -201,7 +201,7 @@ meshes under the same `sceneKey`, so it traced on the scene the daylight run had
 |---|---|---|
 | `fovH`, `elevLo`, `elevHi` | 120, -70, 50 | the field, degrees: H wide about the normal (up to 180), or 360 all around (azimuth from north); `elevLo = elevHi = 0`: horizontal rays only (the 2D isovist) |
 | `cell`, `jitter` | 2, true | degrees per ray; each ray at a seeded random point of its cell (false: the centre) |
-| `targets` | none | `views::Target {mesh, group}`: rays ending on the mesh of that `Mesh::name` count for `group` (at most 16 groups) |
+| `targets` | none | `views::Target {mesh, group}`: rays ending on the mesh of that `SimulationMesh::name` count for `group` (at most 16 groups) |
 | `distance` | `DistAuto` | the distance columns, `views::Dist` bits: `DistIsovist` (`volume`, or `area` in a flat field), `DistMean` (`distance`, log mean), `DistMin` (`distance_min`), `DistGroup` (per group too); 0: none; `DistAuto`: `DistIsovist` when `fovH = 360`, else `DistMean \| DistMin` |
 | `farDist` | 1000 | metres: what open counts as, and the cap of every distance and of the isovist (`far` is a macro of `windef.h`) |
 | `groundZ` | NAN | the virtual ground's height; NAN: the lowest point of the meshes |
@@ -212,10 +212,10 @@ A standing eye all around a floor or ground grid: `fovH = 360`, `offset = 1.6` a
 lowest point, the grid in `noOcclude`, so the virtual ground takes its place ([views.md](views.md#examples) has the
 caveats). Isovists of a room from its measure grid: `fovH = 360`, `elevLo = -90`, `elevHi = 90` (volume) or
 `elevLo = elevHi = 0` (area), the grid in `noOcclude`, `offset` to eye height; the example program does both.
-`views::field(meshes, opt, f, err)` (over `MeshView`s) is what `run()` derives before tracing: the option checks, the
+`views::field(meshes, opt, f, err)` (over `SimulationMeshView`s) is what `run()` derives before tracing: the option checks, the
 grid (`f.nEl` rows x `f.nAz` columns of rays), `f.flat`, the distance columns `f.dist` (`DistAuto` resolved) and the
 virtual ground's height (an empty mesh list checks the options only). Targets are labels per run: changing them never rebuilds the scene, unless the scene lacks a target
-as such (built under other names, or the name now on another `Mesh`), which rebuilds it under the key.
+as such (built under other names, or the name now on another `SimulationMesh`), which rebuilds it under the key.
 
 ## Results
 
@@ -277,8 +277,8 @@ The manifest the CLIs write, for a host that stores results like them: `daylight
   transmitting slots or a hit record per slot). Empty key (the CLIs): rebuilt every run.
 - `residentScenes = N` keeps up to N keyed scenes in VRAM (least recently used freed first, and while less than 1 GB is
   free), so users who alternate between models do not rebuild each other's.
-- `daylight::MeshView {mesh, name, sensor}`: both `run`s take views instead of meshes, so a long-lived host (a server)
-  shares one cached `Mesh` between runs that name it differently or give it another role, without a copy.
+- `daylight::SimulationMeshView {mesh, name, sensor}`: both `run`s take views instead of meshes, so a long-lived host (a server)
+  shares one cached `SimulationMesh` between runs that name it differently or give it another role, without a copy.
 - Memory: `f32Columns` halves the result; `chunkBytes` caps each per-chunk device buffer (any value gives the same
   numbers). `Result::stats` times each stage; `verbose` prints sizes and timings to stderr, as `-v`.
 - CLI runs against in-process runs, measured: [performance.md](performance.md#in-process-vs-cli).
@@ -317,7 +317,7 @@ bad target: --target tree=green: no mesh of that name
 
 ## Reference
 
-- [src/daylight.h](../src/daylight.h): `Mesh`, `MeshView`, `Weather`, `RunOptions`, `Options`, `Optics`, `Result`,
+- [src/daylight.h](../src/daylight.h): `SimulationMesh`, `SimulationMeshView`, `Weather`, `RunOptions`, `Options`, `Optics`, `Result`,
   `RunStats`, the readers, `clear_sky_weather`, `run`; every field is documented there.
 - [src/views.h](../src/views.h): `views::Options`, `Target`, `Field`, `field`, `run`.
 - [src/cli.h](../src/cli.h): the CLIs' flag parsing, weather and time rules and manifests (`daylight::cli::parse`,

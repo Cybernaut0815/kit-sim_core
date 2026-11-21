@@ -65,7 +65,7 @@ bool npy_write_header(std::FILE* f, size_t rows, size_t cols, const char* descr)
   return true;
 }
 
-bool scene_acquire(const std::vector<MeshView>& meshes, const std::function<bool(size_t)>& blocks, const std::vector<Slot>& slots,
+bool scene_acquire(const std::vector<SimulationMeshView>& meshes, const std::function<bool(size_t)>& blocks, const std::vector<Slot>& slots,
                    bool slotted, const std::string& key, int residentScenes, const std::atomic<bool>* cancel, Gpu** gpu, Scene& s,
                    Result& out, const char*& stage, std::string& err) {
   Resident& R = resident();
@@ -128,7 +128,7 @@ bool scene_acquire(const std::vector<MeshView>& meshes, const std::function<bool
   // one-mesh models matter
   par_for(meshes.size(), [&](size_t k) {
     if (!blocks(k)) return;
-    const Mesh& m = *meshes[k].mesh;
+    const SimulationMesh& m = *meshes[k].mesh;
     made[k] = triangulate_into(m, s.c, tris.v.data() + vBase[k], tris.i.data() + tBase[k], slotted ? tris.slot.data() + tBase[k] : nullptr,
                                static_cast<unsigned>(vBase[k]), static_cast<uint32_t>(sBase[k]), skip[k]);
   });
@@ -189,7 +189,7 @@ void scene_forget(const std::string& key) {
     if (it->key == key) { gpu_free(it->gas); it = R.parked.erase(it); } else ++it;
 }
 
-bool sensors_of(const std::vector<MeshView>& meshes, const RunOptions& opt, bool ladybug, const double c[3], size_t nSens, Sensors& s,
+bool sensors_of(const std::vector<SimulationMeshView>& meshes, const RunOptions& opt, bool ladybug, const double c[3], size_t nSens, Sensors& s,
                 Result& out, std::string& warn, std::string& err) {
   const size_t nS = opt.sides == Sides::Both ? 2 : 1;
   s.p.resize(nSens);
@@ -213,7 +213,7 @@ bool sensors_of(const std::vector<MeshView>& meshes, const RunOptions& opt, bool
 }
 
 // The run itself; `stage` names what it is doing, for the out-of-memory message of run() below.
-static bool run_daylight(const std::vector<MeshView>& meshes, const Weather* w, const Options& opt, Result& out, std::string& err, const char*& stage) {
+static bool run_daylight(const std::vector<SimulationMeshView>& meshes, const Weather* w, const Options& opt, Result& out, std::string& err, const char*& stage) {
   const auto cancelled = [&] { if (opt.cancel && opt.cancel->load()) { err = "cancelled"; return true; } return false; };
   out.stats = RunStats{};
   // ---- validation --------------------------------------------------------------------------------------------
@@ -270,7 +270,7 @@ static bool run_daylight(const std::vector<MeshView>& meshes, const Weather* w, 
   const auto blocks = [&](size_t k) { return !meshes[k].sensor || (opt.selfOcclude && !open[k]); };   // mesh k goes into the GAS
   std::vector<char> inGas(opt.transmission || reflect ? slots.size() : 0, 0);
   for (size_t k = 0, b = 0; !inGas.empty() && k < meshes.size(); b += slot_count(*meshes[k++].mesh)) {
-    const Mesh& m = *meshes[k].mesh;
+    const SimulationMesh& m = *meshes[k].mesh;
     if (!blocks(k)) continue;
     if (m.slot.empty()) inGas[b] = !m.counts.empty();
     else for (uint16_t s : m.slot) inGas[b + s] = 1;
@@ -298,11 +298,11 @@ static bool run_daylight(const std::vector<MeshView>& meshes, const Weather* w, 
   // geometry is built; the occluder triangles and the sensors are made later, one after the other (see the GPU block).
   const int nS = opt.sides == Sides::Both ? 2 : 1;
   size_t nElem = 0;
-  for (const MeshView& v : meshes) if (v.sensor) nElem += opt.onVertices ? v.mesh->numPoints() : v.mesh->numFaces();
+  for (const SimulationMeshView& v : meshes) if (v.sensor) nElem += opt.onVertices ? v.mesh->numPoints() : v.mesh->numFaces();
   const size_t nSens = nElem * static_cast<size_t>(nS);
   if (nSens == 0) { err = "no sensor elements (no sensor meshes, or all faces degenerate)"; return false; }
   if (ladybug)   // RadiationStudy's rule (make_sensors says the same), checked before the scene is built
-    for (const MeshView& v : meshes)
+    for (const SimulationMeshView& v : meshes)
       for (size_t f = 0; v.sensor && f < v.mesh->counts.size(); ++f)
         if (v.mesh->counts[f] > 4) { err = "error: ladybug mode supports tri/quad faces only (mesh " + v.name + ", face " + std::to_string(f) + ")"; return false; }
 
@@ -557,7 +557,7 @@ static bool run_daylight(const std::vector<MeshView>& meshes, const Weather* w, 
       for (size_t k = 0; k < meshes.size(); ++k) sBase[k + 1] = sBase[k] + slot_count(*meshes[k].mesh);
       par_for(meshes.size(), [&](size_t k) {
         if (!blocks(k)) return;
-        const Mesh& m = *meshes[k].mesh;
+        const SimulationMesh& m = *meshes[k].mesh;
         // ponytail: one pass over the mesh per transmitting slot; bucket the faces by slot if meshes with hundreds appear
         for (size_t s = 0; s < slot_count(m); ++s)
           if (slots[sBase[k] + s].tau > 0) thin[sBase[k] + s] = thin_solid(m, static_cast<unsigned>(s), sc.c);
@@ -737,7 +737,7 @@ static bool run_daylight(const std::vector<MeshView>& meshes, const Weather* w, 
   return true;
 }
 
-bool run(const std::vector<MeshView>& meshes, const Weather* w, const Options& opt, Result& out, std::string& err) {
+bool run(const std::vector<SimulationMeshView>& meshes, const Weather* w, const Options& opt, Result& out, std::string& err) {
   // A model too big for this machine's memory fails the run, never the caller: everything the run allocated on the host
   // is freed by the unwinding, the GPU state keeps whatever scene it had installed (a build that failed installed none).
   const char* stage = "preparing the run";
@@ -753,7 +753,7 @@ bool run(const std::vector<MeshView>& meshes, const Weather* w, const Options& o
   return false;
 }
 
-bool run(const std::vector<Mesh>& meshes, const Weather* w, const Options& opt, Result& out, std::string& err) {
+bool run(const std::vector<SimulationMesh>& meshes, const Weather* w, const Options& opt, Result& out, std::string& err) {
   return run(views_of(meshes), w, opt, out, err);
 }
 

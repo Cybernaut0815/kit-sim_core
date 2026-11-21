@@ -10,7 +10,7 @@ from concurrent.futures import ThreadPoolExecutor, wait
 from pathlib import Path
 
 import numpy as np
-from daylight import Mesh, native
+from daylight import SimulationMesh, native
 
 BOX = Path(__file__).resolve().parents[2] / 'tests' / 'box.obj'      # groups "ground" (4 quads at z 0) and "box"
 DAYLIGHT = ['--clear-sky', '--lat', '52.52', '--lon', '13.41', '--quantity', 'radiation,sunhours']     # Berlin
@@ -34,7 +34,7 @@ def per_mesh(r):
         yield m['name'], m['count'], dict(zip(r.manifest['columns'], rows.mean(axis=0)))
 
 
-with Mesh('facade', *wall(10, 6, 4, 1)) as facade, Mesh.load(BOX) as box, Mesh('block', *wall(30, 9, -14, 3)) as block:
+with SimulationMesh('facade', *wall(10, 6, 4, 1)) as facade, SimulationMesh.load(BOX) as box, SimulationMesh('block', *wall(30, 9, -14, 3)) as block:
     sensors, context = [facade, box], [block]                  # facade, ground, box analysed; the block only blocks
     t0 = time.perf_counter()
     with native.Control() as ctl, ThreadPoolExecutor(1) as pool:
@@ -62,7 +62,7 @@ with Mesh('facade', *wall(10, 6, 4, 1)) as facade, Mesh.load(BOX) as box, Mesh('
 # isovists in tests/room.obj (a 6.3 x 5.1 x 2.9 m room) from its measure grid, the eye 0.4 m above it: the volume all
 # around (--fov 360,-90,90: m3) and the area of horizontal rays only (--fov 360,0,0: m2). The isovist is 360 mode's
 # default column; --distance mean,min gives the distances instead, --far M caps both.
-with Mesh.load(BOX.parent / 'room_grid.obj') as grid, Mesh.load(BOX.parent / 'room.obj') as room:   # room, window, tree
+with SimulationMesh.load(BOX.parent / 'room_grid.obj') as grid, SimulationMesh.load(BOX.parent / 'room.obj') as room:   # room, window, tree
     eye = ['--offset', '0.4', '--no-occlude', 'grid']                  # the grid is measured, not seen
     vol = native.run('views', ['--fov', '360,-90,90', *eye], grid, context=room)
     area = native.run('views', ['--fov', '360,0,0', *eye], grid, context=room)

@@ -7,7 +7,7 @@ meshes, a column per quantity or share) with its manifest.
 
 | way in | how | for |
 |---|---|---|
-| in-process: `daylight.native` | `daylight_c.dll` through ctypes: `Mesh` handles, `native.run(tool, flags, sensors, context)` | repeated runs over one model (parameter studies, notebooks, a server): no process start, the GPU scene kept |
+| in-process: `daylight.native` | `daylight_c.dll` through ctypes: `SimulationMesh` handles, `native.run(tool, flags, sensors, context)` | repeated runs over one model (parameter studies, notebooks, a server): no process start, the GPU scene kept |
 | process runner: `daylight.run_meshes`, `daylight.run` | writes `.dmesh` files, runs `daylight.exe` / `views.exe`, reads its `.npy` values and `.json` manifest | single runs, a process of its own per run |
 | USD: `meshes`, `split`, `write_results`, `python -m daylight` | a composed stage to mesh arrays; the values back as primvars on a layer over the stage | usdview, Omniverse, any USD pipeline: [the one-liner](#a-usd-stage-in-and-out), [in code](#on-a-usd-stage) |
 
@@ -49,7 +49,7 @@ from concurrent.futures import ThreadPoolExecutor, wait
 from pathlib import Path
 
 import numpy as np
-from daylight import Mesh, native
+from daylight import SimulationMesh, native
 
 BOX = Path(__file__).resolve().parents[2] / 'tests' / 'box.obj'      # groups "ground" (4 quads at z 0) and "box"
 DAYLIGHT = ['--clear-sky', '--lat', '52.52', '--lon', '13.41', '--quantity', 'radiation,sunhours']     # Berlin
@@ -73,7 +73,7 @@ The run, on a worker thread so that this thread can read its progress ([below](#
 calling thread it is `r = native.run('daylight', DAYLIGHT, sensors, context)`:
 
 ```python
-with Mesh('facade', *wall(10, 6, 4, 1)) as facade, Mesh.load(BOX) as box, Mesh('block', *wall(30, 9, -14, 3)) as block:
+with SimulationMesh('facade', *wall(10, 6, 4, 1)) as facade, SimulationMesh.load(BOX) as box, SimulationMesh('block', *wall(30, 9, -14, 3)) as block:
     sensors, context = [facade, box], [block]                  # facade, ground, box analysed; the block only blocks
     t0 = time.perf_counter()
     with native.Control() as ctl, ThreadPoolExecutor(1) as pool:
@@ -90,11 +90,11 @@ with Mesh('facade', *wall(10, 6, 4, 1)) as facade, Mesh.load(BOX) as box, Mesh('
         print(f"  {name:6} {n:2} faces  {a['radiation_front']:4.0f} kWh/m2  {a['sunhours_front']:4.0f} sun hours")
 ```
 
-- `Mesh(name, points, counts, indices, slots=None)`: one mesh, numpy arrays or lists, copied into the DLL once.
-  `Mesh.load(path)`: every `o`/`g` group of an `.obj` (here `ground` and `box`, in file order) or one `.dmesh`.
+- `SimulationMesh(name, points, counts, indices, slots=None)`: one mesh, numpy arrays or lists, copied into the DLL once.
+  `SimulationMesh.load(path)`: every `o`/`g` group of an `.obj` (here `ground` and `box`, in file order) or one `.dmesh`.
   `.names` lists what a handle holds; these are the names the manifest and flags such as `--target` use.
 - `native.run(tool, args, sensors, context=(), control=None)` -> `Result(values, manifest, stats)`. Sensors are
-  analysed (a row per face) and block, context only blocks; each a `Mesh` or a list of them.
+  analysed (a row per face) and block, context only blocks; each a `SimulationMesh` or a list of them.
 - `args` are the CLI's flags as strings ([daylight.md](daylight.md)). `--clear-sky --lat --lon` makes a cloudless
   year; with a weather file it is `--epw site.epw` (give a non-ASCII path as a `pathlib.Path`). Mesh paths,
   `--context`, `--out`, `--bench` and `-h` are refused: the meshes are handles and the result comes back.
@@ -201,7 +201,7 @@ horizontal rays only (`--fov 360,0,0`). The example ends with both, in tests/roo
 ([views.md](views.md#isovist)):
 
 ```python
-with Mesh.load(BOX.parent / 'room_grid.obj') as grid, Mesh.load(BOX.parent / 'room.obj') as room:   # room, window, tree
+with SimulationMesh.load(BOX.parent / 'room_grid.obj') as grid, SimulationMesh.load(BOX.parent / 'room.obj') as room:   # room, window, tree
     eye = ['--offset', '0.4', '--no-occlude', 'grid']                  # the grid is measured, not seen
     vol = native.run('views', ['--fov', '360,-90,90', *eye], grid, context=room)
     area = native.run('views', ['--fov', '360,0,0', *eye], grid, context=room)
@@ -291,10 +291,10 @@ In-process, from `bindings/python`, both tools, the values back on the stage:
 
 ```python
 import daylight
-from daylight import Mesh, native
+from daylight import SimulationMesh, native
 
 sens, ctx = daylight.split(daylight.meshes('../cpp/box.usda'), sensors=['/World'])   # [(prim path, P, C, I)]
-sensors, context = [Mesh(*m) for m in sens], [Mesh(*m) for m in ctx]                # named by prim path
+sensors, context = [SimulationMesh(*m) for m in sens], [SimulationMesh(*m) for m in ctx]                # named by prim path
 r = native.run('daylight', ['--clear-sky', '--lat', '52.52', '--lon', '13.41'], sensors, context)
 v = native.run('views', ['--target', '/Floor=lawn'], sensors, context)
 daylight.write_results('../cpp/box.usda', r.values, r.manifest, [m[0] for m in sens], 'out/daylight.usda')
@@ -316,11 +316,11 @@ daylight.write_results('../cpp/box.usda', v.values, v.manifest, [m[0] for m in s
 
 - The first in-process run of a process pays the GPU start (CUDA context, OptiX pipeline): about 0.35 s on the
   RTX 2060. The example's first run took 0.5-0.8 s with it.
-- Runs over the same `Mesh` objects in the same roles and order reuse the resident GPU scene
+- Runs over the same `SimulationMesh` objects in the same roles and order reuse the resident GPU scene
   (`stats['scene_reused']`): no triangulation, upload or GAS build. daylight and views share it: the example's views
   run took 2 ms. Create the meshes once, keep them open and change the flags; the scene's key is the handles, their
   roles and `--no-self-occlude` (plus the `--no-occlude` set and transmitting `--optics` slots). A new or closed
-  `Mesh` never matches, and one scene stays resident: two models used in turn rebuild at every switch.
+  `SimulationMesh` never matches, and one scene stays resident: two models used in turn rebuild at every switch.
 - A reused scene still pays the run itself: daylight's sky (`sky_ms`: about 90 ms for the example's clear-sky year,
   under 1 ms for one day), the trace, the reduce.
 - The process runner pays everything on every run: the process, the GPU start, the files, the scene: 0.5-0.6 s per
@@ -335,9 +335,9 @@ In-process:
 
 | exception | when |
 |---|---|
-| `native.DaylightError`, `.status` 1 | bad flags or arguments, refused flags, names the meshes do not resolve (`--target`, `--optics`, `--no-occlude`), bad arrays in `Mesh(...)` |
-| `native.DaylightError`, `.status` 2 | the run failed: a file (`--epw`, `Mesh.load`), the GPU, out of memory, `cancelled` |
-| `TypeError` | sensors or context that are not `Mesh` objects |
+| `native.DaylightError`, `.status` 1 | bad flags or arguments, refused flags, names the meshes do not resolve (`--target`, `--optics`, `--no-occlude`), bad arrays in `SimulationMesh(...)` |
+| `native.DaylightError`, `.status` 2 | the run failed: a file (`--epw`, `SimulationMesh.load`), the GPU, out of memory, `cancelled` |
+| `TypeError` | sensors or context that are not `SimulationMesh` objects |
 | `ValueError` | a tool other than `'daylight'` / `'views'`; `slots` not one per face |
 | `FileNotFoundError`, `OSError` | the DLL, or one it needs, is missing; not a loadable DLL, or another C ABI version |
 
@@ -357,11 +357,11 @@ Cancel and progress in-process, through a `Control` (the daylight run [above](#d
   `DaylightError` 2 `cancelled`; a control cancelled before the run fails it as it starts; a cancel after the last
   check lets it finish.
 - ctypes releases the GIL for the whole DLL call, so other threads (a UI, the progress loop) run while the GPU works.
-  Ctrl+C waits for the run to return. Close no `Mesh` a run on another thread uses.
+  Ctrl+C waits for the run to return. Close no `SimulationMesh` a run on another thread uses.
 
 ## Reference
 
-- [bindings/python/README.md](../bindings/python/README.md): the whole API (`Mesh`, `native.run`, `Control`,
+- [bindings/python/README.md](../bindings/python/README.md): the whole API (`SimulationMesh`, `native.run`, `Control`,
   `usage`, `run`, `run_meshes`, `to_dmesh`, `meshes`, `split`, `to_obj`, `write_results`, `colormap`,
   `python -m daylight`), the `.dmesh` layout and the USD conversion rules.
 - Flags, outputs and units: [daylight.md](daylight.md) (daylight), [views.md](views.md) (views); sky and weather:

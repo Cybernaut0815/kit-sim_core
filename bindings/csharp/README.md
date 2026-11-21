@@ -6,7 +6,7 @@ Guide: [docs/csharp.md](../../docs/csharp.md) (setup, both tools worked through,
 `Daylight.dll` runs both tools of the core in-process: `daylight` (annual daylight / solar,
 [daylight.md](../../docs/daylight.md)) and `views` (view analysis, [views.md](../../docs/views.md)), through the C ABI
 `daylight_c.dll` ([c-abi.md](../../docs/c-abi.md)). A run takes the CLI's own flags and meshes as handles; the result
-is a `double[]` (row-major, bit for bit what `--out FILE.npy` holds) and the manifest. Runs over the same `Mesh` objects
+is a `double[]` (row-major, bit for bit what `--out FILE.npy` holds) and the manifest. Runs over the same `SimulationMesh` objects
 keep their GPU scene resident: no triangulation, upload or build the second time. netstandard2.0, no package
 references: .NET 8/9, .NET Framework 4.8 (Rhino 6 and 7 with Grasshopper, Rhino 8 on request), Rhino 8 on .NET, Unity.
 
@@ -53,8 +53,8 @@ using System;
 using System.Threading;
 using Daylight;
 
-using (Mesh model = Mesh.Load("tests/box.obj"))   // OBJ groups: "ground", "box"
-using (Mesh facade = Mesh.Create("facade", new double[] { -1, 0, 0, 1, 0, 0, 1, 0, 2, -1, 0, 2 }, new[] { 4 }, new[] { 0, 1, 2, 3 }))
+using (SimulationMesh model = SimulationMesh.Load("tests/box.obj"))   // OBJ groups: "ground", "box"
+using (SimulationMesh facade = SimulationMesh.Create("facade", new double[] { -1, 0, 0, 1, 0, 0, 1, 0, 2, -1, 0, 2 }, new[] { 4 }, new[] { 0, 1, 2, 3 }))
 {
     Result noon = Core.Run(Tool.Daylight, new[] { "--lat", "41.98", "--lon", "-87.92", "--tz", "-6", "--quantity", "sunhours",
                                                   "--time", "06-21T12:00" }, new[] { model });
@@ -77,8 +77,8 @@ Namespace `Daylight`.
 | | |
 |---|---|
 | `enum Tool { Daylight = 0, Views = 1 }` | the tool of a run |
-| `Mesh.Create(name, xyz, counts, indices, slots = null)` | one mesh from the `.dmesh` arrays, copied: `double[]` xyz 3 per point (metres, Z up), `int[]` counts (>= 3) and 0-based indices, `ushort[]` optics slot per face or null |
-| `Mesh.Load(path)` | the meshes of an `.obj` (one per o/g group, named by it) or `.dmesh` (named by its stem) |
+| `SimulationMesh.Create(name, xyz, counts, indices, slots = null)` | one mesh from the `.dmesh` arrays, copied: `double[]` xyz 3 per point (metres, Z up), `int[]` counts (>= 3) and 0-based indices, `ushort[]` optics slot per face or null |
+| `SimulationMesh.Load(path)` | the meshes of an `.obj` (one per o/g group, named by it) or `.dmesh` (named by its stem) |
 | `mesh.Names` | what `--optics`, `--no-occlude`, `--target` and the manifest call the meshes, in row order |
 | `mesh.Dispose()` | frees it (else the finalizer does), deferred while a run holds it |
 | `new RunControl()`, `.Cancel()`, `.Progress` | one run's cancel (it throws status 2 `cancelled`) and progress (0..1), from any thread; one control per run |
@@ -92,5 +92,5 @@ Namespace `Daylight`.
 | `DaylightException` | `Status`, the CLI's exit code, and the core's message |
 
 Runs take turns (one GPU run per process at a time): a `Run` waits for the one before it. Flags travel as UTF-8 and
-`Mesh.Load` paths in the ANSI code page, so paths inside flags (`--epw`, `--timeseries`, `--dump-*`) must be ASCII, and
-a `Mesh.Load` path with a character outside the code page throws `ArgumentException`.
+`SimulationMesh.Load` paths in the ANSI code page, so paths inside flags (`--epw`, `--timeseries`, `--dump-*`) must be ASCII, and
+a `SimulationMesh.Load` path with a character outside the code page throws `ArgumentException`.

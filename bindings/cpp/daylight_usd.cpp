@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: Apache-2.0 AND LicenseRef-Commons-Clause-1.0
-// USD reader: LightUSD composed stage (sublayers, references, payloads, ...) -> Mesh[] in world metres, Z-up.
+// USD reader: LightUSD composed stage (sublayers, references, payloads, ...) -> SimulationMesh[] in world metres, Z-up.
 #include "daylight_usd.h"
 #pragma warning(push)
 #pragma warning(disable : 4127)   // LightUSD headers: constant conditionals in templates
@@ -43,7 +43,7 @@ const T& scalar_or(const lightusd::TypedAttribute<lightusd::Animatable<T>>& a, T
 }
 
 bool convert(const lightusd::GeomMesh& g, const lightusd::value::matrix4d& W, const std::string& name, bool yup,
-             double mpu, std::vector<Mesh>& out, std::string& err) {
+             double mpu, std::vector<SimulationMesh>& out, std::string& err) {
   std::vector<lightusd::value::point3f> ptsTmp;
   std::vector<int32_t> cntTmp, idxTmp;
   const auto& pts = scalar_or(g.points, ptsTmp, [&] { return g.get_points(); });
@@ -53,7 +53,7 @@ bool convert(const lightusd::GeomMesh& g, const lightusd::value::matrix4d& W, co
   const double (*m)[4] = W.m;
   const double det = m[0][0] * (m[1][1] * m[2][2] - m[1][2] * m[2][1]) - m[0][1] * (m[1][0] * m[2][2] - m[1][2] * m[2][0]) +
                      m[0][2] * (m[1][0] * m[2][1] - m[1][1] * m[2][0]);
-  Mesh mesh;
+  SimulationMesh mesh;
   mesh.name = name;
   mesh.points.resize(pts.size() * 3);
   for (size_t i = 0; i < pts.size(); ++i) {
@@ -89,7 +89,7 @@ bool convert(const lightusd::GeomMesh& g, const lightusd::value::matrix4d& W, co
   return true;
 }
 
-bool walk(const lightusd::tydra::XformNode& n, bool skip, bool yup, double mpu, std::vector<Mesh>& out, std::string& err) {
+bool walk(const lightusd::tydra::XformNode& n, bool skip, bool yup, double mpu, std::vector<SimulationMesh>& out, std::string& err) {
   if (n.prim) {
     skip = skip || prim_skipped(*n.prim);
     if (!skip)
@@ -102,7 +102,7 @@ bool walk(const lightusd::tydra::XformNode& n, bool skip, bool yup, double mpu, 
 
 }  // namespace
 
-bool read_usd(const std::string& path, char upAxis, double metersPerUnit, std::vector<Mesh>& out, std::string& err) {
+bool read_usd(const std::string& path, char upAxis, double metersPerUnit, std::vector<SimulationMesh>& out, std::string& err) {
   std::string warn, lerr;
   lightusd::USDLoadOptions lopt;
   lopt.max_memory_limit_in_mb = 16384;   // LightUSD default 512 MB rejects 1M-face stages

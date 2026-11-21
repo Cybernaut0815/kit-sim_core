@@ -23,7 +23,7 @@ from pxr import Sdf, Usd, UsdGeom, Vt
 
 from . import _native
 from .core import REPO, VIRIDIS, colormap, run_meshes, to_dmesh
-from .native import Control, DaylightError, Mesh, _run, run, usage
+from .native import Control, DaylightError, SimulationMesh, _run, run, usage
 from .usd import meshes, to_obj, write_results
 
 FIX = REPO / 'validate' / '_out' / 'fixtures' / 'usd_xform' / 'usd_xform.usda'
@@ -153,14 +153,14 @@ def check_native():
     except ValueError:
         pass
 
-    facade = Mesh('facade', FACADE, [4], [0, 1, 2, 3])
-    assert facade.names == ('facade',) and Mesh('empty', np.empty((0, 3)), [], []).names == ()
-    fails(1, 'bad: vertex index out of range', Mesh, 'bad', FACADE, [4], [0, 1, 2, 4])
-    fails(1, 'fewer than 3 vertices', Mesh, 'two', FACADE, [2], [0, 1])
-    fails(2, 'cannot open', Mesh.load, TESTS / 'nosuch.obj')
-    fails(2, 'unknown extension', Mesh.load, 'x.usd')
+    facade = SimulationMesh('facade', FACADE, [4], [0, 1, 2, 3])
+    assert facade.names == ('facade',) and SimulationMesh('empty', np.empty((0, 3)), [], []).names == ()
+    fails(1, 'bad: vertex index out of range', SimulationMesh, 'bad', FACADE, [4], [0, 1, 2, 4])
+    fails(1, 'fewer than 3 vertices', SimulationMesh, 'two', FACADE, [2], [0, 1])
+    fails(2, 'cannot open', SimulationMesh.load, TESTS / 'nosuch.obj')
+    fails(2, 'unknown extension', SimulationMesh.load, 'x.usd')
     try:
-        Mesh('slots', FACADE, [4], [0, 1, 2, 3], slots=[0, 0])
+        SimulationMesh('slots', FACADE, [4], [0, 1, 2, 3], slots=[0, 0])
         raise AssertionError('2 slots for 1 face accepted')
     except ValueError:
         pass
@@ -182,7 +182,7 @@ def check_native():
     assert np.array_equal(plain[0], comma[0]) and plain[1] == comma[1], 'a decimal-comma locale changed the run'
 
     # the GPU: tests/box.obj (a ground of 4 quads, a floating box) as ctest's cli_smoke_npy / views_smoke_npy run it
-    box, ctl = Mesh.load(TESTS / 'box.obj'), Control()
+    box, ctl = SimulationMesh.load(TESTS / 'box.obj'), Control()
     assert box.names == ('ground', 'box'), box.names
     try:
         v1, m1, s1 = _run('daylight', SUN, box, (), ctl)
@@ -198,7 +198,7 @@ def check_native():
     assert s3['scene_reused'], s3                                     # an opaque scene is views' too
     same_as_cli(v3, m3, 'views_smoke.npy')
     box.close()
-    with Mesh.load(TESTS / 'box.obj') as box2:                        # a closed handle's scene is never reused
+    with SimulationMesh.load(TESTS / 'box.obj') as box2:                        # a closed handle's scene is never reused
         r4 = run('daylight', SUN, [box2])
         assert not r4.stats['scene_reused'] and np.array_equal(r4.values, v1), r4.stats
 

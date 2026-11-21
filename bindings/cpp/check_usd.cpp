@@ -10,17 +10,17 @@
   do { if (!(cond)) { std::printf("%s:%d: CHECK(%s) failed\n", __FILE__, __LINE__, #cond); ++fails; } } while (0)
 
 namespace {
-using daylight::Mesh;
+using daylight::SimulationMesh;
 
-const Mesh* find(const std::vector<Mesh>& ms, const char* name) {
-  for (const Mesh& m : ms) if (m.name == name) return &m;
+const SimulationMesh* find(const std::vector<SimulationMesh>& ms, const char* name) {
+  for (const SimulationMesh& m : ms) if (m.name == name) return &m;
   return nullptr;
 }
 bool near3(const double* a, const double* b, double eps) {
   return std::fabs(a[0] - b[0]) < eps && std::fabs(a[1] - b[1]) < eps && std::fabs(a[2] - b[2]) < eps;
 }
 // cross(p1-p0, p2-p0) of face f (first three points) and the face centroid; returns dot(n, centroid - c).
-double outward(const Mesh& m, size_t f, const double c[3], double n[3]) {
+double outward(const SimulationMesh& m, size_t f, const double c[3], double n[3]) {
   const int* I = m.indices.data() + 4 * f;
   const double *p0 = &m.points[3 * size_t(I[0])], *p1 = &m.points[3 * size_t(I[1])], *p2 = &m.points[3 * size_t(I[2])];
   double e1[3], e2[3], ctr[3] = {0, 0, 0};
@@ -35,7 +35,7 @@ int main(int argc, char** argv) {
   int fails = 0;
   const std::string dir = argc > 1 ? argv[1] : ".";
   const std::string path = dir + "/box.usda";
-  std::vector<Mesh> ms;
+  std::vector<SimulationMesh> ms;
   std::string err;
   CHECK(!daylight::read_usd(dir + "/does_not_exist.usda", 'A', 0, ms, err));
   CHECK(!err.empty());
@@ -43,7 +43,7 @@ int main(int argc, char** argv) {
   CHECK(daylight::read_usd(path, 'A', 0, ms, err));
   CHECK(err.empty());
   CHECK(ms.size() == 3);   // Hidden (invisible), Guide (purpose), Inactive (active = false), HiddenGroup/Child (inherited) pruned
-  const Mesh *box = find(ms, "/World/Box"), *left = find(ms, "/World/BoxLeft"), *floor = find(ms, "/Floor");
+  const SimulationMesh *box = find(ms, "/World/Box"), *left = find(ms, "/World/BoxLeft"), *floor = find(ms, "/Floor");
   CHECK(box && left && floor);
   if (!box || !left || !floor) return 1;
   CHECK(ms[0].name == "/World/Box" && ms[1].name == "/World/BoxLeft" && ms[2].name == "/Floor");
@@ -59,11 +59,11 @@ int main(int argc, char** argv) {
   const double leftPts[24] = {0.5, -2.5, 1.5, 0.5, -3.5, 1.5, 0.5, -3.5, 2.5, 0.5, -2.5, 2.5,
                               1.5, -2.5, 1.5, 1.5, -3.5, 1.5, 1.5, -3.5, 2.5, 1.5, -2.5, 2.5};
   const int leftIdx[24] = {1, 2, 3, 0, 7, 6, 5, 4, 4, 5, 1, 0, 2, 6, 7, 3, 3, 7, 4, 0, 5, 6, 2, 1};
-  const Mesh* boxes[2] = {box, left};
+  const SimulationMesh* boxes[2] = {box, left};
   const double* expPts[2] = {boxPts, leftPts};
   const int* expIdx[2] = {boxIdx, leftIdx};
   for (int b = 0; b < 2; ++b) {
-    const Mesh& m = *boxes[b];
+    const SimulationMesh& m = *boxes[b];
     CHECK(m.numPoints() == 8 && m.numFaces() == 6 && m.indices.size() == 24);
     if (m.numPoints() != 8 || m.indices.size() != 24) continue;
     for (size_t i = 0; i < 8; ++i) CHECK(near3(&m.points[3 * i], expPts[b] + 3 * i, 1e-9));

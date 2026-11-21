@@ -19,8 +19,8 @@ using V = std::array<double, 3>;
 
 // nu x nv quads from corner o along the edges u and v, row by row: points in metres, Z up; each quad wound o, o+u,
 // o+u+v, o+v (right-handed: counter-clockwise seen from the front), so its normal is u x v.
-daylight::Mesh grid(const char* name, V o, V u, V v, int nu, int nv) {
-  daylight::Mesh m{name};   // sensor = true: analysed (a row per face) and blocking
+daylight::SimulationMesh grid(const char* name, V o, V u, V v, int nu, int nv) {
+  daylight::SimulationMesh m{name};   // sensor = true: analysed (a row per face) and blocking
   for (int j = 0; j <= nv; ++j)
     for (int i = 0; i <= nu; ++i)
       for (int a = 0; a < 3; ++a) m.points.push_back(o[a] + u[a] * i / nu + v[a] * j / nv);
@@ -56,7 +56,7 @@ int main(int argc, char** argv) {
   using Clock = std::chrono::steady_clock;
   const auto ms = [](Clock::time_point t) { return 1e3 * std::chrono::duration<double>(Clock::now() - t).count(); };
   std::string err;
-  std::vector<daylight::Mesh> meshes = {grid("facade", {-5, 4, 0}, {10, 0, 0}, {0, 0, 6}, 10, 6)};   // y = 4, faces -y
+  std::vector<daylight::SimulationMesh> meshes = {grid("facade", {-5, 4, 0}, {10, 0, 0}, {0, 0, 6}, 10, 6)};   // y = 4, faces -y
   if (!daylight::read_obj(std::string(argc > 1 ? argv[1] : "tests") + "/box.obj", meshes, err)) return fail(err);
   meshes.push_back(grid("block", {-15, -14, 0}, {30, 0, 0}, {0, 0, 9}, 10, 3));   // across the street
   meshes.back().sensor = false;   // context: blocks rays, no rows; facade, ground and box (sensor = true) get rows
@@ -98,7 +98,7 @@ int main(int argc, char** argv) {
   // isovists in tests/room.obj (a 6.3 x 5.1 x 2.9 m room) from its measure grid, the eye 0.4 m above it: the volume
   // all around (fovH 360, elevation -90..90: m3) and the area of horizontal rays only (elevation 0..0: m2). The isovist
   // is 360 mode's default column; vo.distance = DistMean | DistMin gives the distances instead, farDist caps both.
-  std::vector<daylight::Mesh> room;
+  std::vector<daylight::SimulationMesh> room;
   const std::string tests = argc > 1 ? argv[1] : "tests";
   if (!daylight::read_obj(tests + "/room_grid.obj", room, err) || !daylight::read_obj(tests + "/room.obj", room, err)) return fail(err);
   for (size_t k = 1; k < room.size(); ++k) room[k].sensor = false;   // room, window, tree: context

@@ -8,7 +8,7 @@ export interface ObjMesh {
   name: string;
   positions: ArrayLike<number>; // xyz interleaved, world metres, Z-up
   indices: ArrayLike<number>; // triangle indices, 0-based
-  slots?: Uint16Array; // optics slot per triangle (core Mesh::slot; toDmesh writes it, toObj does not); absent = all slot 0
+  slots?: Uint16Array; // optics slot per triangle (core SimulationMesh::slot; toDmesh writes it, toObj does not); absent = all slot 0
   id?: string; // runRemote(): the server caches the mesh under it; absent: meshIds() derives it from the bytes
 }
 

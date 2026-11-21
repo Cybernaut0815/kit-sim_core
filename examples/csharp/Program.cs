@@ -48,6 +48,15 @@ try
                           $"{Mean(view, "block_front", m):F2}  distance {Mean(view, "distance_front", m),5:F1} m  " +
                           $"sees 20 m {Mean(view, "reach_20_front", m):F2}");
 
+    // isovists in tests/room.obj (a 6.3 x 5.1 x 2.9 m room) from its measure grid, the eye 0.4 m above it: the volume
+    // all around (--fov 360,-90,90: m3) and the area of horizontal rays only (--fov 360,0,0: m2). The isovist is 360
+    // mode's default column; --distance mean,min gives the distances instead, --far M caps both.
+    using Mesh grid = Mesh.Load(Path.Combine(repo, "tests", "room_grid.obj")), room = Mesh.Load(Path.Combine(repo, "tests", "room.obj"));
+    Result vol = Core.Run(Tool.Views, new[] { "--fov", "360,-90,90", "--offset", "0.4", "--no-occlude", "grid" }, new[] { grid }, new[] { room });
+    Result area = Core.Run(Tool.Views, new[] { "--fov", "360,0,0", "--offset", "0.4", "--no-occlude", "grid" }, new[] { grid }, new[] { room });
+    Console.WriteLine($"isovists in the room: volume {vol.Column("volume_front").Average():F1} m3 all around, " +
+                      $"area {area.Column("area_front").Average():F1} m2 at eye height");
+
     // In the background: the token cancels the run (a timeout here, a Cancel button in an app), the control reports
     // progress meanwhile. Sun hours need no weather, only the site and its clock (--tz).
     string[] june21 = { "--quantity", "sunhours", "--lat", "52.52", "--lon", "13.41", "--tz", "1",

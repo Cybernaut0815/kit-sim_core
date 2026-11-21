@@ -26,7 +26,11 @@ std::string reach_name(double D) { char s[48]; std::snprintf(s, sizeof s, "reach
 
 bool field(const std::vector<MeshView>& meshes, const Options& opt, Field& f, std::string& err) {
   if (!(opt.fovH > 0 && opt.fovH <= 180) && opt.fovH != 360) { err = "--fov H must be in (0, 180] (about the normal) or 360 (all around)"; return false; }
-  if (!(opt.elevLo >= -90 && opt.elevLo < opt.elevHi && opt.elevHi <= 90)) { err = "--fov H,LO,HI needs -90 <= LO < HI <= 90"; return false; }
+  const bool flat = opt.elevLo == 0 && opt.elevHi == 0;   // one row of horizontal rays: the 2D isovist
+  if (!flat && !(opt.elevLo >= -90 && opt.elevLo < opt.elevHi && opt.elevHi <= 90)) {
+    err = "--fov H,LO,HI needs -90 <= LO < HI <= 90, or LO = HI = 0 (horizontal rays only)";
+    return false;
+  }
   if (!(opt.cell > 0) || std::isinf(opt.cell)) { err = "--cell must be positive and finite (degrees)"; return false; }
   if (!std::isfinite(opt.north) || !std::isfinite(opt.offset)) { err = "--north and --offset must be finite"; return false; }
   if (!optics_rows_ok(opt.optics, err)) return false;
@@ -45,8 +49,19 @@ bool field(const std::vector<MeshView>& meshes, const Options& opt, Field& f, st
       if (reach_name(opt.reach[j]) == reach_name(opt.reach[k])) { err = "--reach distances must differ: two make column " + reach_name(opt.reach[k]); return false; }
   }
   if (std::isinf(opt.groundZ)) { err = "--ground-z must be finite"; return false; }
+  const unsigned dist = opt.distance != DistAuto ? opt.distance : opt.fovH == 360 ? unsigned(DistIsovist) : unsigned(DistMean | DistMin);
+  if ((dist & DistGroup) && !(dist & (DistMean | DistMin))) { err = "--distance group adds per-group columns to mean and min: name one of them"; return false; }
+  if ((dist & DistIsovist) && (nAz < 3 || (!flat && nEl < 2))) {
+    char s[256];
+    std::snprintf(s, sizeof s, "--distance isovist needs at least 3 columns%s, the field has %.0f x %.0f: a finer --cell, --fov H,0,0 (the area) or --distance mean,min",
+                  flat ? "" : " and 2 rows (a mesh)", nEl, nAz);
+    err = s;
+    return false;
+  }
   f.nAz = unsigned(nAz);
   f.nEl = unsigned(nEl);
+  f.dist = dist;
+  f.flat = flat;
   f.groundZ = opt.groundZ;
   if (std::isnan(f.groundZ))   // the lowest point: fmin skips the NAN start
     for (const MeshView& v : meshes)
@@ -95,15 +110,17 @@ static bool run_views(const std::vector<MeshView>& meshes, const Options& opt, R
   const size_t nS = opt.sides == Sides::Both ? 2 : 1;
   size_t nElem = 0;
   for (const MeshView& v : meshes) if (v.sensor) nElem += opt.onVertices ? v.mesh->numPoints() : v.mesh->numFaces();
+  const bool iso = fd.dist & DistIsovist, mean = fd.dist & DistMean, minimum = fd.dist & DistMin, perGroup = fd.dist & DistGroup;
   const size_t nSens = nElem * nS, K = size_t(fd.nAz) * fd.nEl, nClass = 3 + groups.size(),
-               NA = 3 * nClass + 1 + opt.reach.size() + (opt.transmission ? 1 : 0);
+               NA = 3 * nClass + 1 + opt.reach.size() + (opt.transmission ? 1 : 0) + (iso ? 1 : 0);
   if (nSens == 0) { err = "no sensor elements (no sensor meshes, or none with faces / points)"; return false; }
   if (!opt.dumpPath.empty() && nSens * K * 5 > (size_t(4) << 30)) {
     err = "--dump-rays: " + std::to_string(nSens) + " sensors x " + std::to_string(K) + " rays exceed 4 GB (fewer receivers or a coarser --cell)";
     return false;
   }
 
-  // ---- the grid: rows top-down from HI, columns clockwise; a cell weighs its solid angle, the field sums to 1 ---------
+  // ---- the grid: rows top-down from HI, columns clockwise; a cell weighs its solid angle (a flat field's: its angle),
+  // the field sums to 1 ---------------------------------------------------------------------------------------------
   const bool world = opt.fovH == 360;
   const double dAz = opt.fovH / fd.nAz, dEl = (opt.elevHi - opt.elevLo) / fd.nEl;
   std::vector<float> rowSin(2 * size_t(fd.nEl));   // per row: sin of its bottom, top elevation
@@ -113,7 +130,7 @@ static bool run_views(const std::vector<MeshView>& meshes, const Options& opt, R
     const double top = std::sin((opt.elevHi - k * dEl) * kDeg), bot = std::sin((opt.elevHi - (k + 1) * dEl) * kDeg);
     rowSin[2 * k] = float(bot);
     rowSin[2 * k + 1] = float(top);
-    wRow[k] = dAz * kDeg * (top - bot);
+    wRow[k] = dAz * kDeg * (fd.flat ? 1 : top - bot);
     sum += wRow[k] * fd.nAz;
   }
   for (double& w : wRow) w /= sum;
@@ -199,11 +216,12 @@ static bool run_views(const std::vector<MeshView>& meshes, const Options& opt, R
   std::vector<std::string> names = {"sky", "ground", "obstruction"};
   names.insert(names.end(), groups.begin(), groups.end());
   if (opt.transmission) names.push_back("glazing");   // the share that passed glass, outside the shares' partition
-  if (opt.distMean) names.push_back("distance");
-  if (opt.distMin) names.push_back("distance_min");
-  for (size_t k = 0; opt.distGroup && k < groups.size(); ++k) {
-    if (opt.distMean) names.push_back(groups[k] + "_distance");
-    if (opt.distMin) names.push_back(groups[k] + "_distance_min");
+  if (iso) names.push_back(fd.flat ? "area" : "volume");
+  if (mean) names.push_back("distance");
+  if (minimum) names.push_back("distance_min");
+  for (size_t k = 0; perGroup && k < groups.size(); ++k) {
+    if (mean) names.push_back(groups[k] + "_distance");
+    if (minimum) names.push_back(groups[k] + "_distance_min");
   }
   for (double D : opt.reach) names.push_back(reach_name(D));
   out.columns.clear();
@@ -237,11 +255,12 @@ static bool run_views(const std::vector<MeshView>& meshes, const Options& opt, R
     put((a[6] + own) / total);
     for (size_t k = 0; k < groups.size(); ++k) put(a[3 * (3 + k)] / total);
     if (opt.transmission) put(a[3 * nClass + 1 + opt.reach.size()] / total);
-    if (opt.distMean) put(logMean(w, wl, mn));
-    if (opt.distMin) put(least(mn));
-    for (size_t k = 0; opt.distGroup && k < groups.size(); ++k) {
-      if (opt.distMean) put(logMean(a[3 * (3 + k)], a[3 * (3 + k) + 1], a[3 * (3 + k) + 2]));
-      if (opt.distMin) put(least(a[3 * (3 + k) + 2]));
+    if (iso) put(a[NA - 1]);
+    if (mean) put(logMean(w, wl, mn));
+    if (minimum) put(least(mn));
+    for (size_t k = 0; perGroup && k < groups.size(); ++k) {
+      if (mean) put(logMean(a[3 * (3 + k)], a[3 * (3 + k) + 1], a[3 * (3 + k) + 2]));
+      if (minimum) put(least(a[3 * (3 + k) + 2]));
     }
     for (size_t r = 0; r < opt.reach.size(); ++r) put(a[3 * nClass + 1 + r] / total);
   };
@@ -250,7 +269,7 @@ static bool run_views(const std::vector<MeshView>& meshes, const Options& opt, R
   const size_t ncMax = std::max<size_t>(1, chunkBytes / perSensor);
   ViewLaunch vl;
   vl.nAz = fd.nAz; vl.nEl = fd.nEl; vl.az0 = float(world ? 0 : -opt.fovH / 2); vl.dAz = float(dAz); vl.rowSin = rowSin.data();
-  vl.world = world; vl.cull = world && opt.offset == 0; vl.jitter = opt.jitter; vl.back = opt.sides == Sides::Back;
+  vl.world = world; vl.cull = world && opt.offset == 0 && !fd.flat; vl.jitter = opt.jitter; vl.back = opt.sides == Sides::Back;
   vl.vground = opt.virtualGround; vl.nS = unsigned(nS); vl.groundZ = plane; vl.north = opt.north; vl.cancel = opt.cancel;
   const unsigned flags = gpu_bounce_flags(opt.cullBackfaces);   // closest hits, no any-hit
   std::vector<float> reach;   // compared with the float distances
@@ -265,7 +284,7 @@ static bool run_views(const std::vector<MeshView>& meshes, const Options& opt, R
     if (!gpu_view(*g, i0, nc, flags, vl, launch, err)) return false;
     const auto tRed = Clk::now();
     sums.resize(nc * NA);
-    if (!gpu_reduce_view(*g, nc, wRow, unsigned(nClass), opt.farDist, reach, opt.transmission, sums.data(), err)) return false;
+    if (!gpu_reduce_view(*g, nc, wRow, unsigned(nClass), opt.farDist, reach, opt.transmission, iso ? (fd.flat ? 2u : 3u) : 0u, sums.data(), err)) return false;
     for (size_t i = 0; i < nc; ++i) store(i0 + i, sums.data() + i * NA);
     out.stats.reduceMs += ms(tRed);
     if (opt.progress) opt.progress->store(double(i0 + nc) / double(nSens));

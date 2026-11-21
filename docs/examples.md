@@ -9,13 +9,13 @@ build on [tests/box.obj](../tests/box.obj) (OBJ groups `ground`, four 2 m quads 
 
 | file | way in | daylight | views | guide |
 |---|---|---|---|---|
-| [cli/run.ps1](../examples/cli/run.ps1) | `daylight.exe`, `views.exe` (PowerShell) | box.obj: a clear-sky year, sun hours of 21 June, irradiance and illuminance at noon | box.obj: 120 deg about each normal with a target and `--reach en17037`; a standing eye all around | [CLI](#cli) |
-| [cpp/example.cpp](../examples/cpp/example.cpp) | C++, `daylightcore` | a 10 x 6 m facade, box.obj and a block across the street: a clear-sky year | the same meshes: target `ground=lawn`, reach, the resident scene; progress, cancel, an error | [cpp.md](cpp.md) |
-| [c/example.c](../examples/c/example.c) | C, `daylight_c.dll` | box.obj and a 4 x 3 m facade: a clear-sky year, progress | target `box=cube`, the resident scene; cancel, an error | [c-abi.md](c-abi.md#examples) |
-| [csharp/Program.cs](../examples/csharp/Program.cs) | C#, `Daylight.dll` | box.obj and a facade of two panels: a clear-sky year; sun hours of 21 June through `RunAsync` with a token and progress | target `box=block`, reach, the resident scene | [csharp.md](csharp.md) |
-| [python/inprocess.py](../examples/python/inprocess.py) | Python, `daylight.native` | the C++ example's scene from numpy: a clear-sky year on a worker thread, progress | as the C++ example, on the resident scene | [python.md](python.md) |
+| [cli/run.ps1](../examples/cli/run.ps1) | `daylight.exe`, `views.exe` (PowerShell) | box.obj: a clear-sky year, sun hours of 21 June, irradiance and illuminance at noon | box.obj: 120 deg about each normal with a target and `--reach en17037`; a standing eye all around; the isovists of tests/room.obj (volume, area) | [CLI](#cli) |
+| [cpp/example.cpp](../examples/cpp/example.cpp) | C++, `daylightcore` | a 10 x 6 m facade, box.obj and a block across the street: a clear-sky year | the same meshes: target `ground=lawn`, reach, the resident scene; progress, cancel, an error; isovists | [cpp.md](cpp.md) |
+| [c/example.c](../examples/c/example.c) | C, `daylight_c.dll` | box.obj and a 4 x 3 m facade: a clear-sky year, progress | target `box=cube`, the resident scene; cancel, an error; isovists | [c-abi.md](c-abi.md#examples) |
+| [csharp/Program.cs](../examples/csharp/Program.cs) | C#, `Daylight.dll` | box.obj and a facade of two panels: a clear-sky year; sun hours of 21 June through `RunAsync` with a token and progress | target `box=block`, reach, the resident scene; isovists | [csharp.md](csharp.md) |
+| [python/inprocess.py](../examples/python/inprocess.py) | Python, `daylight.native` | the C++ example's scene from numpy: a clear-sky year on a worker thread, progress | as the C++ example, on the resident scene; isovists | [python.md](python.md) |
 | [python/process.py](../examples/python/process.py) | Python, `run_meshes` (the CLIs as processes) | a facade, a lawn and a block: `daylight.exe`, a clear-sky year, means per 1 m row | `views.exe`: target `lawn=green` by file stem, reach; USD one-liners in its docstring | [python.md](python.md#through-daylightexe) |
-| [typescript/native.ts](../examples/typescript/native.ts) | TypeScript, `daylight-mesh/native` (Node) | the C example's scene: a clear-sky year, progress, a timeout | target `box=cube`, the resident scene; an error | [javascript.md](javascript.md) |
+| [typescript/native.ts](../examples/typescript/native.ts) | TypeScript, `daylight-mesh/native` (Node) | the C example's scene: a clear-sky year, progress, a timeout | target `box=cube`, the resident scene; isovists; an error | [javascript.md](javascript.md) |
 | [javascript/native.mjs](../examples/javascript/native.mjs) | JavaScript, the same from `bindings/ts/lib` | as `native.ts` | as `native.ts` | [javascript.md](javascript.md) |
 | [typescript/cli.ts](../examples/typescript/cli.ts) | TypeScript, `run(exe, ...)` (the CLIs as processes) | two storeys of a facade, a lake, a block: `daylight.exe`, a clear-sky year | `views.exe`: the lake as target `water` by `dmeshStems`, reach | [javascript.md](javascript.md#through-daylightexe) |
 
@@ -50,7 +50,7 @@ PASS  cli                  3.8 s
 ## CLI
 
 [examples/cli/run.ps1](../examples/cli/run.ps1) runs `daylight.exe` and `views.exe` on `tests/box.obj`, where both
-meshes are sensors and block, then both on an interior (`tests/room.obj` with its measure grid `tests/room_grid.obj`). Each run writes its values (text, a line per face) and manifest to `examples/cli/out/`;
+meshes are sensors and block, then both on an interior (`tests/room.obj` with its measure grid `tests/room_grid.obj`) and views on its isovists. Each run writes its values (text, a line per face) and manifest to `examples/cli/out/`;
 the script prints the command (the exes are in `build\RelWithDebInfo\`) and per mesh the mean of each column over its
 faces, without the `_front` of the column names.
 
@@ -68,12 +68,16 @@ daylight tests/box.obj --clear-sky --lat 52.52 --lon 13.41 --quantity irradiance
 views tests/box.obj --fov 120 --target ground=lawn --reach en17037 --out examples/cli/out/view.txt
   ground  4 faces  sky 0.82  ground 0  lawn 0  obstruction 0.18  distance 581.67  reach_20 0.82
   box    12 faces  sky 0.47  ground 0.24  lawn 0.29  obstruction 0  distance 193.31  reach_20 0.49
-views tests/box.obj --fov 360 --offset 1.6 --target ground=lawn --target box=cube --reach en17037 --out examples/cli/out/eye.txt
+views tests/box.obj --fov 360 --offset 1.6 --target ground=lawn --target box=cube --reach en17037 --distance mean --out examples/cli/out/eye.txt
   ground  4 faces  sky 0.45  ground 0.3  lawn 0.12  cube 0.13  distance 41.2  reach_20 0.49
-views tests/room_grid.obj --context tests/room.obj --fov 360 --offset 0.4 --target tree=green --no-occlude grid --optics window=0,0.64,glass --transmission on --reach en17037 --out examples/cli/out/interior.txt
-  grid   12 faces  sky 0.02  ground 0.01  green 0.01  glazing 0.03  distance 2.68  reach_6 0.03
+views tests/room_grid.obj --context tests/room.obj --fov 360 --offset 0.4 --target tree=green --no-occlude grid --optics window=0,0.64,glass --transmission on --reach en17037 --distance isovist,mean --far 20 --out examples/cli/out/interior.txt
+  grid   12 faces  sky 0.02  ground 0.01  green 0.01  glazing 0.03  volume 641.08  distance 2.48  reach_6 0.03
 daylight tests/room_grid.obj --context tests/room.obj --clear-sky --lat 52.52 --lon 13.41 --no-occlude grid --optics window=0,0.64,glass --transmission on --quantity radiation,sunhours --out examples/cli/out/interior_light.txt
   grid   12 faces  radiation 52.9  sunhours 198.85
+views tests/room_grid.obj --context tests/room.obj --fov 360,-90,90 --offset 0.4 --no-occlude grid --out examples/cli/out/isovist_3d.txt
+  grid   12 faces  volume 92.81
+views tests/room_grid.obj --context tests/room.obj --fov 360,0,0 --offset 0.4 --no-occlude grid --out examples/cli/out/isovist_2d.txt
+  grid   12 faces  area 32.11
 ```
 
 - `year`, daylight: a clear-sky year in Berlin without a weather file (cloudless: an upper bound, [modes.md](modes.md)).
@@ -91,12 +95,19 @@ daylight tests/room_grid.obj --context tests/room.obj --clear-sky --lat 52.52 --
 - `eye`, views: an eye 1.6 m above each ground quad (`--offset 1.6`), all around (`--fov 360`, still 70 deg down to
   50 deg up). Nothing rises above it, so its sky is sin 50 / (sin 50 + sin 70) = 0.449 of the field; the ground quads
   below fill 12 %, the box 13 % (most of it seen from the quad it floats over), the virtual ground beyond them 30 %.
-  Only the ground's rows are printed: the box's faces get eyes 1.6 m out too, which mean nothing here.
+  Only the ground's rows are printed: the box's faces get eyes 1.6 m out too, which mean nothing here. All around the
+  default distance column is the isovist's volume; `--distance mean` asks for the log-mean distance instead.
 - `interior`, views: a room with a window in its south wall and a tree outside; the measure grid at desk height
   (0.8 m) is kept out of the rays (`--no-occlude grid`), the eye 0.4 m above it, all around. The window is glass
   (`--optics window=0,0.64,glass`) and `--transmission on` lets the rays pass it: 2 % sky, 1 % ground and 1 % tree
-  seen through it, `glazing` 3 % (the share seen through glass), the rest the room, 2.7 m away on log mean. Without
-  `--transmission on` the window blocks and the room is closed ([views.md](views.md#glass-and-interiors)).
+  seen through it, `glazing` 3 % (the share seen through glass), the rest the room. With `--far 20` every ray counts
+  at most 20 m: the volume in view is 641 m³ (the room's 93 and what the window shows out to 20 m), 2.5 m away on log
+  mean. Without `--transmission on` the window blocks and the room is closed
+  ([views.md](views.md#glass-and-interiors)).
+- `isovist_3d`, `isovist_2d`, views: the closed room's isovists from the same eyes. All around the whole sphere
+  (`--fov 360,-90,90`) the volume in view, 92.81 m³ of the room's 93.18 (the mesh through the rays' ends cuts its
+  corners); with horizontal rays only (`--fov 360,0,0`) the area, 32.11 m² of its 32.13 m² floor. The isovist is the
+  default column all around ([views.md](views.md#isovist)).
 - `interior_light`, daylight: the same files and roles, the light that comes in through the window over a clear-sky
   year (glass passes 0.64 at normal incidence, less at grazing angles).
 
@@ -110,6 +121,7 @@ daylight, clear-sky year: scene reused false, 411 ms
 views, 120 deg about each normal: scene reused true, 1 ms, progress 100 %
   facade 60 faces  sky 0.34  lawn 0.06  distance  43 m  sees 6 / 20 / 50 m: 0.73 0.43 0.35
   ...
+isovists in the room: volume 92.8 m3 all around, area 32.1 m2 at eye height
 cancelled run: cancelled
 bad target: --target tree=green: no mesh of that name
 ```
@@ -124,6 +136,11 @@ views: 18 rows, scene reused 1
   columns "sky_front", "ground_front", "obstruction_front", "cube_front", "distance_front", "distance_min_front"
   ...
   facade  2 faces:    0.4174     0.325    0.1814   0.07617     40.55     1.282
+isovists in the room, all around and horizontal:
+  columns "sky_front", "ground_front", "obstruction_front", "volume_front"
+  grid   12 faces:         0         0         1     92.81
+  columns "sky_front", "ground_front", "obstruction_front", "area_front"
+  grid   12 faces:         0         0         1     32.11
 cancelled run: status 2, cancelled
 bad target: status 1, --target tree=green: no mesh of that name
 ```
@@ -138,6 +155,7 @@ daylight: 590 ms, scene reused False
 views: 1 ms, scene reused True
   ...
   facade  2 faces  sky 0.40  block 0.10  distance  28.6 m  sees 20 m 0.42
+isovists in the room: volume 92.8 m3 all around, area 32.1 m2 at eye height
 sun hours, 21 June: 4 ms, scene reused True, progress 100 %
   ...
   facade  2 faces   9.3 h
@@ -153,6 +171,7 @@ daylight, clear-sky year: scene_reused False, 496 ms, progress 0% -> 100%
 views, 120 deg about each normal: scene_reused True, 2 ms
   facade 60 faces  sky 0.34  lawn 0.06  distance  43 m  sees 6 / 20 / 50 m: 0.73 0.43 0.35
   ...
+isovists in the room: volume 92.8 m3 all around, area 32.1 m2 at eye height
 ```
 
 ```
@@ -178,6 +197,7 @@ daylight: 634 ms, scene reused false
 views: 5 ms, scene reused true
   ...
   facade row 1: sky 0.449, cube 0.067, distance 59.2 m, nearest 1.77 m
+isovists in the room: volume 92.8 m3 all around, area 32.1 m2 at eye height
 error 1: --target tree=green: no mesh of that name
 ```
 

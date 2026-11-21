@@ -199,20 +199,22 @@ meshes under the same `sceneKey`, so it traced on the scene the daylight run had
 
 | field | default | |
 |---|---|---|
-| `fovH`, `elevLo`, `elevHi` | 120, -70, 50 | the field, degrees: H wide about the normal (up to 180), or 360 all around (azimuth from north) |
+| `fovH`, `elevLo`, `elevHi` | 120, -70, 50 | the field, degrees: H wide about the normal (up to 180), or 360 all around (azimuth from north); `elevLo = elevHi = 0`: horizontal rays only (the 2D isovist) |
 | `cell`, `jitter` | 2, true | degrees per ray; each ray at a seeded random point of its cell (false: the centre) |
 | `targets` | none | `views::Target {mesh, group}`: rays ending on the mesh of that `Mesh::name` count for `group` (at most 16 groups) |
-| `distMean`, `distMin`, `distGroup` | true, true, false | the `distance` (log mean) and `distance_min` columns; per group too |
-| `farDist` | 1000 | metres: what open counts as, and the cap of every distance (`far` is a macro of `windef.h`) |
+| `distance` | `DistAuto` | the distance columns, `views::Dist` bits: `DistIsovist` (`volume`, or `area` in a flat field), `DistMean` (`distance`, log mean), `DistMin` (`distance_min`), `DistGroup` (per group too); 0: none; `DistAuto`: `DistIsovist` when `fovH = 360`, else `DistMean \| DistMin` |
+| `farDist` | 1000 | metres: what open counts as, and the cap of every distance and of the isovist (`far` is a macro of `windef.h`) |
 | `groundZ` | NAN | the virtual ground's height; NAN: the lowest point of the meshes |
 | `reach` | none | `reach_<D>` columns, at most 8; `{6, 20, 50}` = `--reach en17037` |
 | `dumpPath` | empty | every ray's class and distance (`.npy`), validation and images |
 
 A standing eye all around a floor or ground grid: `fovH = 360`, `offset = 1.6` and, for a flat grid at the model's
 lowest point, the grid in `noOcclude`, so the virtual ground takes its place ([views.md](views.md#examples) has the
-caveats). `views::field(meshes, opt, f, err)` (over `MeshView`s) is what `run()` derives before tracing: the option
-checks, the grid (`f.nEl` rows x `f.nAz` columns of rays) and the virtual ground's height (an empty mesh list checks
-the options only). Targets are labels per run: changing them never rebuilds the scene, unless the scene lacks a target
+caveats). Isovists of a room from its measure grid: `fovH = 360`, `elevLo = -90`, `elevHi = 90` (volume) or
+`elevLo = elevHi = 0` (area), the grid in `noOcclude`, `offset` to eye height; the example program does both.
+`views::field(meshes, opt, f, err)` (over `MeshView`s) is what `run()` derives before tracing: the option checks, the
+grid (`f.nEl` rows x `f.nAz` columns of rays), `f.flat`, the distance columns `f.dist` (`DistAuto` resolved) and the
+virtual ground's height (an empty mesh list checks the options only). Targets are labels per run: changing them never rebuilds the scene, unless the scene lacks a target
 as such (built under other names, or the name now on another `Mesh`), which rebuilds it under the key.
 
 ## Results

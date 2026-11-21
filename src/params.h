@@ -58,3 +58,33 @@ struct Params {
   unsigned vground;       // the virtual ground plane at z = groundZ (recentred) ends downward rays
   float groundZ;
 };
+
+#ifdef __CUDACC__
+// Jarzynski & Olano 2020 (JCGT 9(3), "Hash Functions for GPU Rendering"): counter-based, 3 x 32 random bits per call.
+static __forceinline__ __device__ uint3 pcg3d(unsigned x, unsigned y, unsigned z) {
+  x = x * 1664525u + 1013904223u; y = y * 1664525u + 1013904223u; z = z * 1664525u + 1013904223u;
+  x += y * z; y += z * x; z += x * y;
+  x ^= x >> 16; y ^= y >> 16; z ^= z >> 16;
+  x += y * z; y += z * x; z += x * y;
+  return make_uint3(x, y, z);
+}
+static __forceinline__ __device__ float u01(unsigned v) { return float(v >> 8) * (1.f / 16777216.f); }   // [0, 1)
+
+// views: direction d = row * nAz + column of the grid in the field's own frame (x right, y forward, z up): one point per
+// cell, jittered uniform in its solid angle (seeded by the global element, d and the side) or the cell's middle in
+// azimuth and in sine of elevation. __raygen__view turns it into the sensor's frame, k_view's isovist uses it as is.
+// rs: the row's sines (bottom, top), col: d % nAz.
+static __forceinline__ __device__ float3 view_cell(unsigned d, unsigned col, float2 rs, float az0, float dAz, unsigned jitter, unsigned element,
+                                                   unsigned side) {
+  float a = 0.5f, s = 0.5f * (rs.x + rs.y);
+  if (jitter) { const uint3 h = pcg3d(element, d, side); a = u01(h.x); s = rs.x + u01(h.y) * (rs.y - rs.x); }
+  float sa, ca;
+  sincospif((az0 + (float(col) + a) * dAz) * (1.f / 180.f), &sa, &ca);
+  const float c = sqrtf(fmaxf(0.f, 1.f - s * s));
+  return make_float3(c * sa, c * ca, s);
+}
+static __forceinline__ __device__ float3 view_local(unsigned d, unsigned nAz, const float2* rowSin, float az0, float dAz, unsigned jitter,
+                                                    unsigned element, unsigned side) {
+  return view_cell(d, d % nAz, rowSin[d / nAz], az0, dAz, jitter, element, side);
+}
+#endif

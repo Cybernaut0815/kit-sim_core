@@ -42,6 +42,19 @@ const distance = rows(view, 'facade', 'distance_front'), nearest = rows(view, 'f
 sky.forEach((s, i) => console.log(`  facade row ${i}: sky ${s.toFixed(3)}, cube ${cube[i].toFixed(3)}, ` +
   `distance ${distance[i].toFixed(1)} m, nearest ${nearest[i].toFixed(2)} m`));
 
+// isovists in tests/room.obj (a 6.3 x 5.1 x 2.9 m room) from its measure grid, the eye 0.4 m above it: the volume all
+// around (--fov 360,-90,90: m3) and the area of horizontal rays only (--fov 360,0,0: m2). The isovist is 360 mode's
+// default column; --distance mean,min gives the distances instead, --far M caps both.
+const tests = (file) => fileURLToPath(new URL(`../../tests/${file}`, import.meta.url));
+const grid = Mesh.load(tests('room_grid.obj')), room = Mesh.load(tests('room.obj')); // room: room, window, tree
+const eye = ['--offset', '0.4', '--no-occlude', 'grid']; // the grid is measured, not seen
+const vol = await run('views', ['--fov', '360,-90,90', ...eye], { sensors: [grid], context: [room] });
+const area = await run('views', ['--fov', '360,0,0', ...eye], { sensors: [grid], context: [room] });
+console.log(`isovists in the room: volume ${mean(rows(vol, 'grid', 'volume_front')).toFixed(1)} m3 all around, ` +
+  `area ${mean(rows(area, 'grid', 'area_front')).toFixed(1)} m2 at eye height`);
+grid.free();
+room.free();
+
 // Errors: DaylightError, status 1 usage (flags, names the meshes do not resolve) or 2 runtime (files, GPU, cancelled).
 try {
   await run('views', ['--target', 'tree=green'], { sensors });

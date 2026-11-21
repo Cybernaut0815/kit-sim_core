@@ -119,6 +119,15 @@ but a 4.9-5.1 s trace (0.72-0.75 G rays/s) and a 6.45-6.7 s run; the reduce, rea
 ~8-11 ms slower: 31,920 facade quads in a 244k-triangle street grid 159 -> 41 ms trace, 13 -> 21 ms reduce; 40k facade
 quads, 80k triangles 119 -> 32 ms, 15 -> 26 ms; an empty scene 114 -> 17 ms (interleaved best of 3-5, `-v`).
 
+**Isovist.** All around (`views --bench --fov 360`: the same city, 10,800 rays per sensor, 11 G rays) the isovist, the
+default column there, takes a kernel of its own after the shares' reduce: a lane walks its columns top-down, carrying
+the row before, and takes its right neighbour's distance from the next lane (a shuffle), so it reads each ray about
+once. Feature branch on the RTX 2060 at 84 C, one run each: trace 4.3-4.7 s; reduce 2.35 s with the volume against
+1.49 s with `--distance mean`; run 8.3 s against 7.3 s. Folded into the shares' loop the same mesh took a 5.5 s
+reduce, run as a second loop of that kernel 6.8 s; it reads memory as the shares' loop does, so it is bound by the
+loads, not by the directions it recomputes (jitter off changed nothing). View mode (no isovist) is unchanged: reduce
+0.61 s, run 3.71 s.
+
 ## In-process vs CLI
 
 Wall time per run from Python on the RTX 2060 (2026-11-18, `feature/bindings`), the same meshes and flags: the process

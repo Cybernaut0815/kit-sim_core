@@ -230,7 +230,10 @@ views: 2 ms, scene reused true
   mesh that is not a target (sensor meshes block, so the ground quads count here); or a target group:
   `--target box=cube` counts the rays that end on the mesh `box` for the group `cube`. The shares weigh each ray by
   its cell's solid angle and sum to 1. `distance` is the log mean of the ray distances (an open ray counts as `--far`,
-  1000 m), `distance_min` the nearest thing in view.
+  1000 m), `distance_min` the nearest thing in view. All around (`--fov 360`) the default column is the isovist
+  instead: `volume` (m³), or `area` (m²) with horizontal rays only (`--fov 360,0,0`); the example's isovist runs in
+  tests/room.obj print `isovists in the room: volume 92.8 m3 all around, area 32.1 m2 at eye height`
+  ([views.md](views.md#isovist)).
 - Row 1, the upper half, sees nothing rise above its horizon: its sky is sin 50 / (sin 50 + sin 70) = 0.449 of the
   field. Row 0's eye is 0.75 m up: its nearest is the virtual ground under the field's lower edge, 0.75 / sin 70 =
   0.80 m, and its log mean, 22 m, weighs that near ground and the box against the open sky.
@@ -291,7 +294,7 @@ views.exe: 568 ms, columns sky_front ground_front obstruction_front water_front 
 | tool | columns | units |
 |---|---|---|
 | daylight | `<quantity>_<side>` in `--quantity` order | `radiation`, `direct`, `diffuse` kWh/m2 over the run; `irradiance` W/m2 and `illuminance` lux, means over the evaluated hours; `sunhours` hours |
-| views | the shares `sky`, `ground`, `obstruction` and one per target group (sum 1); `distance`, `distance_min`; with `--distance group` `<g>_distance`, `<g>_distance_min`; `reach_<D>` | shares 0..1 of the field's solid angle; distances in metres, from 0.1 to `--far` |
+| views | the shares `sky`, `ground`, `obstruction` and one per target group (sum 1); `glazing` (`--transmission on`); `volume` or `area` (the isovist, 360 mode's default); `distance`, `distance_min` (the default about the normal); with `--distance group` `<g>_distance`, `<g>_distance_min`; `reach_<D>` | shares 0..1 of the field's solid angle; distances in metres, from 0.1 to `--far`; volume m³, area m² |
 
 - NaN: never in daylight (a face without area gives 0). In views, `distance` and `distance_min` are NaN when no ray of
   the field is traced (360 mode at `--offset 0` with the whole field behind the element, a face without area), and

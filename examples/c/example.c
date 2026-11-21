@@ -66,6 +66,29 @@ int main(int argc, char** argv) {
   printf("views: %lld rows, scene reused %g\n", (long long)dl_result_rows(v), stats[0]);
   per_mesh(v);
 
+  /* isovists in tests/room.obj (a 6.3 x 5.1 x 2.9 m room) from its measure grid, the eye 0.4 m above it: the volume
+     all around (--fov 360,-90,90: column volume, m3) and the area of horizontal rays only (--fov 360,0,0: area, m2). The
+     isovist is 360 mode's default column; --distance mean,min gives the distances instead, --far M caps both */
+  const char* dir = argc > 1 ? argv[1] : "tests";
+  char path[1024];
+  snprintf(path, sizeof path, "%s/room_grid.obj", dir);
+  dl_mesh* grid = dl_mesh_load(path);
+  snprintf(path, sizeof path, "%s/room.obj", dir);
+  dl_mesh* room = dl_mesh_load(path);   /* room, window, tree: context */
+  if (!grid || !room) return fail("room");
+  const char* const vol[] = {"--fov", "360,-90,90", "--offset", "0.4", "--no-occlude", "grid"};
+  const char* const area[] = {"--fov", "360,0,0", "--offset", "0.4", "--no-occlude", "grid"};
+  dl_result *iv = NULL, *ia = NULL;
+  if (dl_run(DL_VIEWS, 6, vol, &grid, 1, &room, 1, NULL, &iv) != DL_OK) return fail("isovist volume");
+  if (dl_run(DL_VIEWS, 6, area, &grid, 1, &room, 1, NULL, &ia) != DL_OK) return fail("isovist area");
+  printf("isovists in the room, all around and horizontal:\n");
+  per_mesh(iv);
+  per_mesh(ia);
+  dl_result_free(iv);
+  dl_result_free(ia);
+  dl_mesh_free(grid);
+  dl_mesh_free(room);
+
   /* failures: DL_USAGE 1 (flags, names the meshes do not resolve) or DL_RUNTIME 2 (files, GPU, "cancelled") */
   dl_result* none = NULL;
   dl_control* stop = dl_control_create();

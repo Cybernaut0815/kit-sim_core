@@ -58,3 +58,13 @@ with Mesh('facade', *wall(10, 6, 4, 1)) as facade, Mesh.load(BOX) as box, Mesh('
         print(f"  {name:6} {n:2} faces  sky {a['sky_front']:.2f}  lawn {a['lawn_front']:.2f}  distance "
               f"{a['distance_front']:3.0f} m  sees 6 / 20 / 50 m: {a['reach_6_front']:.2f} {a['reach_20_front']:.2f} "
               f"{a['reach_50_front']:.2f}")
+
+# isovists in tests/room.obj (a 6.3 x 5.1 x 2.9 m room) from its measure grid, the eye 0.4 m above it: the volume all
+# around (--fov 360,-90,90: m3) and the area of horizontal rays only (--fov 360,0,0: m2). The isovist is 360 mode's
+# default column; --distance mean,min gives the distances instead, --far M caps both.
+with Mesh.load(BOX.parent / 'room_grid.obj') as grid, Mesh.load(BOX.parent / 'room.obj') as room:   # room, window, tree
+    eye = ['--offset', '0.4', '--no-occlude', 'grid']                  # the grid is measured, not seen
+    vol = native.run('views', ['--fov', '360,-90,90', *eye], grid, context=room)
+    area = native.run('views', ['--fov', '360,0,0', *eye], grid, context=room)
+    print(f"isovists in the room: volume {next(per_mesh(vol))[2]['volume_front']:.1f} m3 all around, "
+          f"area {next(per_mesh(area))[2]['area_front']:.1f} m2 at eye height")

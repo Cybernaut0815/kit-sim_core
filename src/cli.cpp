@@ -278,11 +278,13 @@ const char* const kUsage =
     "  --context FILE           occluder-only mesh (repeatable)\n"
     "  --target NAME=GROUP[;NAME=GROUP...]  rays ending on mesh NAME count for GROUP (repeatable; at most 16 groups)\n"
     "  --fov H[,LO,HI]          field in degrees: H wide about the normal (up to 180) or 360 all around, elevation LO..HI\n"
-    "                           (default 120,-70,50; H alone keeps LO,HI)\n"
+    "                           (default 120,-70,50; H alone keeps LO,HI; H,0,0: horizontal rays only, the 2D isovist)\n"
     "  --cell DEG               degrees per ray, rows and columns (default 2)\n"
     "  --jitter on|off          each ray at a random point of its cell (default on; off: the cell centres)\n"
-    "  --distance STAT[,STAT...]  mean|min|group|none (default mean,min; group: also per target group)\n"
-    "  --far M                  what open counts as, and the cap of every distance (default 1000)\n"
+    "  --distance STAT[,STAT...]  isovist|mean|min|group|none (default: isovist with --fov 360, else mean,min)\n"
+    "                           isovist: volume (m3) of the mesh through the rays' ends, area (m2) with H,0,0;\n"
+    "                           mean: log-mean distance; min: nearest; group: also per target group\n"
+    "  --far M                  what open counts as, and the cap of every distance and isovist (default 1000)\n"
     "  --virtual-ground on|off  a ground plane ends downward rays (default on; off: they stay open)\n"
     "  --ground-z Z             its height (default: the lowest point of the meshes)\n"
     "  --reach D[,D...]|en17037  share of the field that sees at least D metres (at most 8; en17037 = 6,20,50)\n"
@@ -347,16 +349,16 @@ int parse(int argc, char** argv, Args& a, std::string& err) {
     else if (f == "--distance") {
       if (!(v = need(i, "--distance"))) return 1;
       const std::string s = v;
-      o.distMean = o.distMin = o.distGroup = false;
+      o.distance = 0;
       for (size_t b = 0, e; s != "none" && b <= s.size(); b = e + 1) {
         e = std::min(s.find(',', b), s.size());
         const std::string t = s.substr(b, e - b);
-        if (t == "mean") o.distMean = true;
-        else if (t == "min") o.distMin = true;
-        else if (t == "group") o.distGroup = true;
-        else { err = "--distance mean|min|group[,...] or none"; return 1; }
+        if (t == "isovist") o.distance |= DistIsovist;
+        else if (t == "mean") o.distance |= DistMean;
+        else if (t == "min") o.distance |= DistMin;
+        else if (t == "group") o.distance |= DistGroup;
+        else { err = "--distance isovist|mean|min|group[,...] or none"; return 1; }
       }
-      if (o.distGroup && !o.distMean && !o.distMin) { err = "--distance group adds per-group columns to mean and min: name one of them"; return 1; }
     }
     else if (f == "--far") { if (!(v = need(i, "--far"))) return 1; if (!one(v, o.farDist)) { err = "--far M"; return 1; } }
     else if (f == "--ground-z") { if (!(v = need(i, "--ground-z"))) return 1; if (!one(v, o.groundZ)) { err = "--ground-z Z"; return 1; } }

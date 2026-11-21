@@ -5,13 +5,18 @@
 of view, about the element's normal (looking out of a window) or all around (turning on the spot), and reports which
 share of the field ends on the sky, on the ground, on an obstruction or on each target group (water, a park, ...), and
 how far the element sees. Distances measure view quality: short ones (a wall in front of the window) are bad, long or
-open ones good; an open ray counts as `--far` (1000 m), good but bounded.
+open ones good; an open ray counts as `--far` (1000 m), good but bounded. All around, the default measure is the
+isovist instead: the volume in view (m³), or with horizontal rays only the area in view (m²), as space syntax takes it
+([Isovist](#isovist)).
 
 ```
 views facade.obj --context city.obj --out v.txt                                    # view mode: 120 x 120 deg about each face's normal
 views facade.obj --context city.obj --context lake.obj --target lake=water --reach en17037 --out v.npy
-views floor.obj --context city.obj --no-occlude floor --fov 360 --offset 1.6 --out v.txt   # a standing eye, all around (flat floor)
-views grid.obj --context room.obj --no-occlude grid --fov 360 --offset 1.2 --optics window=0,0.64,glass --transmission on   # interior
+views floor.obj --context city.obj --no-occlude floor --fov 360 --offset 1.6 --out v.txt   # a standing eye, all around (flat floor): volume
+views grid.obj --context room.obj --no-occlude grid --fov 360,-90,90 --offset 1.2          # interior: the 3D isovist (volume, m3)
+views grid.obj --context room.obj --no-occlude grid --fov 360,0,0 --offset 1.2             # the 2D isovist (area, m2), horizontal rays
+views grid.obj --context room.obj --no-occlude grid --fov 360 --offset 1.2 --distance mean,min   # distances instead of the volume
+views grid.obj --context room.obj --no-occlude grid --fov 360 --offset 1.2 --optics window=0,0.64,glass --transmission on --far 50
 views --bench                                                                         # street-grid city, timings only
 ```
 
@@ -43,10 +48,15 @@ degrees. The default `120,-70,50` at 2 deg is 60 x 60 = 3,600 rays per element; 
 - **360 mode** (H = 360): one world frame for every element: azimuth clockwise from model north (+Y, turned
   counter-clockwise by `--north` as in daylight), elevation about the horizon. With `--offset 0` the directions behind
   the element's own plane are not traced (own surface, below).
+- **Flat field** (`--fov H,0,0`, LO = HI = 0 only): one row of rays along the horizon of the frame, `round(H / DEG)`
+  of them: horizontal in 360 mode (and about the normal of a vertical face), the plane of forward and right on a
+  tilted one. The 2D isovist: `--fov 360,0,0` gives its area. A flat field traces every direction, also at `--offset
+  0` (a horizontal ray from a floor lies in the floor's plane, it is not behind it).
 
 **Weights.** A cell weighs its exact solid angle, `dAz x (sin el_top - sin el_bottom)`, normalised so the field sums
 to 1: every share is a share of the field's solid angle (a cell near the zenith or the nadir counts less than one at
-the horizon, as it covers less of the view).
+the horizon, as it covers less of the view). In a flat field every ray weighs the same, `1 / round(H / DEG)`: a share
+of the angle all around (or of the fan).
 
 **Jitter.** `--jitter on` (default) sends each ray through a random point of its cell, uniform in solid angle (azimuth
 and sine of elevation uniform), drawn from a hash of the element's row, the cell and the side: a run repeats its
@@ -72,9 +82,9 @@ classes) and ends in one class:
 | own surface, counted in `obstruction` | 360 mode with `--offset 0`: a direction behind the element's own plane, not traced | none |
 
 The horizon itself counts as sky (as daylight's sky patches and Ladybug's HorizontalRadial count it): a ray exactly
-along it that meets nothing is `sky`; the virtual ground ends only rays pointing below it. At `--jitter off` every ray
-of a row centred on the horizon is such a ray (`--fov 360,-1,1` gives sky 1 in the open); jittered rays fall on either
-side.
+along it that meets nothing is `sky`; the virtual ground ends only rays pointing below it. Every ray of a flat field
+all around is such a ray (`--fov 360,0,0` gives sky 1 in the open, jittered or not), and at `--jitter off` every ray
+of a row centred on the horizon (`--fov 360,-1,1 --distance mean,min`); jittered, those fall on either side.
 
 A degenerate face (no area, so no normal; `-v` warns) traces no ray: its whole field is own surface, `obstruction` 1
 without a distance (daylight gives such a face 0).
@@ -107,6 +117,11 @@ z-fights with it (which of two coplanar triangles is the closest hit is arbitrar
 out of the terrain. Lying on the virtual plane is fine.
 
 ## Distances
+
+`--distance STAT[,STAT...]` picks the distance columns: `isovist` (`volume` or `area`, below), `mean` (`distance`),
+`min` (`distance_min`), `group` (per target group), or `none`. The default depends on the mode: `isovist` in 360 mode
+(the interior and space syntax measure), `mean,min` about the normal (the view out of a window). Any mix works:
+`--distance isovist,mean,min` gives all three.
 
 A ray's distance d is its hit distance, its virtual-plane distance, or open; d is clamped to [0.1 m, `--far`] and open
 counts as `--far` (default 1000 m, so a skyline 3 km away counts as 1000 m). Own-surface rays have none. Every
@@ -141,6 +156,35 @@ the horizon (`--fov H,0,HI`) or `--virtual-ground off`, or pick a share threshol
 Shares, minima and reach are exact over the traced rays. The log means sum ln d with a float logarithm (a double one
 at the 0.1 m and `--far` clamps): about 1e-7 relative to a double computation; a mean whose every ray sits at the far
 clamp (an all-open view, a target wholly beyond `--far`) is `--far` exactly.
+
+### Isovist
+
+`--distance isovist` (the default in 360 mode) adds the column `volume` (m³): the volume of the region the element
+sees within its field, or in a flat field (`--fov H,0,0`) the column `area` (m²): the area it sees around it in the
+horizontal plane, the classic 2D isovist of space syntax. Each ray ends at its point, min(d, `--far`) along its
+direction, d its true distance (no 0.1 m floor): open sky and open ground count as `--far`, so `--far` caps the isovist
+as it caps the distances (an interior looking out through glass: `--far 50`, say). An own-surface ray ends at the eye.
+The isovist is built between these end points:
+
+- **area**: the polygon through the end points of neighbouring rays, a triangle eye-A-B per pair: sum of
+  ½ d_A d_B sin(angle between them). All around it closes (the last ray to the first); a fan (H < 360) runs from its
+  first ray to its last.
+- **volume**: the mesh through the end points of the grid, two triangles per cell between four neighbouring rays, a
+  tetrahedron from the eye to each: sum of (1/6) det[A, B, C]. All around the columns close.
+
+Between two rays the polygon or mesh takes a straight edge: along a wall that is exact, at a room's corner it cuts a
+little off, at a depth jump (a door, a column's edge) it bridges near to far. So the isovist is a little smaller than
+the space it stands for, the less the finer `--cell`: in tests/room.obj (6.3 x 5.1 x 2.9 m: 32.13 m², 93.18 m³) the
+area at 2 deg comes out 32.09 to 32.12 m² and the volume of the whole sphere 92.68 to 92.90 m³ (0.5 % under). The
+field's edges are where the rays are: the half cell outside the first and last row (and a fan's first and last column)
+is left out, with the default `360,-70,50` at 2 deg the 1 deg bands under 50 deg and over -70 deg (1 % of the field),
+and at `360,-90,90` the cone within half a cell of the zenith and the nadir (under 0.01 % at 2 deg). The volume is the
+volume of the field as given: `--fov 360` leaves out what lies above 50 deg and below -70 deg (88.7 m³ of the same
+room); the whole 3D isovist is `--fov 360,-90,90`. Jittered, the polygon and mesh run through the jittered points.
+
+The isovist needs a polygon or a mesh: at least 3 columns, and 2 rows unless the field is flat (a usage error, exit 1,
+otherwise: `--fov 360,-1,1` at 2 deg is one ring; take `--fov 360,0,0` for the area or `--distance mean,min`). The
+sums run in double over float directions: about 1e-7 relative to a double computation.
 
 ## Mesh roles
 
@@ -183,13 +227,35 @@ the grid). [tests/room.obj](../tests/room.obj) is such a room (6.3 x 5.1 x 2.9 m
 0.4 m above it):
 
 ```
-views tests/room_grid.obj --context tests/room.obj --no-occlude grid --fov 360 --offset 0.4 --target tree=green --optics window=0,0.64,glass --transmission on --reach en17037
+views tests/room_grid.obj --context tests/room.obj --no-occlude grid --fov 360 --offset 0.4 --target tree=green --optics window=0,0.64,glass --transmission on --reach en17037 --distance mean
 ```
 
 Over the 12 faces the field holds on average 1.8 % sky, 0.5 % ground and 0.9 % tree seen through the window, 3.3 %
 glazing, the rest the room (log-mean distance 2.7 m; 3.4 % of the field sees at least 6 m, 1.9 % at least 50 m). With
 `--transmission off` the room is closed: obstruction 1, nothing reaches 20 m. daylight takes the same files and flags
 (`--no-occlude grid --optics window=0,0.64,glass --transmission on`) for the light that comes in through the window.
+
+The same room's isovists (the default column all around, without `--distance`):
+
+```
+views tests/room_grid.obj --context tests/room.obj --no-occlude grid --offset 0.4 --fov 360,-90,90     # volume
+0 0 1 92.74380503
+0 0 1 92.86041493
+...
+views tests/room_grid.obj --context tests/room.obj --no-occlude grid --offset 0.4 --fov 360,0,0        # area
+0 0 1 32.09342193
+0 0 1 32.09531363
+...
+views tests/room_grid.obj --context tests/room.obj --no-occlude grid --offset 0.4 --fov 360,0,0 --optics window=0,0.64,glass --transmission on --far 20
+0.1055555556 0 0.8944444444 0.1055555556 155.1003403
+0.1166666667 0 0.8833333333 0.1944444444 189.7407648
+...
+```
+
+The shut room: 92.81 m³ on average over the 12 faces (the room holds 93.18) and 32.11 m² at eye height (its floor:
+32.13; columns `sky ground obstruction volume` and `... area`). Through the window, with the rays capped at 20 m
+(`sky ground obstruction glazing area`): 11 % of the horizontal rays see the sky through it, and the area grows to
+155 to 190 m², a wedge 20 m deep outside on top of the room.
 
 ## Flags
 
@@ -200,11 +266,11 @@ glazing, the rest the room (log-mean distance 2.7 m; 3.4 % of the field sees at 
 | `FILE...` | `.dmesh` `.obj` `.usd*` | required (or `--bench`) | receivers: analysed, and blocking unless `--no-self-occlude` (or `--no-occlude` names them); `.usd*` needs the `-DDAYLIGHT_USD=ON` build | `Mesh::sensor = true` |
 | `--context FILE` | mesh file, repeatable | none | blocks rays only, never analysed | `Mesh::sensor = false` |
 | `--target NAME=GROUP[;NAME=GROUP...]` | mesh names, repeatable | none | rays ending on mesh NAME count for GROUP: a share column per group, in order of first appearance; `;` packs several into one token; rules above | `targets` (`Target {mesh, group}`) |
-| `--fov H[,LO,HI]` | degrees | `120,-70,50` | the field: H wide about the normal (0 < H <= 180, view mode) or 360 (all around), elevation LO to HI (-90 <= LO < HI <= 90); H alone keeps LO, HI | `fovH`, `elevLo`, `elevHi` |
+| `--fov H[,LO,HI]` | degrees | `120,-70,50` | the field: H wide about the normal (0 < H <= 180, view mode) or 360 (all around), elevation LO to HI (-90 <= LO < HI <= 90, or LO = HI = 0: a flat field of horizontal rays, the 2D isovist); H alone keeps LO, HI | `fovH`, `elevLo`, `elevHi` |
 | `--cell DEG` | degrees, > 0 | `2` | degrees per ray, rows and columns (rounded to fill the field; at most 2^20 rays per element) | `cell` |
 | `--jitter` | `on` \| `off` | `on` | each ray at a random point of its cell (deterministic); off: the cell's middle | `jitter` |
-| `--distance STAT[,STAT...]` | `mean` \| `min` \| `group` \| `none` | `mean,min` | distance columns: `distance` (log mean), `distance_min`; `group`: also per target group (with `mean` and / or `min`); `none` alone: no distance column | `distMean`, `distMin`, `distGroup` |
-| `--far M` | metres, > 0.1 | `1000` | what open counts as, and the cap of every distance | `farDist` |
+| `--distance STAT[,STAT...]` | `isovist` \| `mean` \| `min` \| `group` \| `none` | `isovist` in 360 mode, else `mean,min` | distance columns: `volume` or, flat, `area` ([Isovist](#isovist)), `distance` (log mean), `distance_min`; `group`: also per target group (with `mean` and / or `min`); `none` alone: no distance column | `distance` (`Dist` bits: `DistIsovist`, `DistMean`, `DistMin`, `DistGroup`; `DistAuto` the default by mode) |
+| `--far M` | metres, > 0.1 | `1000` | what open counts as, and the cap of every distance and of the isovist | `farDist` |
 | `--virtual-ground` | `on` \| `off` | `on` | a ground plane ends downward rays (`ground` at its distance); off: they stay open | `virtualGround` |
 | `--ground-z Z` | metres | the lowest point of the meshes | the virtual ground's height | `groundZ` (NAN: the lowest point) |
 | `--reach D[,D...]` \| `en17037` | metres, > 0, distinct | none | `reach_<D>` columns: the share of the field that sees at least D metres (at most 8); `en17037` = `6,20,50` | `reach` |
@@ -225,7 +291,7 @@ glazing, the rest the room (log-mean distance 2.7 m; 3.4 % of the field sees at 
 
 Environment: `CUDA_VISIBLE_DEVICES` selects the GPU. Exit codes: 0 ok; 1 usage error (message and usage on stderr): an
 unknown flag, a bad value, options out of range (also `--distance group` alone, `none` with another STAT, more than
-2^20 rays per element), and after loading a target or `--no-occlude` name the meshes do not resolve; 2 runtime error:
+2^20 rays per element, the isovist on fewer than 3 columns or, not flat, 2 rows), and after loading a target or `--no-occlude` name the meshes do not resolve; 2 runtime error:
 a file, the scene, CUDA / OptiX, memory, writing the output, a `--dump-rays` above 4 GB (refused before tracing).
 
 ## Output
@@ -234,9 +300,11 @@ a file, the scene, CUDA / OptiX, memory, writing the output, a `--dump-rays` abo
   the manifest's `meshes` ranges map them back.
 - Columns `<name>_<side>` (sides inner: `sky_front`, `sky_back`, ...; `--sides back` gives `_back` only), in this order:
   the shares `sky`, `ground`, `obstruction` and one per target group (first appearance in `--target`), which sum to 1;
-  with `--transmission on` then `glazing` (the share seen through glass, not part of that sum); then `distance`, `distance_min`, per group `<g>_distance` and `<g>_distance_min`; then `reach_<D>` (D as `%g`:
-  `reach_6`, `reach_2.5`). Default columns with one group: `sky_front ground_front obstruction_front water_front
-  distance_front distance_min_front`.
+  with `--transmission on` then `glazing` (the share seen through glass, not part of that sum); then `volume` or
+  `area` (the isovist, m³ / m²); then `distance`, `distance_min`, per group `<g>_distance` and `<g>_distance_min`; then
+  `reach_<D>` (D as `%g`: `reach_6`, `reach_2.5`). Default columns with one group: about the normal `sky_front
+  ground_front obstruction_front water_front distance_front distance_min_front`, all around `sky_front ground_front
+  obstruction_front water_front volume_front` (`area_front` in a flat field).
 - Manifest `FILE.json`: `columns`; `view` with the field (`fov` [H, LO, HI], `cell` as given, `grid` [rows, columns]),
   `jitter`, `north`, `offset`, `far`, `near` (the 0.1 m floor), `virtual_ground`, `ground_z` (the plane's height in
   input metres, also with the plane off), `transmission: true` (only when on), `reach`, `classes` (the dump's class names in code order) and `image` (the
@@ -345,10 +413,11 @@ context surface): a grid that is itself the terrain or a raised deck must block 
 terrain=terrain`), else the eye sees through it down to the plane and its distances come out far too long.
 
 ```
-views plaza.obj --context facade.obj --context site.obj --no-occlude plaza --fov 360 --offset 1.6 --target lake=water --reach en17037 --dump-rays plaza_rays.npy --out plaza.txt
+views plaza.obj --context facade.obj --context site.obj --no-occlude plaza --fov 360 --offset 1.6 --target lake=water --reach en17037 --distance mean,min --dump-rays plaza_rays.npy --out plaza.txt
 ```
 
-`plaza.txt` (columns as above without the group distances):
+`plaza.txt` (columns as above without the group distances; all around the default column would be the isovist's
+`volume`, so `--distance mean,min` asks for the distances):
 
 ```
 0.342408523 0.4925232969 0.1486614502 0.01640672997 29.64483201 1.703250408 0.5289157871 0.3956413185 0.354911898
@@ -379,7 +448,7 @@ The same quads at `--offset 0` (no target, no reach): everything below their pla
 own surface out (the nearest thing is the facade, 5 m from the first quad's centre):
 
 ```
-views plaza.obj --context facade.obj --context site.obj --fov 360
+views plaza.obj --context facade.obj --context site.obj --fov 360 --distance mean,min
 0.3238738941 0 0.6761261059 262.1961371 5.001380444
 0.3227416947 0 0.6772583053 259.2171342 5.001342773
 ```
@@ -393,6 +462,10 @@ views plaza.obj --context facade.obj --context site.obj --fov 360
 - Coplanar triangles of two meshes z-fight (a target lying on a terrain mesh): lift targets at least 1 cm above the
   terrain or cut them out of it.
 - Log means use a float logarithm: about 1e-7 relative (shares, minima and reach are exact).
+- The isovist is the polygon or mesh through the rays' end points: it cuts corners, bridges depth jumps and leaves out
+  the half cell at the field's edges and at the poles ([Isovist](#isovist)): a little under the true area or volume,
+  less at a finer `--cell`. Only the area and the volume: no perimeter, compactness or other isovist measures, and
+  no isovist per target group.
 - EN 17037: only the shares at its view distance levels (`--reach en17037`, shares of the whole field: see
   Distances); no level is assigned, and the standard's other view criteria (horizontal sight angle, the layers seen)
   are not computed.

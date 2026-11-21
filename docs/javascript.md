@@ -9,7 +9,7 @@ daylight ([daylight.md](daylight.md)) and views ([views.md](views.md)), with the
 |---|---|---|---|
 | in-process | `daylight-mesh/native`: `SimulationMesh`, `run(tool, args, { sensors, context }, { signal, onProgress })` | Node on the GPU host | `daylight_c.dll` ([c-abi.md](c-abi.md)) through koffi, on a worker thread; meshes copied once, their scene kept on the GPU between runs |
 | process runner | `daylight-mesh`: `run(exe, { sensors, context, args })` | Node on the GPU host | `daylight.exe` or `views.exe` as a child process: a `.dmesh` per mesh in a temp folder, the `.npy` read back |
-| server | `daylight-mesh`: `runRemote(url, { sensors, context, epw, args, ... })` | browsers (and Node) | a daylight job on the web app's `daylight_server`, which runs the core in-process on the GPU host; views is not served |
+| server | `daylight-mesh`: `runRemote(url, { sensors, context, epw, args, ... })` | browsers (and Node) | a daylight or views job (`tool`) on the web app's `daylight_server`, which runs the core in-process on the GPU host |
 
 CUDA cannot run in a browser, so browsers use the server. All three return the values as columns, `data[c][row]`
 for `columns[c]`, and the manifest. Meshes come from arrays (`SimulationMesh.create`, `ObjMesh`), files (`SimulationMesh.load`), three.js
@@ -147,8 +147,10 @@ const { data, columns, manifest } = await runRemote(location.origin, {  // the p
   reload of the same model, sends no geometry. Weather: `epw` as a `Blob` (a `File` from `<input type="file">`,
   uploaded) or `{ url }` (fetched by the server from its allowlist), or `--clear-sky` in `args`.
 - The values come as float32, a `Float32Array` per column (views of one buffer); `manifest` is a `RemoteManifest`
-  (`columns`, the `meshes` ranges, `duration_h`, `dirs`, `cache`).
-- Daylight only: the server runs no views jobs, and `runRemote` takes no tool. Run views from Node.
+  (`columns`, the `meshes` ranges, `cache`; daylight's `duration_h` and `dirs`, views' `view` and `targets`).
+- `tool: 'views'` runs views instead ([views.md](views.md)): the same meshes and ids, views flags in `args`, no `epw`.
+  A target names a mesh by its core name (its `name`, made unique per job as `dmeshStems` does):
+  `runRemote(url, { sensors, context, tool: 'views', args: ['--target', 'lake=water', '--reach', 'en17037'] })`.
 
 ## Views
 

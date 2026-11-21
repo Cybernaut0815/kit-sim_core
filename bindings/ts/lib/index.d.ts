@@ -77,15 +77,36 @@ export declare function run(exe: string, input: {
     columns: string[];
     manifest: unknown;
 }>;
-/** The core's `FILE.json` manifest as `daylight_server` returns it (plus the server's own fields). */
+/** The core's `FILE.json` manifest as `daylight_server` returns it (plus the server's own fields): daylight's carries
+ *  `duration_h` and `dirs`, views' `view` and `targets` (docs/views.md, Output). */
 export interface RemoteManifest {
     columns: string[];
-    duration_h: number;
-    dirs: {
+    duration_h?: number;
+    dirs?: {
         sky: number;
         ground: number;
         sun: number;
     };
+    view?: {
+        fov: [h: number, lo: number, hi: number];
+        cell: number;
+        grid: [rows: number, columns: number];
+        jitter: boolean;
+        north: number;
+        offset: number;
+        far: number;
+        near: number;
+        virtual_ground: boolean;
+        ground_z: number;
+        transmission?: true;
+        reach: number[];
+        classes: string[];
+        image: string;
+    };
+    targets?: {
+        mesh: string;
+        group: string;
+    }[];
     meshes: {
         name: string;
         first: number;
@@ -140,7 +161,7 @@ export declare function meshIds(input: {
  * queued / running state. Aborting `signal` cancels the job on the server (`DELETE /jobs/<id>`), also one aborted
  * while the server was making it (the POST itself is not aborted, so its id is always known). `epw` is a Blob
  * (uploaded) or `{ url }` (the server fetches it through its allowlisted proxy cache). `args` are CLI flags verbatim
- * (no files). `clientId` (header `X-Client-Id`) identifies this client for the per-client job limit. Rejects with the
+ * (no files), of the `tool` (daylight, the default, or views: docs/views.md). `clientId` (header `X-Client-Id`) identifies this client for the per-client job limit. Rejects with the
  * server's text on 4xx / 5xx or a failed job. Resolves with the values as columns, `data[c][row]` for `columns[c]`
  * (rows of mesh k from `manifest.meshes[k].first`): float32, read from `GET <url>/jobs/<id>/values` as one buffer that
  * every column is a view of; `manifest` is the finished job's JSON.
@@ -157,6 +178,7 @@ export declare function runRemote(url: string, input: {
     onStatus?: (job: RemoteJob) => void;
     onUpload?: (done: number, total: number) => void;
     fetch?: typeof globalThis.fetch;
+    tool?: 'daylight' | 'views';
 }): Promise<{
     data: Float32Array<ArrayBuffer>[];
     columns: string[];

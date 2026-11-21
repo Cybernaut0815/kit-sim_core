@@ -326,7 +326,7 @@ const uploaded = new Map();
  * queued / running state. Aborting `signal` cancels the job on the server (`DELETE /jobs/<id>`), also one aborted
  * while the server was making it (the POST itself is not aborted, so its id is always known). `epw` is a Blob
  * (uploaded) or `{ url }` (the server fetches it through its allowlisted proxy cache). `args` are CLI flags verbatim
- * (no files). `clientId` (header `X-Client-Id`) identifies this client for the per-client job limit. Rejects with the
+ * (no files), of the `tool` (daylight, the default, or views: docs/views.md). `clientId` (header `X-Client-Id`) identifies this client for the per-client job limit. Rejects with the
  * server's text on 4xx / 5xx or a failed job. Resolves with the values as columns, `data[c][row]` for `columns[c]`
  * (rows of mesh k from `manifest.meshes[k].first`): float32, read from `GET <url>/jobs/<id>/values` as one buffer that
  * every column is a view of; `manifest` is the finished job's JSON.
@@ -368,6 +368,8 @@ export async function runRemote(url, input) {
     };
     const body = () => {
         const fd = new FormData();
+        if (input.tool === 'views')
+            fd.append('tool', 'views');
         ids.forEach((id, k) => fd.append(k < input.sensors.length ? 'sensors' : 'context', id));
         if (input.epw instanceof Blob)
             fd.append('epw', input.epw, 'weather.epw');

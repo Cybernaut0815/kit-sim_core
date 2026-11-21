@@ -262,6 +262,9 @@ describe('runRemote', () => {
     expect(seen[0].get('epw_url')).toBe('https://x/y.epw');
     await expect(runRemote('http://h', { sensors, epw: new Blob(['LOCATION,x']), fetch: fetchMock })).rejects.toThrow(/400/);
     expect(seen[1].get('epw')).toBeInstanceOf(Blob);
+    expect(seen[1].has('tool')).toBe(false); // daylight: the request as before
+    await expect(runRemote('http://h', { sensors, tool: 'views', fetch: fetchMock })).rejects.toThrow(/400/);
+    expect(seen[2].get('tool')).toBe('views');
   });
   it('a failed job rejects with its status and message; abort cancels the job on the server', async () => {
     const failed = (async (u: string, init?: RequestInit) => u.endsWith('/meshes/missing') ? json({ missing: [] }) : init?.method === 'PUT' ? new Response(null, { status: 204 }) : init?.method === 'POST'

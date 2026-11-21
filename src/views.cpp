@@ -24,7 +24,7 @@ std::string reach_name(double D) { char s[48]; std::snprintf(s, sizeof s, "reach
 
 }  // namespace
 
-bool field(const std::vector<MeshView>& meshes, const Options& opt, Field& f, std::string& err) {
+bool field(const std::vector<SimulationMeshView>& meshes, const Options& opt, Field& f, std::string& err) {
   if (!(opt.fovH > 0 && opt.fovH <= 180) && opt.fovH != 360) { err = "--fov H must be in (0, 180] (about the normal) or 360 (all around)"; return false; }
   const bool flat = opt.elevLo == 0 && opt.elevHi == 0;   // one row of horizontal rays: the 2D isovist
   if (!flat && !(opt.elevLo >= -90 && opt.elevLo < opt.elevHi && opt.elevHi <= 90)) {
@@ -64,14 +64,14 @@ bool field(const std::vector<MeshView>& meshes, const Options& opt, Field& f, st
   f.flat = flat;
   f.groundZ = opt.groundZ;
   if (std::isnan(f.groundZ))   // the lowest point: fmin skips the NAN start
-    for (const MeshView& v : meshes)
+    for (const SimulationMeshView& v : meshes)
       for (size_t i = 2; i < v.mesh->points.size(); i += 3) f.groundZ = std::fmin(f.groundZ, v.mesh->points[i]);
   return true;
 }
 
 // The run itself; `stage` names what it is doing, for the out-of-memory message of run() below; `dumping` once the
 // --dump-rays files exist.
-static bool run_views(const std::vector<MeshView>& meshes, const Options& opt, Result& out, std::string& err, const char*& stage,
+static bool run_views(const std::vector<SimulationMeshView>& meshes, const Options& opt, Result& out, std::string& err, const char*& stage,
                       bool& dumping) {
   const auto cancelled = [&] { if (opt.cancel && opt.cancel->load()) { err = "cancelled"; return true; } return false; };
   out = Result{};   // nSky, nSun and durationHours stay 0
@@ -94,7 +94,7 @@ static bool run_views(const std::vector<MeshView>& meshes, const Options& opt, R
   bool anyPass = false;
   for (size_t k = 0; opt.transmission && k < meshes.size(); ++k) {
     if (!blocks(k)) continue;   // not in the scene anyway
-    const Mesh& m = *meshes[k].mesh;
+    const SimulationMesh& m = *meshes[k].mesh;
     size_t n = 0;
     for (size_t f = 0; f < m.numFaces(); ++f) n += passes(base[k] + (m.slot.empty() ? 0 : m.slot[f])) ? 1 : 0;
     passAny[k] = n > 0;
@@ -109,7 +109,7 @@ static bool run_views(const std::vector<MeshView>& meshes, const Options& opt, R
   const std::string key = opt.sceneKey.empty() ? "" : opt.sceneKey + open_key(open, opt.selfOcclude);
   const size_t nS = opt.sides == Sides::Both ? 2 : 1;
   size_t nElem = 0;
-  for (const MeshView& v : meshes) if (v.sensor) nElem += opt.onVertices ? v.mesh->numPoints() : v.mesh->numFaces();
+  for (const SimulationMeshView& v : meshes) if (v.sensor) nElem += opt.onVertices ? v.mesh->numPoints() : v.mesh->numFaces();
   const bool iso = fd.dist & DistIsovist, mean = fd.dist & DistMean, minimum = fd.dist & DistMin, perGroup = fd.dist & DistGroup;
   const size_t nSens = nElem * nS, K = size_t(fd.nAz) * fd.nEl, nClass = 3 + groups.size(),
                NA = 3 * nClass + 1 + opt.reach.size() + (opt.transmission ? 1 : 0) + (iso ? 1 : 0);
@@ -151,7 +151,7 @@ static bool run_views(const std::vector<MeshView>& meshes, const Options& opt, R
   Scene sc;
   if (!scene_acquire(meshes, blocks, {Slot{}}, false, key, opt.residentScenes, opt.cancel, &g, sc, out, stage, err)) return false;
   // label[t] = the class of a hit on triangle t, from the scene's build order: a target's triangles are the ones the
-  // scene holds under its name for its Mesh (a resident scene may have been built from another mesh order); a target the
+  // scene holds under its name for its SimulationMesh (a resident scene may have been built from another mesh order); a target the
   // scene lacks so (built under other names, or its name now on another mesh): a fresh build under the key. Passed glass:
   // kLabelPass, a mixed mesh's triangles found by triangulating it again as the scene did (same centre, same faces kept)
   std::vector<uint8_t> label;
@@ -306,7 +306,7 @@ static bool run_views(const std::vector<MeshView>& meshes, const Options& opt, R
   return true;
 }
 
-bool run(const std::vector<MeshView>& meshes, const Options& opt, Result& out, std::string& err) {
+bool run(const std::vector<SimulationMeshView>& meshes, const Options& opt, Result& out, std::string& err) {
   // as daylight's run(): running out of host memory fails the run, never the caller
   const char* stage = "preparing the run";
   bool dumping = false, ok = false;
@@ -324,7 +324,7 @@ bool run(const std::vector<MeshView>& meshes, const Options& opt, Result& out, s
   return ok;
 }
 
-bool run(const std::vector<Mesh>& meshes, const Options& opt, Result& out, std::string& err) {
+bool run(const std::vector<SimulationMesh>& meshes, const Options& opt, Result& out, std::string& err) {
   return run(views_of(meshes), opt, out, err);
 }
 

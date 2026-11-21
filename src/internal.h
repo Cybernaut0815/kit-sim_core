@@ -57,48 +57,48 @@ void ineichen(double apparentZenithDeg, double turbidity, double altitudeM, doub
 // ------------------------------------------------------------------ mesh.cpp
 struct Tris { std::vector<float3> v; std::vector<uint3> i; std::vector<uint32_t> slot; };   // slot: global slot per triangle (empty: not needed)
 struct Sensors { std::vector<float3> p, n; };              // recentred, offset applied; sides already expanded
-// Views of meshes for the helpers below (names and roles from the Mesh itself), so run() and the tests share them.
-inline std::vector<MeshView> views_of(const std::vector<Mesh>& meshes) {
-  std::vector<MeshView> v;
+// Views of meshes for the helpers below (names and roles from the SimulationMesh itself), so run() and the tests share them.
+inline std::vector<SimulationMeshView> views_of(const std::vector<SimulationMesh>& meshes) {
+  std::vector<SimulationMeshView> v;
   v.reserve(meshes.size());
-  for (const Mesh& m : meshes) v.push_back({&m, m.name, m.sensor});
+  for (const SimulationMesh& m : meshes) v.push_back({&m, m.name, m.sensor});
   return v;
 }
 // f(k) for k in [0, n) on the host's cores (std::execution::par); the first exception any call throws is rethrown here
 // after all of them ran. Callers write disjoint output ranges, so the results equal a serial loop's.
 void par_for(size_t n, const std::function<void(size_t)>& f);
-void bbox_centre(const std::vector<MeshView>& meshes, double c[3]);
-inline void bbox_centre(const std::vector<Mesh>& meshes, double c[3]) { bbox_centre(views_of(meshes), c); }
+void bbox_centre(const std::vector<SimulationMeshView>& meshes, double c[3]);
+inline void bbox_centre(const std::vector<SimulationMesh>& meshes, double c[3]) { bbox_centre(views_of(meshes), c); }
 // Triangles m can give at most: sum of (n - 2) over its faces of 3 or more corners (earcut gives no more).
-size_t tri_cap(const Mesh& m);
+size_t tri_cap(const SimulationMesh& m);
 // Append the triangulated faces of m (recentred by c) to out, each triangle's global slot = slotBase + its face slot
 // (none appended when withSlots is false: the GAS needs them only with per-slot records); skipped counts degenerate /
 // < 3-vertex faces.
-void triangulate(const Mesh& m, const double c[3], Tris& out, int& skipped, uint32_t slotBase = 0, bool withSlots = true);
+void triangulate(const SimulationMesh& m, const double c[3], Tris& out, int& skipped, uint32_t slotBase = 0, bool withSlots = true);
 // The same into caller ranges: m's points (recentred) at v, at most tri_cap(m) triangles at tri (vertex indices + base)
 // and their slots (when slots is not null). Returns the triangles written.
-size_t triangulate_into(const Mesh& m, const double c[3], float3* v, uint3* tri, uint32_t* slots, unsigned base, uint32_t slotBase, int& skipped);
+size_t triangulate_into(const SimulationMesh& m, const double c[3], float3* v, uint3* tri, uint32_t* slots, unsigned base, uint32_t slotBase, int& skipped);
 // Global slots: every mesh in input order takes slot_count(m) = max face slot + 1 (1 without slots); mesh base = the sum
 // over the meshes before it.
-size_t slot_count(const Mesh& m);
+size_t slot_count(const SimulationMesh& m);
 // The .dmesh array rules (daylight.h) on m: faces of 3 or more vertices, sum(counts) = indices, indices within the
 // points; err starts with label. read_dmesh and the C ABI's dl_mesh_create share them.
-bool mesh_ok(const Mesh& m, const std::string& label, std::string& err);
+bool mesh_ok(const SimulationMesh& m, const std::string& label, std::string& err);
 // Optics rows within range (0..1, rho + tau <= 1; glass rho 0, 0 < tau <= 0.918), --bounces 0..20, --bounce-samples
 // 64..65536 and the mode rules (ladybug: no transmission, no bounces). False + err naming the first bad row or flag.
 bool optics_ok(const Options& opt, std::string& err);
 // The row part of optics_ok (ranges, glass rules), for every tool that takes --optics (views: the rows only).
 bool optics_rows_ok(const std::vector<Optics>& rows, std::string& err);
 // One Slot per global slot from the rows (NAME/SLOT > NAME > * > rho 0.2 tau 0; glass: tn_from_Tn(tau), kSlotGlass).
-// Errors: unknown or ambiguous mesh name, slot out of range, duplicate row, a Mesh::slot not one per face.
-bool resolve_optics(const std::vector<MeshView>& meshes, const std::vector<Optics>& rows, std::vector<Slot>& out, std::string& err);
-inline bool resolve_optics(const std::vector<Mesh>& meshes, const std::vector<Optics>& rows, std::vector<Slot>& out, std::string& err) {
+// Errors: unknown or ambiguous mesh name, slot out of range, duplicate row, a SimulationMesh::slot not one per face.
+bool resolve_optics(const std::vector<SimulationMeshView>& meshes, const std::vector<Optics>& rows, std::vector<Slot>& out, std::string& err);
+inline bool resolve_optics(const std::vector<SimulationMesh>& meshes, const std::vector<Optics>& rows, std::vector<Slot>& out, std::string& err) {
   return resolve_optics(views_of(meshes), rows, out, err);
 }
 // open[k] = 1 when Options::noOcclude names mesh k (a name given twice counts once). Errors: an unknown or ambiguous
 // name, a context mesh.
-bool resolve_no_occlude(const std::vector<MeshView>& meshes, const std::vector<std::string>& names, std::vector<char>& open, std::string& err);
-inline bool resolve_no_occlude(const std::vector<Mesh>& meshes, const std::vector<std::string>& names, std::vector<char>& open, std::string& err) {
+bool resolve_no_occlude(const std::vector<SimulationMeshView>& meshes, const std::vector<std::string>& names, std::vector<char>& open, std::string& err);
+inline bool resolve_no_occlude(const std::vector<SimulationMesh>& meshes, const std::vector<std::string>& names, std::vector<char>& open, std::string& err) {
   return resolve_no_occlude(views_of(meshes), names, open, err);
 }
 // views::Options::targets: cls[k] = 3 + g when mesh k is a target of groups[g] (groups in order of first appearance), else
@@ -106,7 +106,7 @@ inline bool resolve_no_occlude(const std::vector<Mesh>& meshes, const std::vecto
 // ground, obstruction, glazing, distance*, reach*, *_distance, *_distance_min: column names), an unknown or ambiguous name, a
 // mesh given twice, a mesh that blocks no rays (a sensor mesh under --no-self-occlude or open[k], --no-occlude), more
 // than 16 groups.
-bool resolve_targets(const std::vector<MeshView>& meshes, const std::vector<views::Target>& targets, bool selfOcclude,
+bool resolve_targets(const std::vector<SimulationMeshView>& meshes, const std::vector<views::Target>& targets, bool selfOcclude,
                      const std::vector<char>& open, std::vector<std::string>& groups, std::vector<uint8_t>& cls, std::string& err);
 // Faces of slot s in m (recentred by c) as one closed thin solid: positions welded on a 1e-5 m grid, every edge used
 // as often in each direction (closed, consistently wound), 2 |V| / S < 0.1 m -> kSlotThin, | kSlotInward when the signed
@@ -114,13 +114,13 @@ bool resolve_targets(const std::vector<MeshView>& meshes, const std::vector<view
 // winding: a double-faced sheet, or a box exported so, whose volumes cancel); else 0. ponytail: per slot, not per
 // connected component (a pane box sharing its slot with an open sheet is not thin, so it passes tau twice); split the
 // slot's faces into components if such slots matter.
-unsigned thin_solid(const Mesh& m, unsigned s, const double c[3]);
+unsigned thin_solid(const SimulationMesh& m, unsigned s, const double c[3]);
 // Sensor points/normals per face or per point per opt (mode rules, offset, sides). Appends to out: one entry per
 // element, or two consecutive entries (front, back) when sides == Both. Returns the element count (faces or points).
-size_t make_sensors(const Mesh& m, const Options& opt, const double c[3], Sensors& out, std::string& warn);
+size_t make_sensors(const SimulationMesh& m, const Options& opt, const double c[3], Sensors& out, std::string& warn);
 // The same into caller ranges p / n of elements x sides entries, by the ladybug mode's rules when ladybug (0 and the
 // ladybug error in warn: nothing written).
-size_t make_sensors_into(const Mesh& m, const RunOptions& opt, bool ladybug, const double c[3], float3* p, float3* n, std::string& warn);
+size_t make_sensors_into(const SimulationMesh& m, const RunOptions& opt, bool ladybug, const double c[3], float3* p, float3* n, std::string& warn);
 
 // ------------------------------------------------------------------ gpu.cu
 struct Gpu;
@@ -222,8 +222,8 @@ unsigned gpu_bounce_flags(bool cullBackfaces);
 // ------------------------------------------------------------------ run.cpp
 bool npy_write_header(std::FILE* f, size_t rows, size_t cols, const char* descr);   // .npy v1.0 [rows x cols] C order, descr "<f8" / "<f4" / "<u4" / "<u1"
 // An occluder scene as the process keeps it (installed in the Gpu, or parked in VRAM under its key) and a run sees it.
-struct SceneMesh {   // a mesh's triangles [tri0, tri0 + nTri) of the GAS, its name and Mesh as the building run had them
-  std::string name; size_t tri0 = 0, nTri = 0; const Mesh* mesh = nullptr;
+struct SceneMesh {   // a mesh's triangles [tri0, tri0 + nTri) of the GAS, its name and SimulationMesh as the building run had them
+  std::string name; size_t tri0 = 0, nTri = 0; const SimulationMesh* mesh = nullptr;
 };
 struct Scene {
   std::string key;
@@ -242,7 +242,7 @@ struct Scene {
 // s = the scene's record (no gas). gpu null: a run without rays, the lookup only (no GPU, nothing built or moved); else
 // *gpu = the process's GPU (made on first use) with the scene installed. A set cancel fails with "cancelled" before any
 // GPU work; out.stats.prepMs / buildMs grow by the triangulation / build; stage names each step (run()'s out-of-memory text).
-bool scene_acquire(const std::vector<MeshView>& meshes, const std::function<bool(size_t)>& blocks, const std::vector<Slot>& slots,
+bool scene_acquire(const std::vector<SimulationMeshView>& meshes, const std::function<bool(size_t)>& blocks, const std::vector<Slot>& slots,
                    bool slotted, const std::string& key, int residentScenes, const std::atomic<bool>* cancel, Gpu** gpu, Scene& s,
                    Result& out, const char*& stage, std::string& err);
 // Room on the GPU beside the scene for a run of nSens sensors (points and normals) traced in chunks of chunkBytes /
@@ -260,7 +260,7 @@ std::string open_key(const std::vector<char>& open, bool selfOcclude);
 void scene_forget(const std::string& key);
 // The sensors of every sensor mesh (make_sensors_into, a task per mesh) into s, nSens entries in mesh order; out.ranges =
 // (name, elements) per sensor mesh; the meshes' warnings joined into warn. False with err on the ladybug error.
-bool sensors_of(const std::vector<MeshView>& meshes, const RunOptions& opt, bool ladybug, const double c[3], size_t nSens, Sensors& s,
+bool sensors_of(const std::vector<SimulationMeshView>& meshes, const RunOptions& opt, bool ladybug, const double c[3], size_t nSens, Sensors& s,
                 Result& out, std::string& warn, std::string& err);
 
 }  // namespace daylight

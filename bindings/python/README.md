@@ -75,32 +75,32 @@ with `_2`, `_3` ... (`/World/Bldg/roof` -> `World_Bldg_roof.dmesh`); `meshes.jso
 ## In-process (`daylight.native`)
 
 Both tools in this process through `daylight_c.dll`: no process start, no files, the GPU context kept, and runs over
-the same `Mesh` objects in the same roles and order reuse the resident GPU scene (no triangulation, upload or GAS
+the same `SimulationMesh` objects in the same roles and order reuse the resident GPU scene (no triangulation, upload or GAS
 build; daylight and views share it). Flags are the CLIs' own, values and manifest bit for bit what the CLI writes.
 
 ```python
-from daylight import Mesh, native
-with Mesh.load('site.obj') as site, Mesh('grid', P, C, I) as grid:             # P [N,3] float64, C counts, I indices
+from daylight import SimulationMesh, native
+with SimulationMesh.load('site.obj') as site, SimulationMesh('grid', P, C, I) as grid:             # P [N,3] float64, C counts, I indices
     r = native.run('daylight', ['--epw', 'site.epw', '--quantity', 'radiation'], grid, context=site)
     v = native.run('views', ['--fov', '360', '--offset', '1.6', '--target', 'lake=water'], grid, context=site)
 print(r.values.shape, r.manifest['columns'], v.stats['scene_reused'])             # True: the scene of the first run
 ```
 
-- `Mesh(name, points, counts, indices, slots=None)`: one mesh from the `.dmesh` arrays (numpy or sequences, made
+- `SimulationMesh(name, points, counts, indices, slots=None)`: one mesh from the `.dmesh` arrays (numpy or sequences, made
   C-contiguous float64 points `[N,3]`, int32 counts and 0-based indices, uint16 optics slot per face), copied into the
-  DLL; `Mesh.load(path)`: the meshes of a `.obj` (one per `o`/`g` group) or `.dmesh` file as the CLI reads them.
+  DLL; `SimulationMesh.load(path)`: the meshes of a `.obj` (one per `o`/`g` group) or `.dmesh` file as the CLI reads them.
   `.names` = what the manifest, `--target`, `--optics` and `--no-occlude` call them. `close()`, a `with` block or
   garbage collection frees the handle; never close one a run on another thread is using.
 - `native.run(tool, args, sensors, context=(), control=None)` -> `Result(values, manifest, stats)`: `tool` `'daylight'`
   ([daylight.md](../../docs/daylight.md)) or `'views'` ([views.md](../../docs/views.md)), `args` its flags as strings
   (mesh paths, `--context`, `--out`, `--bench` and `-h` are refused: the meshes are `sensors` / `context`, each a
-  `Mesh` or an iterable of them), `values` `[N x C]` float64, `manifest` the CLI's `FILE.json` as a dict, `stats`
+  `SimulationMesh` or an iterable of them), `values` `[N x C]` float64, `manifest` the CLI's `FILE.json` as a dict, `stats`
   `{scene_reused, prep_ms, sky_ms, build_ms, trace_ms, reduce_ms, bounce_ms, rays, launches, gas_bytes}`. Files in
   flags (`--epw`, `--timeseries`, `--dump-*`) are paths of this process; a `str` goes as UTF-8 (names), a
   `pathlib.Path` in the ANSI code page the core opens files with, as the CLI's argv: give a non-ASCII path as a `Path`.
   `native.usage(tool)`: the CLI's `-h` text.
 - `Control()`: pass it as `control`, then from another thread `cancel()` (the run stops at its next check and raises
-  `DaylightError` 2 `cancelled`) or read `progress` (0..1). One control per run; `close()` / `with` as for `Mesh`.
+  `DaylightError` 2 `cancelled`) or read `progress` (0..1). One control per run; `close()` / `with` as for `SimulationMesh`.
 - Errors raise `native.DaylightError` with `.status` = the CLI's exit code (1: flags, arguments, mesh names the flags
   do not resolve; 2: a file, the GPU, out of memory, `cancelled`) and the core's message. Numbers are read and written
   with `.` whatever `locale.setlocale` set (the DLL runs each call in the `"C"` locale).
@@ -124,8 +124,8 @@ print(r.values.shape, r.manifest['columns'], v.stats['scene_reused'])           
   or `(name, points, counts, indices)` tuples as `meshes()` gives them (a single one is accepted too); written as
   `<stem>.dmesh` (= the manifest names): the name's file stem as `python -m daylight` makes it, `sensor_<i>` /
   `context_<i>` for a triple.
-- `native`: the in-process API above (`Mesh`, `Control`, `run`, `usage`, `DaylightError`); `daylight.Mesh` is
-  `native.Mesh`.
+- `native`: the in-process API above (`SimulationMesh`, `Control`, `run`, `usage`, `DaylightError`); `daylight.SimulationMesh` is
+  `native.SimulationMesh`.
 - `write_results(stage, values, manifest, prims, out, on='faces', name='daylight', vmin=None, vmax=None)` -> written
   prim paths. `stage` = path or `Usd.Stage`; `values` `[N x C]` (1-D = one column) with rows per `manifest['meshes']`,
   `prims` the sensor prim paths in that order; `out` (.usda/.usdc) is created / overwritten with `subLayerPaths =

@@ -27,7 +27,7 @@ Node (three.js scene -> values):
 ```ts
 import { fromThree, run } from 'daylight-mesh';
 
-const sensors = fromThree([scene]);                 // every descendant Mesh, world metres, Y-up -> Z-up
+const sensors = fromThree([scene]);                 // every descendant three.js Mesh, world metres, Y-up -> Z-up
 const { data, columns } = await run('daylight.exe', { sensors, args: ['--epw', 'x.epw'] });
 console.log(columns[0], data[0]);                   // one Float64Array per column, a value per sensor element
 ```
@@ -65,9 +65,9 @@ scene on the GPU ([docs/c-abi.md](../../docs/c-abi.md)). Needs `koffi` 3 (an opt
 
 ```ts
 import { fromThree } from 'daylight-mesh';
-import { Mesh, run } from 'daylight-mesh/native';
+import { SimulationMesh, run } from 'daylight-mesh/native';
 
-const sensors = fromThree([scene]).map(Mesh.fromObj);                // copied once; names as given (Mesh.names)
+const sensors = fromThree([scene]).map(SimulationMesh.fromObj);                // copied once; names as given (SimulationMesh.names)
 const ctrl = new AbortController();
 const r = await run('views', ['--fov', '360'], { sensors }, { signal: ctrl.signal, onProgress: (p) => bar(p) });
 const again = await run('daylight', ['--epw', 'x.epw', '--quantity', 'radiation'], { sensors }); // same scene, stats.sceneReused
@@ -108,7 +108,7 @@ await applyToThree(mesh, data[col].subarray(first, first + count)); // one value
   attribute and, unless `material: false`, `mesh.material = new MeshStandardMaterial({ vertexColors: true })`.
   Imports `three` lazily; returns the RGB array.
 - `ObjMesh { name, positions /* xyz, metres, Z-up */, indices /* 0-based triangles */, slots?, id? }`. `slots`: optional
-  `Uint16Array`, one optics slot per triangle (the core's `Mesh::slot`; absent = every triangle slot 0), written by
+  `Uint16Array`, one optics slot per triangle (the core's `SimulationMesh::slot`; absent = every triangle slot 0), written by
   `toDmesh` (so by `run` and `runRemote`: part of the bytes the server caches under `id`); `toObj` drops it.
 - `fromThree(objects, { scale })`: `updateMatrixWorld(true)`, applies `matrixWorld`, converts `(x, y, z) -> (x, -z, y)`,
   reverses winding when `det(matrixWorld) < 0`; names each mesh by its `name`, else its `uuid`. Triangle
@@ -165,14 +165,14 @@ Visual C++ runtime ([docs/c-abi.md](../../docs/c-abi.md#loading-the-dll)).
   Throws when it does not load (a missing file: `no such file`), has another ABI version, or another path is loaded
   already. Kept loaded while Node runs (koffi frees it as Node exits).
 - `usage(tool)`: `'daylight' | 'views'` -> the CLI's `-h` text.
-- `Mesh.create(name, positions, counts, indices, slots?)`: the `.dmesh` arrays (xyz, vertices per face >= 3, 0-based
-  indices, a slot per face), copied; `Mesh.fromObj(objMesh)`: triangles (counts all 3), its `name` and `slots` as they
-  are (not through `dmeshStems`); `Mesh.load(path)`: a `.obj` (a mesh per group) or `.dmesh`, as the CLI reads it
+- `SimulationMesh.create(name, positions, counts, indices, slots?)`: the `.dmesh` arrays (xyz, vertices per face >= 3, 0-based
+  indices, a slot per face), copied; `SimulationMesh.fromObj(objMesh)`: triangles (counts all 3), its `name` and `slots` as they
+  are (not through `dmeshStems`); `SimulationMesh.load(path)`: a `.obj` (a mesh per group) or `.dmesh`, as the CLI reads it
   (ASCII paths). `mesh.names`: what `--target`, `--optics`, `--no-occlude` and the manifest call its meshes.
   `mesh.free()` frees it now (throws while a run uses it); else a `FinalizationRegistry` frees it when collected.
   These throw an `Error` with the core's message (`bad: vertex index out of range`, `cannot open`, ...).
 - `run(tool, args, { sensors, context? }, { signal?, onProgress? })`: the CLI's flags without the program name (no mesh
-  paths, `--context`, `--out`, `--bench`, `-h`; paths in flags, such as `--epw`, ASCII as for `Mesh.load`), handles in
+  paths, `--context`, `--out`, `--bench`, `-h`; paths in flags, such as `--epw`, ASCII as for `SimulationMesh.load`), handles in
   place of its mesh arguments and `--context` files. Resolves
   `{ data: Float64Array[] (columns, as run(exe)), columns, manifest, manifestText (FILE.json, LF), stats: { sceneReused,
   prepMs, skyMs, buildMs, traceMs, reduceMs, bounceMs, rays, launches, gasBytes } }`, values and manifest bit for bit

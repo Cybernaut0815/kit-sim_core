@@ -190,7 +190,7 @@ sums run in double over float directions: about 1e-7 relative to a double comput
 
 | role | CLI | C++ |
 |---|---|---|
-| receiver: analysed (a row per element), blocks rays | positional `FILE...` | `Mesh::sensor = true` (`MeshView::sensor`) |
+| receiver: analysed (a row per element), blocks rays | positional `FILE...` | `SimulationMesh::sensor = true` (`SimulationMeshView::sensor`) |
 | context: blocks rays (an obstruction), never analysed | `--context FILE` | `sensor = false` |
 | target: rays ending on it count for its group | `--target NAME=GROUP`, NAME a context or receiver mesh | `views::Options::targets` |
 | analysed but invisible to rays (casts no shade) | `--no-occlude NAME` (one receiver mesh), `--no-self-occlude` (every receiver) | `noOcclude`, `selfOcclude = false` |
@@ -263,8 +263,8 @@ The shut room: 92.81 m³ on average over the 12 faces (the room holds 93.18) and
 
 | flag | value | default | meaning | `views::Options` |
 |---|---|---|---|---|
-| `FILE...` | `.dmesh` `.obj` `.usd*` | required (or `--bench`) | receivers: analysed, and blocking unless `--no-self-occlude` (or `--no-occlude` names them); `.usd*` needs the `-DDAYLIGHT_USD=ON` build | `Mesh::sensor = true` |
-| `--context FILE` | mesh file, repeatable | none | blocks rays only, never analysed | `Mesh::sensor = false` |
+| `FILE...` | `.dmesh` `.obj` `.usd*` | required (or `--bench`) | receivers: analysed, and blocking unless `--no-self-occlude` (or `--no-occlude` names them); `.usd*` needs the `-DDAYLIGHT_USD=ON` build | `SimulationMesh::sensor = true` |
+| `--context FILE` | mesh file, repeatable | none | blocks rays only, never analysed | `SimulationMesh::sensor = false` |
 | `--target NAME=GROUP[;NAME=GROUP...]` | mesh names, repeatable | none | rays ending on mesh NAME count for GROUP: a share column per group, in order of first appearance; `;` packs several into one token; rules above | `targets` (`Target {mesh, group}`) |
 | `--fov H[,LO,HI]` | degrees | `120,-70,50` | the field: H wide about the normal (0 < H <= 180, view mode) or 360 (all around), elevation LO to HI (-90 <= LO < HI <= 90, or LO = HI = 0: a flat field of horizontal rays, the 2D isovist); H alone keeps LO, HI | `fovH`, `elevLo`, `elevHi` |
 | `--cell DEG` | degrees, > 0 | `2` | degrees per ray, rows and columns (rounded to fill the field; at most 2^20 rays per element) | `cell` |

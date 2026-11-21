@@ -144,7 +144,7 @@ runner (`daylight.run_meshes`: writes the `.dmesh` files, starts the exe, reads 
 
 A CLI run pays about 0.5 s before tracing: the process, the CUDA context and OptiX pipeline, writing and reading the
 files, triangulating and building the scene. In-process the first run pays the GPU start once (about 0.35 s); later
-runs over the same `Mesh` objects reuse the resident scene (no triangulation, upload or GAS build), so what is left is
+runs over the same `SimulationMesh` objects reuse the resident scene (no triangulation, upload or GAS build), so what is left is
 the run itself: about 1 ms for a small model, the sky and reduce work for the daylight city, mostly the 0.29 s trace
 for the views city. Creating the meshes in-process took 5-11 ms. One large run gains little; repeated runs over the
 same model (parameter studies, Grasshopper sliders, notebooks, a server) gain the most.

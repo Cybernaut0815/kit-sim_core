@@ -5,7 +5,7 @@ and views ([views.md](views.md)), on a small scene in a second or two and printi
 the manifest's ranges and, where the way in has them, the resident scene, progress, cancel and errors. No weather file
 is needed: daylight runs a clear-sky year in Berlin (`--clear-sky --lat 52.52 --lon 13.41`) or sun hours. The scenes
 build on [tests/box.obj](../tests/box.obj) (OBJ groups `ground`, four 2 m quads at z 0, and `box`, a 1 m box floating
-0.5 m above the fourth) and add a facade, a block or a lake made in code. The guides go through them line by line.
+0.5 m above the fourth) and add a facade, a block or a lake made in code. Each is commented step by step; the guides explain the API around them.
 
 | file | way in | daylight | views | guide |
 |---|---|---|---|---|

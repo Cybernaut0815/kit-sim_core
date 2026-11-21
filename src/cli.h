@@ -37,7 +37,7 @@ int parse_common(int argc, char** argv, CommonArgs& a, RunOptions& o, std::strin
                  const std::function<int(int& i, const std::string& flag)>& tool);
 // argv[1..argc) -> a. 0 ok (-h/--help sets a.help and stops), 1 usage error with err set (the caller prints kUsage),
 // also for --optics rows, --bounces or --bounce-samples out of range, switches the mode refuses and an empty
-// --no-occlude NAME. Mesh names in --optics and --no-occlude are checked by run().
+// --no-occlude NAME. SimulationMesh names in --optics and --no-occlude are checked by run().
 int parse(int argc, char** argv, Args& a, std::string& err);
 // The rules that follow parsing: --clear-sky xor --epw; --clear-sky needs --lat --lon; tz defaults to round(lon / 15)
 // when --lat --lon come without --tz; weather from a.epw or the clear-sky model unless haveWeather is already true on

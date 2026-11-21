@@ -13,7 +13,7 @@
 namespace daylight {
 
 // Generic face-vertex mesh. Readers deliver world coordinates in metres, Z-up.
-struct Mesh {
+struct SimulationMesh {
   std::string name;                   // OBJ group / file stem, or prim path
   std::vector<double> points;         // xyz interleaved
   std::vector<int> counts;            // vertices per face (faceVertexCounts)
@@ -25,9 +25,9 @@ struct Mesh {
 };
 
 // A mesh as one run sees it, without a copy: the caller's geometry (alive for the call), this run's name (what --optics
-// and --no-occlude refer to, and the manifest's) and role. A long-lived caller (the server) shares one cached Mesh
+// and --no-occlude refer to, and the manifest's) and role. A long-lived caller (the server) shares one cached SimulationMesh
 // between runs that name it differently or give it another role.
-struct MeshView { const Mesh* mesh = nullptr; std::string name; bool sensor = true; };
+struct SimulationMeshView { const SimulationMesh* mesh = nullptr; std::string name; bool sensor = true; };
 
 // Hourly weather (EPW). dni/dhi: one value per row (8760 or 8784), W/m2 averaged over the hour ending at the row, in
 // the file's own clock (tz). Timestamps of a run (--time / --from / --to, in --tz) are converted into this clock.
@@ -63,12 +63,12 @@ struct RunOptions {
   bool cullBackfaces = false;         // occluders one-sided (winding); default two-sided like Radiance
   bool onVertices = false;            // sensors on points instead of faces
   bool selfOcclude = true;            // sensor meshes also block rays
-  std::vector<std::string> noOcclude; // ... but not these (Mesh::name, as in --optics): analysed, invisible to rays (no shade, no reflection)
+  std::vector<std::string> noOcclude; // ... but not these (SimulationMesh::name, as in --optics): analysed, invisible to rays (no shade, no reflection)
   double north = 0;                   // degrees, counterclockwise from +Y (ladybug convention; 90 = west)
   double offset = 0;                  // sensor offset along the normal, metres
   bool virtualGround = true;          // the virtual ground below the horizon; daylight: its Lambertian reflection of
                                       // Options::ground (false: black, the numbers of ground 0); views: a plane that ends downward rays
-  std::vector<Optics> optics;         // per mesh / face slot (--optics); names = Mesh::name
+  std::vector<Optics> optics;         // per mesh / face slot (--optics); names = SimulationMesh::name
   bool transmission = false;          // daylight: tau lets light through glass / porous slots; views: rays pass glass slots
                                       // (tau > 0); false = every slot opaque (as before)
   // Scene identity for long-lived callers (a server). Non-empty and equal to the previous run's key: the occluder
@@ -125,15 +125,15 @@ struct Result {
 };
 
 // OBJ contract: world metres, Z-up, right-handed winding; one o/g group per mesh; 1-based global indices (v, f only).
-bool read_obj(const std::string& path, std::vector<Mesh>& out, std::string& err);
+bool read_obj(const std::string& path, std::vector<SimulationMesh>& out, std::string& err);
 // .dmesh contract: one mesh per file (name = file stem), little-endian, no padding after the 32-byte header:
 //   char[4] "DLM1" | uint32 flags | uint64 n_points | uint64 n_faces | uint64 n_indices |
 //   float64 xyz[3*n_points] (metres, Z-up) | int32 counts[n_faces] (>= 3, right-handed) | int32 indices[n_indices] (0-based)
-//   [| uint16 slot[n_faces] (Mesh::slot) when flags bit 0 is set]. Any other flag bit, or a truncated slot block, is an
+//   [| uint16 slot[n_faces] (SimulationMesh::slot) when flags bit 0 is set]. Any other flag bit, or a truncated slot block, is an
 //   error; bytes after the last array are ignored. OBJ / USD input is geometry only (every face slot 0).
-bool read_dmesh(const std::string& path, std::vector<Mesh>& out, std::string& err);
+bool read_dmesh(const std::string& path, std::vector<SimulationMesh>& out, std::string& err);
 // The same from memory (an upload); name is the mesh name (what the file stem is for the path overload).
-bool read_dmesh(const char* data, size_t size, const std::string& name, std::vector<Mesh>& out, std::string& err);
+bool read_dmesh(const char* data, size_t size, const std::string& name, std::vector<SimulationMesh>& out, std::string& err);
 bool read_epw(const std::string& path, Weather& out, std::string& err);
 bool read_epw(std::istream& in, const std::string& label, Weather& out, std::string& err);   // label names the source in errors
 // Synthetic 8760-row weather from the Ineichen-Perez clear-sky model (Linke turbidity, site altitude in metres):
@@ -143,9 +143,9 @@ bool clear_sky_weather(double lat, double lon, double tz, double turbidity, doub
 // weather may be null only when every quantity is SunHours. One call at a time per process (the GPU state is shared).
 // Fails on bad Options (ranges, mode rules), on optics rows the meshes do not resolve (unknown / ambiguous name,
 // slot out of range, duplicate row) and on noOcclude names that are unknown, ambiguous or a context mesh.
-bool run(const std::vector<Mesh>& meshes, const Weather* weather, const Options& opt, Result& out, std::string& err);
-// The same over views (Mesh::name and Mesh::sensor are ignored: the view's count). Running out of host memory fails
+bool run(const std::vector<SimulationMesh>& meshes, const Weather* weather, const Options& opt, Result& out, std::string& err);
+// The same over views (SimulationMesh::name and SimulationMesh::sensor are ignored: the view's count). Running out of host memory fails
 // the run with "out of memory: ..." naming the stage, never the process.
-bool run(const std::vector<MeshView>& meshes, const Weather* weather, const Options& opt, Result& out, std::string& err);
+bool run(const std::vector<SimulationMeshView>& meshes, const Weather* weather, const Options& opt, Result& out, std::string& err);
 
 }  // namespace daylight

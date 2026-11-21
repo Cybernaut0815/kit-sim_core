@@ -14,7 +14,7 @@
  *    C runtime's narrow encoding (the ANSI code page on Windows), as the CLI's argv does.
  *  - Numbers: dl_run reads the flags and EPW files, and writes the manifest, with '.' as the decimal point whatever C
  *    locale the host set (its thread runs in the "C" locale for the call).
- *  - Mesh arrays are the .dmesh arrays (daylight.h): float64 xyz, int32 counts and 0-based indices, uint16 slots.
+ *  - SimulationMesh arrays are the .dmesh arrays (daylight.h): float64 xyz, int32 counts and 0-based indices, uint16 slots.
  *  - Threads: any function from any thread. Runs take turns behind one lock (the GPU runs one at a time), so a dl_run
  *    waits for the one before it. Free a handle only when no call uses it.
  */
@@ -56,7 +56,7 @@ DL_API int32_t dl_version(void);
 /** Message of the last failed call on this thread ("" if none). */
 DL_API const char* dl_last_error(void);
 
-/** The tool's usage text, as its CLI's -h prints it (static); NULL for an unknown tool. Mesh paths, --context, --out,
+/** The tool's usage text, as its CLI's -h prints it (static); NULL for an unknown tool. SimulationMesh paths, --context, --out,
  *  --bench and -h are refused in-process (dl_run). */
 DL_API const char* dl_usage(int32_t tool);
 

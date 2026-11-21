@@ -17,7 +17,7 @@ offset 24  uint64    n_indices
 offset 32  float64   xyz[3 * n_points]      world metres, Z-up
            int32     counts[n_faces]        vertices per face (>= 3), right-handed winding
            int32     indices[n_indices]     0-based, sum(counts) == n_indices
-           uint16    slot[n_faces]          only with flags bit 0: optics slot of each face (daylight::Mesh::slot)
+           uint16    slot[n_faces]          only with flags bit 0: optics slot of each face (daylight::SimulationMesh::slot)
 ```
 
 Without the slot block every face is slot 0. A flag bit other than bit 0, or a slot block shorter than `n_faces`
@@ -33,7 +33,7 @@ for a group ([views.md](views.md#mesh-roles)). daylight's location and time: `--
 
 ## Semantics
 
-- **Separate arrays per mesh in, one scene inside.** Every mesh (one `.dmesh` / `daylight::Mesh`, one OBJ group,
+- **Separate arrays per mesh in, one scene inside.** Every mesh (one `.dmesh` / `daylight::SimulationMesh`, one OBJ group,
   one USD prim) keeps its own points and indices. Internally all occluding triangles go into one OptiX acceleration
   structure and all sensors into one array; results come back in input order and the manifest `meshes` ranges
   (`Result::ranges`) map rows back to meshes.
@@ -59,5 +59,5 @@ for a group ([views.md](views.md#mesh-roles)). daylight's location and time: `--
   sensor at the centroid, direction the face normal. Vertices: one element per point, direction the area-weighted
   mean of the adjacent face normals (a point shared by faces of several meshes belongs to each mesh's output).
 - **`--sides both`** evaluates the front and the back hemisphere of each element (two columns per quantity).
-- **C++ callers need no files**: build `daylight::Mesh` objects and call `daylight::run`; `.dmesh` exists so other
+- **C++ callers need no files**: build `daylight::SimulationMesh` objects and call `daylight::run`; `.dmesh` exists so other
   languages and the CLI pass the same raw arrays without parsing.

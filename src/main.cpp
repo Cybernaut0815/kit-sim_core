@@ -40,7 +40,7 @@ std::string lower_ext(const std::string& path) {
   return ext;
 }
 
-bool load(const std::string& path, bool sensor, bool verbose, std::vector<Mesh>& meshes, std::string& err) {
+bool load(const std::string& path, bool sensor, bool verbose, std::vector<SimulationMesh>& meshes, std::string& err) {
   const size_t n = meshes.size();
   const std::string ext = lower_ext(path);
   const auto t0 = std::chrono::steady_clock::now();
@@ -65,7 +65,7 @@ bool load(const std::string& path, bool sensor, bool verbose, std::vector<Mesh>&
 
 #ifdef VIEWS_CLI
 // Box [x0,x1] x [y0,y1] x [z0,z1] as 6 outward quads.
-void box(Mesh& m, double x0, double y0, double z0, double x1, double y1, double z1) {
+void box(SimulationMesh& m, double x0, double y0, double z0, double x1, double y1, double z1) {
   const int b = static_cast<int>(m.numPoints());
   for (int k = 0; k < 8; ++k) m.points.insert(m.points.end(), {(k & 1) ? x1 : x0, (k & 2) ? y1 : y0, (k & 4) ? z1 : z0});
   // corner k: bit0 -> +x, bit1 -> +y, bit2 -> +z; quads wound for outward normals
@@ -76,7 +76,7 @@ void box(Mesh& m, double x0, double y0, double z0, double x1, double y1, double 
   }
 }
 // Grid of nu x nv quads from o along u and v (u x v = the normal).
-void grid(Mesh& m, const double o[3], const double u[3], const double v[3], int nu, int nv) {
+void grid(SimulationMesh& m, const double o[3], const double u[3], const double v[3], int nu, int nv) {
   const int b = static_cast<int>(m.numPoints());
   for (int j = 0; j <= nv; ++j)
     for (int i = 0; i <= nu; ++i)
@@ -93,7 +93,7 @@ void grid(Mesh& m, const double o[3], const double u[3], const double v[3], int 
 // scene has about nTris triangles) and trees (4 m boxes, every 15 m along the streets and on a 10 m grid in the parks) as
 // context. Every 8th block is a park (5 cm above the ground, target park), a 50 m water strip runs along the south edge
 // (5 cm up, target water).
-void city(size_t nSens, size_t nTris, std::vector<Mesh>& meshes, std::vector<views::Target>& targets) {
+void city(size_t nSens, size_t nTris, std::vector<SimulationMesh>& meshes, std::vector<views::Target>& targets) {
   const int B = std::max(1, static_cast<int>(std::ceil(std::sqrt(static_cast<double>(nSens) / 1225))));   // ~1400 quads a building at 2 m
   const double W = 60.0 * B + 20;   // the city: blocks at 20 + 60 i .. 60 + 60 i
   std::mt19937 rng(42);
@@ -102,7 +102,7 @@ void city(size_t nSens, size_t nTris, std::vector<Mesh>& meshes, std::vector<vie
   double area = 0;   // facade area of the buildings
   for (size_t k = 0; k < h.size(); ++k) if (k % 8 != 7) { h[k] = ht(rng); area += 160 * h[k]; }
   const double q = std::sqrt(area / static_cast<double>(std::max<size_t>(nSens, 1)));   // facade quad size
-  Mesh facades, roofs, park, trees, water, ground;
+  SimulationMesh facades, roofs, park, trees, water, ground;
   facades.name = "facades"; roofs.name = "roofs"; park.name = "park"; trees.name = "trees"; water.name = "water"; ground.name = "ground";
   roofs.sensor = park.sensor = trees.sensor = water.sensor = ground.sensor = false;
   for (int bj = 0; bj < B; ++bj)
@@ -133,23 +133,23 @@ void city(size_t nSens, size_t nTris, std::vector<Mesh>& meshes, std::vector<vie
   const double wo[3] = {0, -60, 0.05}, wu[3] = {W, 0, 0}, wv[3] = {0, 50, 0};
   grid(water, wo, wu, wv, 1, 1);
   size_t made = 0;
-  for (const Mesh* m : {&facades, &roofs, &park, &trees, &water}) made += 2 * m->numFaces();
+  for (const SimulationMesh* m : {&facades, &roofs, &park, &trees, &water}) made += 2 * m->numFaces();
   const int G = std::max(1, static_cast<int>(std::sqrt(static_cast<double>(nTris > made ? nTris - made : 0) / 2)));
   const double go[3] = {-100, -160, 0}, gu[3] = {W + 200, 0, 0}, gv[3] = {0, W + 260, 0};
   grid(ground, go, gu, gv, G, G);
   if (park.numFaces()) targets.push_back({"park", "park"});
   targets.push_back({"water", "water"});
-  for (Mesh* m : {&facades, &roofs, &park, &trees, &water, &ground}) if (m->numFaces()) meshes.push_back(std::move(*m));
+  for (SimulationMesh* m : {&facades, &roofs, &park, &trees, &water, &ground}) if (m->numFaces()) meshes.push_back(std::move(*m));
   size_t tris = 0;
-  for (const Mesh& m : meshes) tris += 2 * m.numFaces();
+  for (const SimulationMesh& m : meshes) tris += 2 * m.numFaces();
   std::fprintf(stderr, "bench: %zu facade sensors, %zu triangles, %d x %d blocks\n", meshes[0].numFaces(), tris, B, B);
 }
 #else
 // Synthetic city for --bench: NSENS quads on a flat grid plus random boxes (12 triangles each) as context.
-void bench_scene(size_t nSens, size_t nTris, std::vector<Mesh>& meshes) {
+void bench_scene(size_t nSens, size_t nTris, std::vector<SimulationMesh>& meshes) {
   const size_t side = static_cast<size_t>(std::ceil(std::sqrt(static_cast<double>(nSens))));
   const double extent = 1000.0, cell = extent / static_cast<double>(side);
-  Mesh grid;
+  SimulationMesh grid;
   grid.name = "bench_grid";
   for (size_t j = 0; j <= side; ++j)
     for (size_t i = 0; i <= side; ++i) {
@@ -165,7 +165,7 @@ void bench_scene(size_t nSens, size_t nTris, std::vector<Mesh>& meshes) {
       grid.indices.insert(grid.indices.end(), {a, a + 1, a + w + 1, a + w});
     }
   meshes.push_back(std::move(grid));
-  Mesh boxes;
+  SimulationMesh boxes;
   boxes.name = "bench_boxes";
   boxes.sensor = false;
   std::mt19937 rng(42);
@@ -245,7 +245,7 @@ int main(int argc, char** argv) {
   }
 #endif
 
-  std::vector<Mesh> meshes;
+  std::vector<SimulationMesh> meshes;
   if (a.bench) {
 #ifdef VIEWS_CLI
     city(a.benchSens, a.benchTris, meshes, a.opt.targets);

@@ -39,15 +39,15 @@ namespace Daylight
 
     /// <summary>
     /// Meshes held by the core: one from arrays (<see cref="Create"/>, copied) or those of a file (<see cref="Load"/>).
-    /// Runs over the same Mesh objects in the same roles and order reuse the GPU scene (<see cref="Result.SceneReused"/>).
+    /// Runs over the same SimulationMesh objects in the same roles and order reuse the GPU scene (<see cref="Result.SceneReused"/>).
     /// Dispose frees them (else the finalizer does), deferred while a run holds them.
     /// </summary>
-    public sealed class Mesh : IDisposable
+    public sealed class SimulationMesh : IDisposable
     {
         internal readonly Handle Handle;
 
         /// <summary>Owns a handle; NULL throws this thread's error with <paramref name="status"/> (the ABI has none).</summary>
-        Mesh(IntPtr mesh, int status)
+        SimulationMesh(IntPtr mesh, int status)
         {
             if (mesh == IntPtr.Zero) throw Native.Error(status);
             Handle = new Handle(mesh, Native.dl_mesh_free);
@@ -63,7 +63,7 @@ namespace Daylight
         /// --no-occlude, --target and the manifest call it. A mesh without faces holds no mesh (<see cref="Names"/> empty).
         /// Bad arrays throw status 1.
         /// </summary>
-        public static Mesh Create(string name, double[] xyz, int[] counts, int[] indices, ushort[] slots = null)
+        public static SimulationMesh Create(string name, double[] xyz, int[] counts, int[] indices, ushort[] slots = null)
         {
             Native.Init();
             xyz = xyz ?? new double[0];
@@ -76,7 +76,7 @@ namespace Daylight
             IntPtr utf8 = Native.ToUtf8(name);
             try
             {
-                return new Mesh(Native.dl_mesh_create(utf8, xyz, xyz.Length / 3, counts, counts.Length, indices, indices.Length,
+                return new SimulationMesh(Native.dl_mesh_create(utf8, xyz, xyz.Length / 3, counts, counts.Length, indices, indices.Length,
                                                       slots), Native.Usage);
             }
             finally
@@ -90,20 +90,20 @@ namespace Daylight
         /// by its stem). The path goes in the ANSI code page, as the CLI's argv (a character outside it throws
         /// ArgumentException). Throws status 2 when it cannot be read, 1 for null.
         /// </summary>
-        public static Mesh Load(string path)
+        public static SimulationMesh Load(string path)
         {
             Native.Init();
             IntPtr mesh = Native.dl_mesh_load(path);
             if (mesh == IntPtr.Zero)   // the message holds the path as sent (ANSI); NULL is the core's usage error
                 throw new DaylightException(path == null ? Native.Usage : Native.Runtime,
                                             Marshal.PtrToStringAnsi(Native.dl_last_error()));
-            return new Mesh(mesh, Native.Runtime);
+            return new SimulationMesh(mesh, Native.Runtime);
         }
 
         /// <summary>The names of the meshes held, in order; their rows follow one another in this order.</summary>
         public IReadOnlyList<string> Names { get; }
 
-        /// <summary>Frees the meshes; a later run given this Mesh throws ObjectDisposedException.</summary>
+        /// <summary>Frees the meshes; a later run given this SimulationMesh throws ObjectDisposedException.</summary>
         public void Dispose()
         {
             Handle.Dispose();
@@ -227,8 +227,8 @@ namespace Daylight
         /// --context meshes. Refused (status 1): mesh paths, --context, --out, --bench, -h. Every other flag works as in
         /// the CLI, files included. Failures throw <see cref="DaylightException"/> with the CLI's exit code and message.
         /// </summary>
-        public static Result Run(Tool tool, IReadOnlyList<string> args, IReadOnlyList<Mesh> sensors,
-                                 IReadOnlyList<Mesh> context = null, RunControl control = null)
+        public static Result Run(Tool tool, IReadOnlyList<string> args, IReadOnlyList<SimulationMesh> sensors,
+                                 IReadOnlyList<SimulationMesh> context = null, RunControl control = null)
         {
             Native.Init();
             var argv = new IntPtr[args == null ? 0 : args.Count];
@@ -255,8 +255,8 @@ namespace Daylight
         /// <see cref="Run"/> on the thread pool. A cancelled <paramref name="token"/> cancels the run (through
         /// <paramref name="control"/>, or a control of its own) and the task ends cancelled.
         /// </summary>
-        public static Task<Result> RunAsync(Tool tool, IReadOnlyList<string> args, IReadOnlyList<Mesh> sensors,
-                                            IReadOnlyList<Mesh> context = null, RunControl control = null,
+        public static Task<Result> RunAsync(Tool tool, IReadOnlyList<string> args, IReadOnlyList<SimulationMesh> sensors,
+                                            IReadOnlyList<SimulationMesh> context = null, RunControl control = null,
                                             CancellationToken token = default(CancellationToken))
         {
             return Task.Run(() =>
@@ -283,8 +283,8 @@ namespace Daylight
             return Native.FromUtf8(Native.dl_usage((int)tool));
         }
 
-        /// <summary>The meshes' pointers, each held (a null Mesh gives NULL, which the core refuses).</summary>
-        static IntPtr[] Hold(IReadOnlyList<Mesh> meshes, List<Handle> held)
+        /// <summary>The meshes' pointers, each held (a null SimulationMesh gives NULL, which the core refuses).</summary>
+        static IntPtr[] Hold(IReadOnlyList<SimulationMesh> meshes, List<Handle> held)
         {
             var p = new IntPtr[meshes == null ? 0 : meshes.Count];
             for (int i = 0; i < p.Length; i++) p[i] = meshes[i] == null ? IntPtr.Zero : Hold(meshes[i].Handle, held);

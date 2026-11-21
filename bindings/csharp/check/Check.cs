@@ -58,25 +58,25 @@ static class Check
         // B. errors before the GPU
         double[] fxyz = { -1, 0, 0, 1, 0, 0, 1, 0, 2, -1, 0, 2 };   // a 2 x 2 m facade facing -y, its foot at z 0
         int[] quad = { 4 }, fidx = { 0, 1, 2, 3 };
-        Mesh facade = Mesh.Create("facade", fxyz, quad, fidx);
+        SimulationMesh facade = SimulationMesh.Create("facade", fxyz, quad, fidx);
         Expect(facade.Names.SequenceEqual(new[] { "facade" }), "the facade's name");
-        ExpectError(() => Mesh.Create("bad", fxyz, quad, new[] { 0, 1, 2, 4 }), 1, "bad: vertex index out of range");
-        ExpectError(() => Mesh.Create("two", fxyz, new[] { 2 }, new[] { 0, 1 }), 1, "fewer than 3 vertices");
-        ExpectError(() => Mesh.Create(null, fxyz, quad, fidx), 1, "name is NULL");
-        ExpectError(() => Mesh.Create("odd", new double[4], quad, fidx), 1, "odd: xyz holds 4 values");
-        ExpectError(() => Mesh.Create("slots", fxyz, quad, fidx, new ushort[2]), 1, "slots: 2 slots for 1 faces");
-        using (Mesh empty = Mesh.Create("empty", null, null, null)) Expect(empty.Names.Count == 0, "a mesh without faces");
-        ExpectError(() => Mesh.Load(Path.Combine(tests, "nosuch.obj")), 2, "cannot open");
-        ExpectError(() => Mesh.Load("x.usd"), 2, "unknown extension");
-        ExpectError(() => Mesh.Load(null), 1, "path is NULL");
+        ExpectError(() => SimulationMesh.Create("bad", fxyz, quad, new[] { 0, 1, 2, 4 }), 1, "bad: vertex index out of range");
+        ExpectError(() => SimulationMesh.Create("two", fxyz, new[] { 2 }, new[] { 0, 1 }), 1, "fewer than 3 vertices");
+        ExpectError(() => SimulationMesh.Create(null, fxyz, quad, fidx), 1, "name is NULL");
+        ExpectError(() => SimulationMesh.Create("odd", new double[4], quad, fidx), 1, "odd: xyz holds 4 values");
+        ExpectError(() => SimulationMesh.Create("slots", fxyz, quad, fidx, new ushort[2]), 1, "slots: 2 slots for 1 faces");
+        using (SimulationMesh empty = SimulationMesh.Create("empty", null, null, null)) Expect(empty.Names.Count == 0, "a mesh without faces");
+        ExpectError(() => SimulationMesh.Load(Path.Combine(tests, "nosuch.obj")), 2, "cannot open");
+        ExpectError(() => SimulationMesh.Load("x.usd"), 2, "unknown extension");
+        ExpectError(() => SimulationMesh.Load(null), 1, "path is NULL");
         // the message names the path as given, in the ANSI code page (one without e-diaeresis throws ArgumentException)
         string ansi = Path.Combine(tests, "nosuch-ë.obj");
-        Exception unread = Thrown<Exception>(() => Mesh.Load(ansi));
+        Exception unread = Thrown<Exception>(() => SimulationMesh.Load(ansi));
         Expect(unread is ArgumentException || unread is DaylightException && unread.Message.Contains(ansi),
                "a Load error names its path: " + unread?.Message);
         ExpectError(() => Core.Run((Tool)7, null, new[] { facade }), 1, "unknown tool");
-        ExpectError(() => Core.Run(Tool.Views, null, new Mesh[] { null }), 1, "NULL mesh handle");
-        ExpectError(() => Core.Run(Tool.Views, null, new Mesh[0]), 1, "no mesh given");
+        ExpectError(() => Core.Run(Tool.Views, null, new SimulationMesh[] { null }), 1, "NULL mesh handle");
+        ExpectError(() => Core.Run(Tool.Views, null, new SimulationMesh[0]), 1, "no mesh given");
         ExpectError(() => Run(Tool.Daylight, facade, "--bogus"), 1, "unknown flag --bogus");
         ExpectError(() => Run(Tool.Views, facade, "x.obj"), 1, "dl_mesh_load");
         ExpectError(() => Run(Tool.Views, facade, "--context", "c.obj"), 1, "--context");
@@ -88,7 +88,7 @@ static class Check
         ExpectError(() => Run(Tool.Daylight, facade, "--epw", Path.Combine(tests, "nosuch.epw")), 2, "nosuch.epw");
 
         // C. the GPU: tests/box.obj (a ground of 4 quads, a floating box) as the CLI's smokes run it
-        Mesh box = Mesh.Load(Path.Combine(tests, "box.obj"));
+        SimulationMesh box = SimulationMesh.Load(Path.Combine(tests, "box.obj"));
         Expect(box.Names.SequenceEqual(new[] { "ground", "box" }), "box.obj's groups: " + string.Join(", ", box.Names));
         string[] sun = { "--lat", "41.98", "--lon", "-87.92", "--tz", "-6", "--quantity", "sunhours",
                          "--time", "06-21T12:00" };
@@ -123,10 +123,10 @@ static class Check
         Expect(r3.SceneReused, "views reuses daylight's opaque scene");
         Expect(SameAsCli(r3, build, "views_smoke.npy"), "views on box.obj != build/views_smoke.npy(.json) (or they are missing)");
 
-        // a disposed Mesh is refused; a reloaded one builds its scene again, with the same values
+        // a disposed SimulationMesh is refused; a reloaded one builds its scene again, with the same values
         box.Dispose();
         Expect(Thrown<ObjectDisposedException>(() => Core.Run(Tool.Daylight, sun, new[] { box })) != null, "a disposed mesh");
-        Mesh box2 = Mesh.Load(Path.Combine(tests, "box.obj"));
+        SimulationMesh box2 = SimulationMesh.Load(Path.Combine(tests, "box.obj"));
         Result r4 = Core.Run(Tool.Daylight, sun, new[] { box2 });
         Expect(!r4.SceneReused && Bytes(r4.Values).SequenceEqual(Bytes(r1.Values)), "a reloaded mesh: built scene, same values");
 
@@ -197,7 +197,7 @@ static class Check
     }
 
     /// <summary>One run over one sensor mesh.</summary>
-    static Result Run(Tool tool, Mesh sensor, params string[] args)
+    static Result Run(Tool tool, SimulationMesh sensor, params string[] args)
     {
         return Core.Run(tool, args, new[] { sensor });
     }
@@ -236,12 +236,12 @@ static class Check
 }
 
 /// <summary>One sensor mesh in a list that cancels the token when the run reads it: past Task.Run's own check.</summary>
-sealed class CancelOnRead : IReadOnlyList<Mesh>
+sealed class CancelOnRead : IReadOnlyList<SimulationMesh>
 {
-    readonly Mesh mesh;
+    readonly SimulationMesh mesh;
     readonly CancellationTokenSource cts;
 
-    public CancelOnRead(Mesh mesh, CancellationTokenSource cts)
+    public CancelOnRead(SimulationMesh mesh, CancellationTokenSource cts)
     {
         this.mesh = mesh;
         this.cts = cts;
@@ -256,9 +256,9 @@ sealed class CancelOnRead : IReadOnlyList<Mesh>
         }
     }
 
-    public Mesh this[int index] { get { return mesh; } }
+    public SimulationMesh this[int index] { get { return mesh; } }
 
-    public IEnumerator<Mesh> GetEnumerator()
+    public IEnumerator<SimulationMesh> GetEnumerator()
     {
         yield return mesh;
     }

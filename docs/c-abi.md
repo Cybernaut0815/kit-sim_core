@@ -105,11 +105,11 @@ dl_mesh_free(box);
 
 ## Examples
 
-[examples/c/example.c](../examples/c/example.c) runs both tools from plain C: `dl_mesh_load` of `tests/box.obj` (meshes
-`ground` and `box`) and a 4 x 3 m facade from arrays (`dl_mesh_create`), a clear-sky year of daylight with a
-`dl_control` (progress), views with `--target box=cube` over the same handles (the resident scene:
-`dl_result_stats[0]` = 1), the means per mesh from the values and the manifest's ranges, a cancelled run and a target
-name the meshes do not resolve. The CMake target `example_c` links `daylight_c.lib` (built when the repo is the
+[examples/c/example.c](../examples/c/example.c) runs both tools from plain C, commented step by step: `dl_mesh_load`
+of `tests/box.obj` (meshes `ground` and `box`) and a 4 x 3 m facade from arrays (`dl_mesh_create`), a clear-sky year
+of daylight with a `dl_control` (progress), the means per mesh from the values and the manifest's ranges (its
+`per_mesh`), views with `--target box=cube` over the same handles (the resident scene: `dl_result_stats[0]` = 1), the
+isovists of `tests/room.obj`, a cancelled run and a target name the meshes do not resolve. The CMake target `example_c` links `daylight_c.lib` (built when the repo is the
 top-level project); ctest `example_c` runs it. From the repo root:
 
 ```

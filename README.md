@@ -97,10 +97,13 @@ with SimulationMesh.load('tests/box.obj') as box:      # the meshes "ground" and
 print(sun.values.shape, view.values.shape, view.stats['scene_reused'])   # (16, 1) (16, 8) True
 ```
 
-The bindings also put results back onto meshes: USD primvars (Python), three.js vertex colours (TypeScript)
-([results-on-meshes.md](docs/results-on-meshes.md)). The C++, C#, Python and TypeScript / JavaScript guides share one
-layout: setup, a daylight and a views example worked through, results, speed, errors / cancel / progress, reference
-(the full API is in the binding's README) and examples. Choosing a way in: [api.md](docs/api.md); every example with
+The mesh type is `SimulationMesh` in every language (C++ `daylight::SimulationMesh`, C# `Daylight.SimulationMesh`,
+Python `daylight.SimulationMesh`, TypeScript `SimulationMesh`): named so it does not clash with the `Mesh` of three.js,
+Rhino, Unity or USD beside it. The bindings also put results back onto meshes: USD primvars (Python), three.js vertex
+colours (TypeScript) ([results-on-meshes.md](docs/results-on-meshes.md)). The C++, C#, Python and TypeScript /
+JavaScript guides share one layout: setup, a daylight and a views example (the key calls; the examples themselves are
+commented step by step), results, speed, errors / cancel / progress, reference (the full API is in the binding's README)
+and examples. Choosing a way in: [api.md](docs/api.md); every example with
 its run command and output: [examples.md](docs/examples.md).
 
 ## Performance

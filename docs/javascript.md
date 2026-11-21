@@ -43,43 +43,21 @@ needs an import map, see the [README](../bindings/ts/README.md)).
 
 ## Daylight
 
-`examples/typescript/native.ts`, in-process: `tests/box.obj` (the meshes `ground`, four 2 m quads at z 0, and `box`,
-a 1 m box floating above the fourth) and a facade from arrays, all sensors (analysed, and blocking each other); a
-clear-sky year in Berlin:
+[examples/typescript/native.ts](../examples/typescript/native.ts), in-process and commented step by step:
+`tests/box.obj` (the meshes `ground`, four 2 m quads at z 0, and `box`, a 1 m box floating above the fourth) and a
+facade from arrays, all sensors (analysed, and blocking each other); a clear-sky year in Berlin (its steps 1 to 3).
+[examples/javascript/native.mjs](../examples/javascript/native.mjs) is the same in plain JavaScript. The key calls:
 
 ```ts
-import { fileURLToPath } from 'node:url';
-import { DaylightError, SimulationMesh, run, type NativeResult } from '../../bindings/ts/src/native.ts';
+import { SimulationMesh, run } from '../../bindings/ts/src/native.ts';   // a package: 'daylight-mesh/native'
 
-// Meshes are copied to the C side once; runs over the same handles in the same roles and order reuse the GPU scene.
-const site = SimulationMesh.load(fileURLToPath(new URL('../../tests/box.obj', import.meta.url))); // OBJ groups: ground, box
-const facade = SimulationMesh.create('facade', // a 4 x 3 m wall at y = 3 facing south (-y), two 1.5 m rows
-  [-2, 3, 0, 2, 3, 0, 2, 3, 1.5, -2, 3, 1.5, 2, 3, 3, -2, 3, 3], // xyz per point: metres, Z up
-  [4, 4], // vertices per face
-  [0, 1, 2, 3, 3, 2, 4, 5]); // 0-based, counter-clockwise seen from the front
+const site = SimulationMesh.load('tests/box.obj');                             // meshes "ground" and "box"
+const facade = SimulationMesh.create('facade', positions, counts, indices);    // from arrays
 const sensors = [site, facade];
-console.log('meshes:', sensors.flatMap((m) => m.names).join(', '));
-
-// The rows of one mesh in one column: the manifest's ranges, one { name, first, count } per mesh in sensor order.
-type Ranges = { meshes: { name: string; first: number; count: number }[] };
-function rows(r: NativeResult, mesh: string, column: string): Float64Array {
-  const { first, count } = (r.manifest as Ranges).meshes.find((m) => m.name === mesh)!;
-  return r.data[r.columns.indexOf(column)].subarray(first, first + count);
-}
-const mean = (v: Float64Array) => v.reduce((a, b) => a + b, 0) / v.length;
-
-// daylight: a clear-sky year in Berlin (no weather file), annual radiation and sun hours per face.
-const args = ['--clear-sky', '--lat', '52.52', '--lon', '13.41', '--quantity', 'radiation,sunhours'];
-let t = performance.now();
-const sun = await run('daylight', args, { sensors },
-  { signal: AbortSignal.timeout(10_000), onProgress: (p) => console.log(`  traced ${Math.round(100 * p)} %`) });
-console.log(`daylight: ${(performance.now() - t).toFixed(0)} ms, scene reused ${sun.stats.sceneReused}`);
-for (const { name } of (sun.manifest as Ranges).meshes) {
-  const kwh = mean(rows(sun, name, 'radiation_front')), hours = mean(rows(sun, name, 'sunhours_front'));
-  console.log(`  ${name.padEnd(6)} ${kwh.toFixed(0)} kWh/m2, ${hours.toFixed(0)} h (mean per face)`);
-}
+const sun = await run('daylight', ['--clear-sky', '--lat', '52.52', '--lon', '13.41', '--quantity', 'radiation,sunhours'],
+  { sensors }, { signal: AbortSignal.timeout(10_000), onProgress: (p) => console.log(`  traced ${Math.round(100 * p)} %`) });
+// sun.data[c] is column sun.columns[c], a value per row; sun.manifest.meshes gives each mesh's rows { name, first, count }
 ```
-
 ```text
 meshes: ground, box, facade
   traced 0 %
@@ -106,43 +84,16 @@ daylight: 436 ms, scene reused false
 
 ### Through `daylight.exe`
 
-`examples/typescript/cli.ts` runs the exes through the process runner. Its meshes are `ObjMesh`es (`{ name, positions,
-indices }`, triangles): two storeys of a facade as sensors, a lake 15 m out and a block's face 40 m out as context.
+[examples/typescript/cli.ts](../examples/typescript/cli.ts), commented step by step, runs the exes through the
+process runner. Its meshes are `ObjMesh`es (`{ name, positions, indices }`, triangles): two storeys of a facade as
+sensors, a lake 15 m out and a block's face 40 m out as context. The key call:
 
 ```ts
-import { fileURLToPath } from 'node:url';
-import { dmeshStems, run, type ObjMesh } from '../../bindings/ts/src/index.ts';
+import { run, type ObjMesh } from '../../bindings/ts/src/index.ts';   // a package: 'daylight-mesh'
 
-const exe = (name: string) => fileURLToPath(new URL(`../../build/RelWithDebInfo/${name}`, import.meta.url));
-// A quad as two triangles (an ObjMesh holds triangles): corners counter-clockwise seen from its front, metres, Z up.
-const quad = (name: string, ...corners: number[][]): ObjMesh =>
-  ({ name, positions: corners.flat(), indices: [0, 1, 2, 0, 2, 3] });
-
-const sensors = [ // two storeys of a 10 m wide facade at y = 0, facing south (-y)
-  quad('facade/floor 0', [0, 0, 0], [10, 0, 0], [10, 0, 3], [0, 0, 3]),
-  quad('facade/floor 1', [0, 0, 3], [10, 0, 3], [10, 0, 6], [0, 0, 6]),
-];
-const context = [
-  quad('site/lake', [-20, -35, 0], [30, -35, 0], [30, -15, 0], [-20, -15, 0]), // 50 x 20 m on the ground, 15 m out
-  quad('site/block', [15, -40, 0], [-5, -40, 0], [-5, -40, 15], [15, -40, 15]), // a block's 20 x 15 m face, 40 m out
-];
-
-// One column's mean per sensor mesh (a storey: two triangle rows), from the manifest's ranges.
-type Result = { data: Float64Array[]; columns: string[]; manifest: unknown };
-type Ranges = { meshes: { name: string; first: number; count: number }[] };
-const means = (r: Result, column: string) => (r.manifest as Ranges).meshes.map(({ first, count }) =>
-  r.data[r.columns.indexOf(column)].subarray(first, first + count).reduce((a, b) => a + b, 0) / count);
-const names = (r: Result) => (r.manifest as Ranges).meshes.map((m) => m.name);
-
-// daylight.exe: a clear-sky year in Berlin. Every call starts the exe, and with it the GPU, again.
-let t = performance.now();
-const sun = await run(exe('daylight.exe'), { sensors, context,
+const sun = await run('build/RelWithDebInfo/daylight.exe', { sensors, context,     // ObjMesh[] each
   args: ['--clear-sky', '--lat', '52.52', '--lon', '13.41', '--quantity', 'radiation,sunhours'] });
-console.log(`daylight.exe: ${(performance.now() - t).toFixed(0)} ms, columns ${sun.columns.join(' ')}`);
-const kwh = means(sun, 'radiation_front'), hours = means(sun, 'sunhours_front');
-names(sun).forEach((n, k) => console.log(`  ${n}: ${kwh[k].toFixed(0)} kWh/m2, ${hours[k].toFixed(0)} h`));
 ```
-
 ```text
 daylight.exe: 772 ms, columns radiation_front sunhours_front
   facade_floor_0: 1573 kWh/m2, 3516 h
@@ -201,20 +152,11 @@ const { data, columns, manifest } = await runRemote(location.origin, {  // the p
 
 ## Views
 
-The same meshes in `examples/typescript/native.ts`, after the daylight run:
+The same meshes in `examples/typescript/native.ts`, after the daylight run (its step 4):
 
 ```ts
-// views: 120 deg about each face's normal; rays ending on the mesh "box" count for the group "cube".
-t = performance.now();
 const view = await run('views', ['--target', 'box=cube'], { sensors }, { signal: AbortSignal.timeout(10_000) });
-console.log(`views: ${(performance.now() - t).toFixed(0)} ms, scene reused ${view.stats.sceneReused}`);
-console.log(`  columns ${view.columns.join(' ')}`);
-const sky = rows(view, 'facade', 'sky_front'), cube = rows(view, 'facade', 'cube_front');
-const distance = rows(view, 'facade', 'distance_front'), nearest = rows(view, 'facade', 'distance_min_front');
-sky.forEach((s, i) => console.log(`  facade row ${i}: sky ${s.toFixed(3)}, cube ${cube[i].toFixed(3)}, ` +
-  `distance ${distance[i].toFixed(1)} m, nearest ${nearest[i].toFixed(2)} m`));
 ```
-
 ```text
 views: 2 ms, scene reused true
   columns sky_front ground_front obstruction_front cube_front distance_front distance_min_front
@@ -242,23 +184,14 @@ views: 2 ms, scene reused true
 
 ### Through `views.exe`: targets by stem
 
-The rest of `examples/typescript/cli.ts`:
+The rest of `examples/typescript/cli.ts` (its step 4): the core names each mesh by the `.dmesh` file stem the runner
+writes, so `--target` takes the lake's stem:
 
 ```ts
-// views.exe: the core's mesh names are the .dmesh file stems run() writes, sensors then context ('site/lake' ->
-// 'site_lake'), so --target names the lake by its stem.
-const stems = dmeshStems([...sensors, ...context].map((m) => m.name));
-console.log(`core names: ${stems.join(', ')}`);
-t = performance.now();
-const view = await run(exe('views.exe'), { sensors, context,
+const stems = dmeshStems([...sensors, ...context].map((m) => m.name));   // 'site/lake' -> 'site_lake'
+const view = await run('build/RelWithDebInfo/views.exe', { sensors, context,
   args: ['--target', `${stems[sensors.length]}=water`, '--reach', 'en17037'] });
-console.log(`views.exe: ${(performance.now() - t).toFixed(0)} ms, columns ${view.columns.join(' ')}`);
-const sky = means(view, 'sky_front'), water = means(view, 'water_front'), distance = means(view, 'distance_front');
-const reach = means(view, 'reach_50_front');
-names(view).forEach((n, k) => console.log(`  ${n}: sky ${sky[k].toFixed(3)}, water ${water[k].toFixed(3)}, ` +
-  `distance ${distance[k].toFixed(1)} m, sees 50 m ${reach[k].toFixed(3)}`));
 ```
-
 ```text
 core names: facade_floor_0, facade_floor_1, site_lake, site_block
 views.exe: 568 ms, columns sky_front ground_front obstruction_front water_front distance_front distance_min_front reach_6_front reach_20_front reach_50_front
@@ -333,20 +266,8 @@ The examples on an RTX 2060, and the same calls repeated:
 
 ## Errors, cancel, progress
 
-The end of `examples/typescript/native.ts` (it prints `error 1: --target tree=green: no mesh of that name`):
-
-```ts
-// Errors: DaylightError, status 1 usage (flags, names the meshes do not resolve) or 2 runtime (files, GPU, cancelled).
-try {
-  await run('views', ['--target', 'tree=green'], { sensors });
-} catch (e) {
-  if (!(e instanceof DaylightError)) throw e;
-  console.log(`error ${e.status}: ${e.message}`);
-}
-site.free(); // now; else when garbage collected
-facade.free();
-```
-
+The end of `examples/typescript/native.ts` (its step 6) catches a `DaylightError` for a target name no mesh has and
+prints `error 1: --target tree=green: no mesh of that name`.
 | | in-process | process runner | server |
 |---|---|---|---|
 | failure | rejects with `DaylightError`: `status` 1 usage (flags, names the meshes do not resolve) or 2 runtime (a file, the GPU, out of memory, `cancelled`), `message` the CLI's | rejects with `Error`: `<exe> failed: <stderr>` | rejects with `Error`: the server's text; a failed job's `status` is 400 usage, 500 runtime, 507 out of memory, 409 cancelled |
@@ -379,6 +300,6 @@ so Node runs them without a build step.
 
 | file | shows | run |
 |---|---|---|
-| [examples/typescript/native.ts](../examples/typescript/native.ts) | in-process: `SimulationMesh.load`, `SimulationMesh.create`, daylight (clear-sky year) and views (a target) on one resident scene, rows per mesh, progress, a timeout, an error | `node examples/typescript/native.ts` (Node >= 22.18) |
+| [examples/typescript/native.ts](../examples/typescript/native.ts) | in-process, commented step by step: `SimulationMesh.load`, `SimulationMesh.create`, daylight (clear-sky year) and views (a target) on one resident scene, rows per mesh, the isovists of `tests/room.obj`, progress, a timeout, an error | `node examples/typescript/native.ts` (Node >= 22.18) |
 | [examples/javascript/native.mjs](../examples/javascript/native.mjs) | the same in plain JavaScript, from `bindings/ts/lib` | `node examples/javascript/native.mjs` (Node >= 20) |
-| [examples/typescript/cli.ts](../examples/typescript/cli.ts) | the process runner: `daylight.exe` and `views.exe` on `ObjMesh`es, `--target` by `dmeshStems`, `--reach en17037` | `node examples/typescript/cli.ts` (Node >= 22.18) |
+| [examples/typescript/cli.ts](../examples/typescript/cli.ts) | the process runner, commented step by step: `daylight.exe` and `views.exe` on `ObjMesh`es, `--target` by `dmeshStems`, `--reach en17037` | `node examples/typescript/cli.ts` (Node >= 22.18) |

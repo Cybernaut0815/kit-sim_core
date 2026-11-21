@@ -64,51 +64,25 @@ for (auto& m : meshes) m.sensor = m.name.rfind("/World/Bldg", 0) == 0;   // prim
 
 ## Daylight
 
-The worked example is [examples/cpp/example.cpp](../examples/cpp/example.cpp): a 10 x 6 m facade facing south in
-1 m quads, the lawn (four 2 m ground quads) and the floating 1 m box of [tests/box.obj](../tests/box.obj) in front of
-it, and a 30 x 9 m block across the street. `grid` makes the quads:
+The worked example is [examples/cpp/example.cpp](../examples/cpp/example.cpp), commented step by step: a 10 x 6 m
+facade facing south in 1 m quads (made by its `grid` function), the lawn (four 2 m ground quads) and the floating 1 m
+box of [tests/box.obj](../tests/box.obj) in front of it, and a 30 x 9 m block across the street. Its steps 1 to 3 build
+the meshes, run a clear-sky year of radiation and sun hours in Berlin and print the mean per mesh. The key calls:
 
 ```cpp
-using V = std::array<double, 3>;
+std::vector<daylight::SimulationMesh> meshes;
+meshes.push_back(grid("facade", {-5, 4, 0}, {10, 0, 0}, {0, 0, 6}, 10, 6));   // a sensor: a row per face
+daylight::read_obj("tests/box.obj", meshes, err);                              // + "ground" and "box"
+meshes.push_back(grid("block", {-15, -14, 0}, {30, 0, 0}, {0, 0, 9}, 10, 3));
+meshes.back().sensor = false;                                                  // context: blocks rays only
 
-// nu x nv quads from corner o along the edges u and v, row by row: points in metres, Z up; each quad wound o, o+u,
-// o+u+v, o+v (right-handed: counter-clockwise seen from the front), so its normal is u x v.
-daylight::SimulationMesh grid(const char* name, V o, V u, V v, int nu, int nv) {
-  daylight::SimulationMesh m{name};   // sensor = true: analysed (a row per face) and blocking
-  for (int j = 0; j <= nv; ++j)
-    for (int i = 0; i <= nu; ++i)
-      for (int a = 0; a < 3; ++a) m.points.push_back(o[a] + u[a] * i / nu + v[a] * j / nv);
-  for (int j = 0; j < nv; ++j)
-    for (int i = 0; i < nu; ++i) {
-      const int p = j * (nu + 1) + i;
-      m.counts.push_back(4);
-      m.indices.insert(m.indices.end(), {p, p + 1, p + nu + 2, p + nu + 1});
-    }
-  return m;
-}
-```
-
-The meshes, then a clear-sky year of radiation and sun hours in Berlin:
-
-```cpp
-std::vector<daylight::SimulationMesh> meshes = {grid("facade", {-5, 4, 0}, {10, 0, 0}, {0, 0, 6}, 10, 6)};   // y = 4, faces -y
-if (!daylight::read_obj(std::string(argc > 1 ? argv[1] : "tests") + "/box.obj", meshes, err)) return fail(err);
-meshes.push_back(grid("block", {-15, -14, 0}, {30, 0, 0}, {0, 0, 9}, 10, 3));   // across the street
-meshes.back().sensor = false;   // context: blocks rays, no rows; facade, ground and box (sensor = true) get rows
-
-// daylight: a clear-sky year in Berlin (lat, lon, tz, Linke turbidity, altitude), as the CLI's --clear-sky
-daylight::Weather w;
-daylight::Options opt;
-opt.quantities = {daylight::Quantity::Radiation, daylight::Quantity::SunHours};
-opt.sceneKey = "site";   // these meshes' identity: a later run under the same key reuses their GPU scene
-daylight::Result r;
-if (!daylight::clear_sky_weather(52.52, 13.41, 1, 3, 0, w, err)) return fail(err);
-auto t0 = Clock::now();
-if (!daylight::run(meshes, &w, opt, r, err)) return fail(err);
-std::printf("daylight, clear-sky year: scene reused %s, %.0f ms\n", r.sceneReused ? "true" : "false", ms(t0));
-for (size_t k = 0; k < r.ranges.size(); ++k)
-  std::printf("  %-6s %2zu faces  %4.0f kWh/m2  %4.0f sun hours\n", r.ranges[k].first.c_str(), r.ranges[k].second,
-              mean(r, k, "radiation_front"), mean(r, k, "sunhours_front"));
+daylight::Weather weather;
+daylight::clear_sky_weather(52.52, 13.41, 1, 3, 0, weather, err);   // lat, lon, tz, Linke turbidity, altitude
+daylight::Options options;
+options.quantities = {daylight::Quantity::Radiation, daylight::Quantity::SunHours};
+options.sceneKey = "site";                                           // keep the GPU scene for the views run
+daylight::Result year;
+if (!daylight::run(meshes, &weather, options, year, err)) return fail(err);
 ```
 
 ```
@@ -156,28 +130,17 @@ glass and porous slots; views: rays pass glass slots, [views.md](views.md#glass-
 ## Views
 
 The same meshes, from each face 3,600 rays over the default field (120 deg wide about the normal, from 70 deg down to
-50 deg up, 2 deg cells); the four ground quads of `box.obj` are a target, group `lawn`:
+50 deg up, 2 deg cells); the four ground quads of `box.obj` are a target, group `lawn` (the example's step 4):
 
 ```cpp
-// views: 120 deg about each normal (the default field); rays ending on mesh "ground" count for the group "lawn"
-daylight::views::Options vo;
-vo.targets = {{"ground", "lawn"}};
-vo.reach = {6, 20, 50};             // --reach en17037
-vo.sceneKey = "site";
-std::atomic<double> progress{0};    // after each trace chunk the share of sensors done, for another thread to show
-std::atomic<bool> cancel{false};    // another thread sets it: the run stops at its next check and fails "cancelled"
-vo.progress = &progress;
-vo.cancel = &cancel;
-daylight::Result v;
-t0 = Clock::now();
-if (!daylight::views::run(meshes, vo, v, err)) return fail(err);
-std::printf("views, 120 deg about each normal: scene reused %s, %.0f ms, progress %.0f %%\n",
-            v.sceneReused ? "true" : "false", ms(t0), 100 * progress.load());
-for (size_t k = 0; k < v.ranges.size(); ++k)
-  std::printf("  %-6s %2zu faces  sky %.2f  lawn %.2f  distance %3.0f m  sees 6 / 20 / 50 m: %.2f %.2f %.2f\n",
-              v.ranges[k].first.c_str(), v.ranges[k].second, mean(v, k, "sky_front"), mean(v, k, "lawn_front"),
-              mean(v, k, "distance_front"), mean(v, k, "reach_6_front"), mean(v, k, "reach_20_front"),
-              mean(v, k, "reach_50_front"));
+daylight::views::Options view;
+view.targets = {{"ground", "lawn"}};   // rays ending on the mesh "ground" count for the group "lawn"
+view.reach = {6, 20, 50};              // --reach en17037
+view.sceneKey = "site";                // daylight's scene, reused
+view.progress = &progress;             // std::atomic<double>, another thread may read it
+view.cancel = &cancel;                 // std::atomic<bool>, another thread may set it
+daylight::Result seen;
+if (!daylight::views::run(meshes, view, seen, err)) return fail(err);
 ```
 
 ```
@@ -225,27 +188,15 @@ as such (built under other names, or the name now on another `SimulationMesh`), 
 |---|---|
 | `values` | N x C doubles, row-major: N rows = the elements of the sensor meshes in input order (faces in `counts` order, or points with `onVertices`), C = `columns.size()` |
 | `f32` | with `f32Columns`: C x N float32, column-major, and `values` stays empty (half the memory) |
-| `columns` | daylight: `<quantity>_<side>` in `quantities` order, sides inner (`radiation_front`, `sunhours_back`); views: the shares `sky`, `ground`, `obstruction` and one per group, then `distance`, `distance_min`, `<g>_distance`, `<g>_distance_min`, `reach_<D>`, each `_<side>` |
+| `columns` | daylight: `<quantity>_<side>` in `quantities` order, sides inner (`radiation_front`, `sunhours_back`); views: the shares `sky`, `ground`, `obstruction` and one per group, then `glazing`, `volume` or `area`, `distance`, `distance_min`, `<g>_distance`, `<g>_distance_min`, `reach_<D>` (as `distance` and the flags select), each `_<side>` |
 | `ranges` | (mesh name, rows) per sensor mesh in input order: the manifest's `meshes` |
 | `durationHours`, `nSky`, `nSun` | daylight: the hours evaluated and the directions traced; views: 0 |
 | `sceneReused` | a resident scene served the run |
 | `stats` | `RunStats`: milliseconds of prep, sky, build, trace, reduce, bounce; rays (views: sensors x rays per sensor), launches, GAS bytes |
 
-Rows per mesh: mesh k's rows follow those of the meshes before it, as in the example's `mean`:
-
-```cpp
-// The mean of column `col` over the rows of sensor mesh k. Result::ranges holds (name, rows) per sensor mesh in input
-// order: mesh k's rows follow those of meshes 0..k-1 (the manifest's "first").
-double mean(const daylight::Result& r, size_t k, const std::string& col) {
-  size_t first = 0;
-  for (size_t i = 0; i < k; ++i) first += r.ranges[i].second;
-  const size_t C = r.columns.size();
-  const size_t c = static_cast<size_t>(std::find(r.columns.begin(), r.columns.end(), col) - r.columns.begin());
-  double sum = 0;
-  for (size_t e = first; e < first + r.ranges[k].second; ++e) sum += r.values[e * C + c];   // row-major N x C
-  return sum / static_cast<double>(r.ranges[k].second);
-}
-```
+Rows per mesh: mesh k's rows follow those of the meshes before it, so its first row is the sum of the row counts in
+`ranges[0 .. k-1]` and value (row, column c) is `values[row * columns.size() + c]`. The example's `mean` (step 3)
+averages a column over one mesh that way.
 
 | columns | unit |
 |---|---|
@@ -255,6 +206,8 @@ double mean(const daylight::Result& r, size_t k, const std::string& col) {
 | `sunhours` | hours (an hour behind a surface transmitting 0.6 counts 0.6) |
 | `sky`, `ground`, `obstruction`, `<group>` | shares of the field's solid angle, summing to 1 |
 | `distance`, `distance_min`, `<g>_distance`, `<g>_distance_min` | metres, clamped to [0.1, `farDist`] |
+| `volume`, `area` | the isovist: m3 (all around) or m2 (a flat field), each ray at most `farDist` long |
+| `glazing` | the share of the field seen through glass (`transmission`) |
 | `reach_<D>` | the share of the field that sees at least D metres |
 
 NaN: daylight never gives one (a degenerate face gets 0). Views gives `distance` and `distance_min` NaN when no ray of
@@ -299,16 +252,7 @@ missing place (no weather and no `lat`, `lon`, `tz`), on the GPU (CUDA, OptiX, V
   `cancel`. One run at a time per process, both tools together (one GPU): serialise runs from several threads (the C
   ABI holds a lock for this).
 
-The end of the example, a cancelled run and a target name the meshes do not resolve:
-
-```cpp
-// Failures return false with err: here a cancelled run, then a target name the meshes do not resolve
-cancel = true;
-if (!daylight::views::run(meshes, vo, v, err)) std::printf("cancelled run: %s\n", err.c_str());
-cancel = false;
-vo.targets = {{"tree", "green"}};
-if (!daylight::views::run(meshes, vo, v, err)) std::printf("bad target: %s\n", err.c_str());
-```
+The example's step 6 runs once with `cancel` set and once with a target name the meshes do not resolve:
 
 ```
 cancelled run: cancelled
@@ -333,7 +277,7 @@ Every example, in every language, and `examples/run.ps1`, which runs them all: [
 
 | file | | run (repo root) |
 |---|---|---|
-| [examples/cpp/example.cpp](../examples/cpp/example.cpp) | this page: meshes in memory and from `read_obj`, a clear-sky year, views with a target, means per mesh, the resident scene, progress, cancel, errors | `build\RelWithDebInfo\example_cpp.exe tests` |
+| [examples/cpp/example.cpp](../examples/cpp/example.cpp) | this page, commented step by step: meshes in memory and from `read_obj`, a clear-sky year, means per mesh, views with a target on the resident scene, isovists in a room, progress, cancel, errors | `build\RelWithDebInfo\example_cpp.exe tests` |
 | [examples/c/example.c](../examples/c/example.c) | both tools from plain C through `daylight_c.dll` ([c-abi.md](c-abi.md#examples)) | `build\RelWithDebInfo\example_c.exe tests` |
 
 Both are targets of the repo's CMake (`example_cpp` links `daylightcore`, `example_c` links `daylight_c`), built by

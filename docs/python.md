@@ -38,57 +38,23 @@ missing DLL raises `FileNotFoundError`, one of another C ABI version `OSError`.
 
 ## Daylight
 
-`examples/python/inprocess.py`: a 10 x 6 m facade at y = 4 m facing south (-Y), 60 quads of 1 m made with numpy;
-in front of it `tests/box.obj` (group `ground`: four 2 m quads at z 0; group `box`: a 1 m box floating above one of
-them); across the street, 18 m south, a 30 x 9 m wall that only blocks. Berlin, a clear-sky year (no weather file),
-radiation and sun hours.
+[examples/python/inprocess.py](../examples/python/inprocess.py), commented step by step: a 10 x 6 m facade at y = 4 m
+facing south (-Y), 60 quads of 1 m made with numpy (its `wall` function); in front of it `tests/box.obj` (group
+`ground`: four 2 m quads at z 0; group `box`: a 1 m box floating above one of them); across the street, 18 m south, a
+30 x 9 m wall that only blocks. Berlin, a clear-sky year (no weather file), radiation and sun hours. Its steps 1 to 3,
+the key lines:
 
 ```python
-import time
-from concurrent.futures import ThreadPoolExecutor, wait
-from pathlib import Path
-
-import numpy as np
 from daylight import SimulationMesh, native
 
-BOX = Path(__file__).resolve().parents[2] / 'tests' / 'box.obj'      # groups "ground" (4 quads at z 0) and "box"
-DAYLIGHT = ['--clear-sky', '--lat', '52.52', '--lon', '13.41', '--quantity', 'radiation,sunhours']     # Berlin
+DAYLIGHT = ['--clear-sky', '--lat', '52.52', '--lon', '13.41', '--quantity', 'radiation,sunhours']   # Berlin
+with SimulationMesh('facade', *wall(10, 6, 4, 1)) as facade, \
+        SimulationMesh.load('tests/box.obj') as box, SimulationMesh('block', *wall(30, 9, -14, 3)) as block:
+    r = native.run('daylight', DAYLIGHT, [facade, box], [block])      # sensors, then context (blocks only)
 ```
 
-A mesh from arrays: points `[N, 3]` (world metres, Z up), the vertex count of each face (>= 3) and the 0-based
-indices, faces wound counter-clockwise seen from the side they face (right-handed):
-
-```python
-def wall(width, height, y, cell):
-    """A wall at y facing south (-Y), centred on x 0, foot at z 0, in cell x cell quads from the bottom row up:
-    points [N, 3] (metres, Z up), counts, 0-based indices (right-handed winding: counter-clockwise from the front)."""
-    nx, nz = round(width / cell), round(height / cell)
-    x, z = np.meshgrid(np.linspace(-width / 2, width / 2, nx + 1), np.linspace(0, height, nz + 1))
-    P = np.column_stack([x.ravel(), np.full(x.size, y), z.ravel()])
-    k = (np.arange(nz)[:, None] * (nx + 1) + np.arange(nx)).ravel()          # each quad's lower left point
-    return P, np.full(nx * nz, 4), np.column_stack([k, k + 1, k + nx + 2, k + nx + 1]).ravel()
-```
-
-The run, on a worker thread so that this thread can read its progress ([below](#errors-cancel-progress)); on the
-calling thread it is `r = native.run('daylight', DAYLIGHT, sensors, context)`:
-
-```python
-with SimulationMesh('facade', *wall(10, 6, 4, 1)) as facade, SimulationMesh.load(BOX) as box, SimulationMesh('block', *wall(30, 9, -14, 3)) as block:
-    sensors, context = [facade, box], [block]                  # facade, ground, box analysed; the block only blocks
-    t0 = time.perf_counter()
-    with native.Control() as ctl, ThreadPoolExecutor(1) as pool:
-        job = pool.submit(native.run, 'daylight', DAYLIGHT, sensors, context, ctl)    # ctl.cancel() would stop it
-        seen = [0.0]
-        while wait([job], timeout=0.02).not_done:     # this thread stays free while the GPU works (a UI redraws)
-            seen.append(ctl.progress)
-        r = job.result()                              # a failed run raises native.DaylightError (.status 1 or 2)
-        seen.append(ctl.progress)                     # 1 once the run succeeded
-    progress = ' -> '.join(f'{p:.0%}' for p in dict.fromkeys(seen))
-    print(f"daylight, clear-sky year: scene_reused {r.stats['scene_reused']}, "
-          f"{1000 * (time.perf_counter() - t0):.0f} ms, progress {progress}")
-    for name, n, a in per_mesh(r):
-        print(f"  {name:6} {n:2} faces  {a['radiation_front']:4.0f} kWh/m2  {a['sunhours_front']:4.0f} sun hours")
-```
+The example runs it on a worker thread with a `native.Control`, so that its own thread reads the progress
+([below](#errors-cancel-progress)).
 
 - `SimulationMesh(name, points, counts, indices, slots=None)`: one mesh, numpy arrays or lists, copied into the DLL once.
   `SimulationMesh.load(path)`: every `o`/`g` group of an `.obj` (here `ground` and `box`, in file order) or one `.dmesh`.
@@ -114,7 +80,7 @@ of it the GPU start of the process ([Speed](#speed)).
 
 ### Through `daylight.exe`
 
-`examples/python/process.py` runs the scene through the CLIs (the same `wall` and `DAYLIGHT`; its `VIEWS` counts the
+[examples/python/process.py](../examples/python/process.py) runs the scene through the CLIs (the same `wall` and `DAYLIGHT`; its `VIEWS` counts the
 lawn as the group `green`, [below](#through-viewsexe-names-are-file-stems)), with a 10 x 4 m numpy quad `lawn` in place
 of `tests/box.obj`. `run_meshes(sensors, context=(), **kw)` takes `(name, points, counts,
 indices)` tuples, or `(points, counts, indices)` triples, writes each as a `.dmesh` file to a temporary folder, runs
@@ -163,17 +129,7 @@ The same meshes in the same roles and order as the daylight run, so views reuses
 
 ```python
 VIEWS = ['--fov', '120', '--target', 'ground=lawn', '--reach', 'en17037']     # mesh "ground" counts as group "lawn"
-```
-
-```python
-    t0 = time.perf_counter()
-    v = native.run('views', VIEWS, sensors, context)           # the same meshes in the same roles: the same scene
-    print(f"views, 120 deg about each normal: scene_reused {v.stats['scene_reused']}, "
-          f"{1000 * (time.perf_counter() - t0):.0f} ms")
-    for name, n, a in per_mesh(v):
-        print(f"  {name:6} {n:2} faces  sky {a['sky_front']:.2f}  lawn {a['lawn_front']:.2f}  distance "
-              f"{a['distance_front']:3.0f} m  sees 6 / 20 / 50 m: {a['reach_6_front']:.2f} {a['reach_20_front']:.2f} "
-              f"{a['reach_50_front']:.2f}")
+v = native.run('views', VIEWS, sensors, context)           # the same meshes in the same roles: the same scene
 ```
 
 - `--fov 120` is the default field written out: 120 deg wide about each face's normal, 70 deg down to 50 deg up,
@@ -201,7 +157,7 @@ horizontal rays only (`--fov 360,0,0`). The example ends with both, in tests/roo
 ([views.md](views.md#isovist)):
 
 ```python
-with SimulationMesh.load(BOX.parent / 'room_grid.obj') as grid, SimulationMesh.load(BOX.parent / 'room.obj') as room:   # room, window, tree
+with SimulationMesh.load(TESTS / 'room_grid.obj') as grid, SimulationMesh.load(TESTS / 'room.obj') as room:   # room, window, tree
     eye = ['--offset', '0.4', '--no-occlude', 'grid']                  # the grid is measured, not seen
     vol = native.run('views', ['--fov', '360,-90,90', *eye], grid, context=room)
     area = native.run('views', ['--fov', '360,0,0', *eye], grid, context=room)
@@ -247,22 +203,13 @@ uv run python -m daylight ../cpp/box.usda --sensors /World -o out --tool views -
   `values[first:first + count]` is that mesh's face (or point) attribute:
 
 ```python
-def per_mesh(r):
-    """(name, faces, {column: mean}) per sensor mesh: its rows are first .. first + count of the manifest's range."""
-    for m in r.manifest['meshes']:
-        rows = r.values[m['first']:m['first'] + m['count']]
-        yield m['name'], m['count'], dict(zip(r.manifest['columns'], rows.mean(axis=0)))
+for m in r.manifest['meshes']:
+    rows = r.values[m['first']:m['first'] + m['count']]                   # this mesh's rows
+    means = dict(zip(r.manifest['columns'], rows.mean(axis=0)))           # {column: mean over its faces}
 ```
 
-`process.py` does the same by name and then averages the facade per row of 10 quads:
-
-```python
-def facade_rows(values, manifest):
-    """{column: 6 means}: the facade's rows (its manifest range) averaged per 1 m row of 10 quads, bottom first."""
-    m = next(m for m in manifest['meshes'] if m['name'] == 'facade')        # the name = the .dmesh file stem
-    rows = values[m['first']:m['first'] + m['count']]
-    return dict(zip(manifest['columns'], rows.reshape(6, 10, -1).mean(axis=1).T))
-```
+The example's `per_mesh` does this; `process.py`'s `facade_rows` finds the facade by name and averages it per row of
+10 quads.
 
 | tool | columns | unit |
 |---|---|---|
@@ -376,5 +323,5 @@ Run from `bindings/python` after the build and `uv sync`; each takes 2-3 s on th
 
 | file | shows | run |
 |---|---|---|
-| [examples/python/inprocess.py](../examples/python/inprocess.py) | `daylight.native`: meshes from numpy and from an OBJ, daylight on a worker thread with its progress, views on the resident scene, means per mesh | `uv run python ../../examples/python/inprocess.py` |
-| [examples/python/process.py](../examples/python/process.py) | `run_meshes` with named meshes for `daylight.exe` and `views.exe`, means per row of the facade; the USD one-liners in its docstring | `uv run python ../../examples/python/process.py` |
+| [examples/python/inprocess.py](../examples/python/inprocess.py) | commented step by step: `daylight.native`, meshes from numpy and from an OBJ, daylight on a worker thread with its progress, views on the resident scene, the isovists of `tests/room.obj`, means per mesh | `uv run python ../../examples/python/inprocess.py` |
+| [examples/python/process.py](../examples/python/process.py) | commented step by step: `run_meshes` with named meshes for `daylight.exe` and `views.exe`, means per row of the facade; the USD one-liners in its docstring | `uv run python ../../examples/python/process.py` |

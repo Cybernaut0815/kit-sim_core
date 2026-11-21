@@ -86,23 +86,15 @@ Only .NET 9 and .NET Framework 4.8 run the binding's check; Rhino, Grasshopper a
 
 ## Daylight
 
-[examples/csharp/Program.cs](../examples/csharp/Program.cs) loads `tests/box.obj` (a ground of four 2 m quads at z 0,
-a 1 m box floating 0.5 m above the fourth), makes a facade from arrays and runs a clear-sky year on all three meshes:
+[examples/csharp/Program.cs](../examples/csharp/Program.cs), commented step by step, loads `tests/box.obj` (a ground
+of four 2 m quads at z 0, a 1 m box floating 0.5 m above the fourth), makes a facade from arrays and runs a clear-sky
+year on all three meshes (its steps 1 to 3). The key calls:
 
 ```csharp
-    // Sensor meshes (analysed, and blocking): box.obj's ground (4 quads) and box (12 triangles), and a facade of two
-    // 2 x 1 m panels at y = 3 facing south (-y) to the box: xyz (metres, Z up), vertices per face, 0-based indices.
-    using SimulationMesh model = SimulationMesh.Load(Path.Combine(repo, "tests", "box.obj"));
-    using SimulationMesh facade = SimulationMesh.Create("facade", new double[] { 0, 3, 0, 2, 3, 0, 2, 3, 1, 0, 3, 1, 2, 3, 2, 0, 3, 2 },
-                                    new[] { 4, 4 }, new[] { 0, 1, 2, 3, 3, 2, 4, 5 });
-    SimulationMesh[] sensors = { model, facade };
-
-    // daylight: a clear-sky year in Berlin (no weather file), kWh/m2 per face. The first run starts the GPU.
-    var clock = Stopwatch.StartNew();
-    Result year = Core.Run(Tool.Daylight, new[] { "--clear-sky", "--lat", "52.52", "--lon", "13.41" }, sensors);
-    Console.WriteLine($"daylight: {clock.ElapsedMilliseconds} ms, scene reused {year.SceneReused}");
-    foreach (MeshRange m in year.Meshes)
-        Console.WriteLine($"  {m.Name,-6} {m.Count,2} faces  radiation {Mean(year, "radiation_front", m),6:F1} kWh/m2");
+using SimulationMesh model = SimulationMesh.Load("tests/box.obj");                      // meshes "ground", "box"
+using SimulationMesh facade = SimulationMesh.Create("facade", xyz, counts, indices);    // from arrays
+SimulationMesh[] sensors = { model, facade };
+Result year = Core.Run(Tool.Daylight, new[] { "--clear-sky", "--lat", "52.52", "--lon", "13.41" }, sensors);
 ```
 
 ```
@@ -133,19 +125,10 @@ daylight: 421 ms, scene reused False
 
 ## Views
 
-The same call with `Tool.Views` and the views CLI's flags, on the same meshes:
+The same call with `Tool.Views` and the views CLI's flags, on the same meshes (the example's step 4):
 
 ```csharp
-    // views: the shares of each face's field (120 deg about its normal) that end on sky, ground, obstruction or the
-    // group "block" (rays ending on the mesh "box"), the log-mean distance and the shares that see 6, 20 and 50 m.
-    // The same meshes in the same roles: the resident scene serves it.
-    clock.Restart();
-    Result view = Core.Run(Tool.Views, new[] { "--target", "box=block", "--reach", "en17037" }, sensors);
-    Console.WriteLine($"views: {clock.ElapsedMilliseconds} ms, scene reused {view.SceneReused}");
-    foreach (MeshRange m in view.Meshes)
-        Console.WriteLine($"  {m.Name,-6} {m.Count,2} faces  sky {Mean(view, "sky_front", m):F2}  block " +
-                          $"{Mean(view, "block_front", m):F2}  distance {Mean(view, "distance_front", m),5:F1} m  " +
-                          $"sees 20 m {Mean(view, "reach_20_front", m):F2}");
+Result view = Core.Run(Tool.Views, new[] { "--target", "box=block", "--reach", "en17037" }, sensors);
 ```
 
 ```
@@ -196,14 +179,9 @@ views: 1 ms, scene reused True
 
 **Rows per mesh.** Rows follow the sensors in the order given, each handle's meshes in order (an OBJ's groups as in
 the file), each mesh's faces (or points) in its own order; nothing is reordered or dropped. Here `ground` is rows 0-3,
-`box` 4-15 and `facade` 16-17. A quad is one row, its value at its centroid. The example's mean over a mesh (a plain
-mean of its faces: weight by face area where they differ in size):
-
-```csharp
-// One column's mean over one mesh's rows: Count rows from First (the manifest's range).
-static double Mean(Result r, string column, MeshRange m) =>
-    r.Column(column).Skip((int)m.First).Take((int)m.Count).Average();
-```
+`box` 4-15 and `facade` 16-17. A quad is one row, its value at its centroid. The example's `Mean` (the last lines of
+Program.cs) averages a mesh's rows: `r.Column(column).Skip(First).Take(Count).Average()`, a plain mean of its faces
+(weight by face area where they differ in size).
 
 **Columns** are `<name>_<side>`, sides inner (`--sides both`: `_front` and `_back`). daylight: one per `--quantity`, in
 its order. views: the shares `sky`, `ground`, `obstruction` and one per target group (in order of first appearance in
@@ -249,17 +227,14 @@ process at a time, a `Run` waits for the one before it.
 
 ## Errors, cancel, progress
 
+The example's step 6 runs the sun hours of 21 June in the background:
+
 ```csharp
-    // In the background: the token cancels the run (a timeout here, a Cancel button in an app), the control reports
-    // progress meanwhile. Sun hours need no weather, only the site and its clock (--tz).
-    string[] june21 = { "--quantity", "sunhours", "--lat", "52.52", "--lon", "13.41", "--tz", "1",
-                        "--from", "06-21T00:00", "--to", "06-22T00:00", "--step", "10" };
-    using var cancel = new CancellationTokenSource(TimeSpan.FromSeconds(30));
-    using var control = new RunControl();
-    clock.Restart();
-    Task<Result> run = Core.RunAsync(Tool.Daylight, june21, sensors, control: control, token: cancel.Token);
-    while (await Task.WhenAny(run, Task.Delay(100)) != run) Console.WriteLine($"  {control.Progress:P0} traced");
-    Result sun = await run;
+using var cancel = new CancellationTokenSource(TimeSpan.FromSeconds(30));   // in an app: a Cancel button
+using var control = new RunControl();
+Task<Result> run = Core.RunAsync(Tool.Daylight, june21, sensors, control: control, token: cancel.Token);
+while (await Task.WhenAny(run, Task.Delay(100)) != run) Console.WriteLine($"  {control.Progress:P0} traced");
+Result sun = await run;
 ```
 
 - `Core.Run` blocks its thread; `Core.RunAsync` runs it on the thread pool, for a UI that has to stay responsive.
@@ -270,18 +245,8 @@ process at a time, a `Run` waits for the one before it.
 - `RunControl.Progress` is the share of sensors traced, 0..1, after each trace chunk, and 1 once the run succeeded. Poll
   it (no callbacks cross the C ABI). A run as small as the example's ends before the first 100 ms tick.
 
-```csharp
-catch (DaylightException e)   // Status: the CLI's exit code, 1 bad flags or arrays, 2 the run failed (a file, the GPU)
-{
-    Console.Error.WriteLine($"daylight error {e.Status}: {e.Message}");
-    return e.Status;
-}
-catch (OperationCanceledException)   // the token cancelled RunAsync: its task ends cancelled
-{
-    Console.Error.WriteLine("cancelled");
-    return 2;
-}
-```
+Errors are exceptions; the example catches `DaylightException` (its `Status` is the CLI's exit code) and
+`OperationCanceledException` at its end (step 7):
 
 | exception | when |
 |---|---|
@@ -316,7 +281,7 @@ Run from the repo root after the core's build; `dotnet run` builds `Daylight.dll
 
 | file | shows | run |
 |---|---|---|
-| [examples/csharp/Program.cs](../examples/csharp/Program.cs) | `tests/box.obj` and a facade from arrays: a clear-sky year (daylight), the views with the box as a target and `--reach en17037` on the resident scene, sun hours on 21 June through `RunAsync` with a token and progress; means per mesh from the manifest ranges | `dotnet run --project examples/csharp` |
+| [examples/csharp/Program.cs](../examples/csharp/Program.cs) | commented step by step: `tests/box.obj` and a facade from arrays, a clear-sky year (daylight), the views with the box as a target and `--reach en17037` on the resident scene, the isovists of `tests/room.obj`, sun hours on 21 June through `RunAsync` with a token and progress; means per mesh from the manifest ranges | `dotnet run --project examples/csharp` |
 | [examples/csharp/Example.csproj](../examples/csharp/Example.csproj) | net9.0 console, x64, `ProjectReference` to `bindings/csharp/Daylight.csproj` | |
 
 `DAYLIGHT_DLL` points it at another `daylight_c.dll`. Output on an RTX 2060 (times vary):
@@ -330,6 +295,7 @@ views: 1 ms, scene reused True
   ground  4 faces  sky 0.78  block 0.18  distance 524.4 m  sees 20 m 0.78
   box    12 faces  sky 0.44  block 0.00  distance 185.7 m  sees 20 m 0.45
   facade  2 faces  sky 0.40  block 0.10  distance  28.6 m  sees 20 m 0.42
+isovists in the room: volume 92.8 m3 all around, area 32.1 m2 at eye height
 sun hours, 21 June: 2 ms, scene reused True, progress 100 %
   ground  4 faces  14.1 h
   box    12 faces   8.3 h

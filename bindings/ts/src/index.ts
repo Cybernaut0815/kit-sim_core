@@ -48,16 +48,18 @@ export function toObj(meshes: ObjMesh[]): string {
 
 /**
  * One mesh -> `.dmesh` bytes (little-endian): "DLM1", uint32 flags, uint64 nPoints/nFaces/nIndices,
- * float64 xyz[3*nPoints], int32 counts[nFaces] (all 3), int32 indices[nIndices], then with `slots` (flags 1, else 0)
- * uint16 slot[nFaces]. Mesh name = file stem. With `matrix` the positions are local (three.js, Y-up) and take fromThree's
- * conversion (world by the column-major matrix, times `scale`, Z-up, mirrored winding reversed): the same bytes as
- * toDmesh(fromThree(...)), without the Float64 copy. `indices` absent: a triangle soup.
+ * float64 xyz[3*nPoints], int32 counts[nFaces] (all 3 without `counts`), int32 indices[nIndices], then with `slots`
+ * (flags 1, else 0) uint16 slot[nFaces]. Mesh name = file stem. With `matrix` the positions are local (three.js, Y-up)
+ * and take fromThree's conversion (world by the column-major matrix, times `scale`, Z-up, mirrored winding reversed): the
+ * same bytes as toDmesh(fromThree(...)), without the Float64 copy. `indices` absent: a triangle soup. `counts`: the
+ * corners of each face (3 or more, summing to the indices), so quads and n-gons reach the core as the faces they are: one
+ * receiver per face, and per-vertex receivers that follow the points the faces share; `slots` then holds one per face.
  */
-export function toDmesh(mesh: { name?: string; positions: ArrayLike<number>; indices?: ArrayLike<number> | null; slots?: Uint16Array },
+export function toDmesh(mesh: { name?: string; positions: ArrayLike<number>; indices?: ArrayLike<number> | null; counts?: ArrayLike<number> | null; slots?: Uint16Array },
   opts: { matrix?: ArrayLike<number>; scale?: number } = {}): Uint8Array<ArrayBuffer> {
-  const P = mesh.positions, I = mesh.indices, N = P.length / 3, M = I ? I.length : N, F = M / 3, S = mesh.slots, name = mesh.name ?? 'mesh';
+  const P = mesh.positions, I = mesh.indices, C = mesh.counts, N = P.length / 3, M = I ? I.length : N, F = C ? C.length : M / 3, S = mesh.slots, name = mesh.name ?? 'mesh';
   if (!Number.isInteger(N) || !Number.isInteger(F)) throw new Error(`${name}: positions must be xyz triples, indices triangle triples`);
-  if (S && S.length !== F) throw new Error(`${name}: slots must hold one value per triangle (${F}), not ${S.length}`);
+  if (S && S.length !== F) throw new Error(`${name}: slots must hold one value per ${C ? 'face' : 'triangle'} (${F}), not ${S.length}`);
   const buf = new ArrayBuffer(32 + 24 * N + 4 * F + 4 * M + (S ? 2 * F : 0));
   const dv = new DataView(buf);
   new Uint8Array(buf, 0, 4).set([0x44, 0x4c, 0x4d, 0x31]); // "DLM1"
@@ -68,14 +70,23 @@ export function toDmesh(mesh: { name?: string; positions: ArrayLike<number>; ind
   const xyz = new Float64Array(buf, 32, 3 * N);
   if (opts.matrix) place(P, opts.matrix, opts.scale ?? 1, xyz);
   else xyz.set(P);
-  new Int32Array(buf, 32 + 24 * N, F).fill(3);
+  const cnt = new Int32Array(buf, 32 + 24 * N, F);
+  if (C) {
+    let sum = 0;
+    for (let f = 0; f < F; f++) {
+      if (!(Number.isInteger(C[f]) && C[f] >= 3)) throw new Error(`${name}: face ${f} has ${C[f]} corners, a face needs 3 or more`);
+      sum += cnt[f] = C[f];
+    }
+    if (sum !== M) throw new Error(`${name}: counts name ${sum} corners, indices hold ${M}`);
+  } else cnt.fill(3);
   const idx = new Int32Array(buf, 32 + 24 * N + 4 * F, M);
   for (let i = 0; i < M; i++) {
     const v = I ? I[i] : i;
-    if (!(Number.isInteger(v) && v >= 0 && v < N)) throw new Error(`${name}: index out of range in face ${Math.floor(i / 3)}`);
+    if (!(Number.isInteger(v) && v >= 0 && v < N)) throw new Error(`${name}: index out of range in ${C ? `corner ${i}` : `face ${Math.floor(i / 3)}`}`);
     idx[i] = v;
   }
-  if (opts.matrix && mirrored(opts.matrix)) for (let i = 0; i < M; i += 3) { const t = idx[i + 1]; idx[i + 1] = idx[i + 2]; idx[i + 2] = t; }
+  // mirrored: each face keeps its first corner and turns the others (a triangle swaps its last two)
+  if (opts.matrix && mirrored(opts.matrix)) for (let f = 0, at = 0; f < F; at += cnt[f], f++) for (let a = at + 1, b = at + cnt[f] - 1; a < b; a++, b--) { const t = idx[a]; idx[a] = idx[b]; idx[b] = t; }
   if (S) new Uint16Array(buf, 32 + 24 * N + 4 * F + 4 * M, F).set(S);
   return new Uint8Array(buf);
 }

@@ -14,15 +14,18 @@ export declare function dmeshStems(names: ArrayLike<string>, fallback?: string):
 export declare function toObj(meshes: ObjMesh[]): string;
 /**
  * One mesh -> `.dmesh` bytes (little-endian): "DLM1", uint32 flags, uint64 nPoints/nFaces/nIndices,
- * float64 xyz[3*nPoints], int32 counts[nFaces] (all 3), int32 indices[nIndices], then with `slots` (flags 1, else 0)
- * uint16 slot[nFaces]. Mesh name = file stem. With `matrix` the positions are local (three.js, Y-up) and take fromThree's
- * conversion (world by the column-major matrix, times `scale`, Z-up, mirrored winding reversed): the same bytes as
- * toDmesh(fromThree(...)), without the Float64 copy. `indices` absent: a triangle soup.
+ * float64 xyz[3*nPoints], int32 counts[nFaces] (all 3 without `counts`), int32 indices[nIndices], then with `slots`
+ * (flags 1, else 0) uint16 slot[nFaces]. Mesh name = file stem. With `matrix` the positions are local (three.js, Y-up)
+ * and take fromThree's conversion (world by the column-major matrix, times `scale`, Z-up, mirrored winding reversed): the
+ * same bytes as toDmesh(fromThree(...)), without the Float64 copy. `indices` absent: a triangle soup. `counts`: the
+ * corners of each face (3 or more, summing to the indices), so quads and n-gons reach the core as the faces they are: one
+ * receiver per face, and per-vertex receivers that follow the points the faces share; `slots` then holds one per face.
  */
 export declare function toDmesh(mesh: {
     name?: string;
     positions: ArrayLike<number>;
     indices?: ArrayLike<number> | null;
+    counts?: ArrayLike<number> | null;
     slots?: Uint16Array;
 }, opts?: {
     matrix?: ArrayLike<number>;

@@ -55,7 +55,8 @@ const sensors = await fromGLB(await fs.readFile('facades.glb')), context = await
 const stems = dmeshStems([...sensors, ...context].map((m) => m.name)); // the core's names: 'park/lawn' -> 'park_lawn'
 const lawn = stems[sensors.length + context.findIndex((m) => m.name === 'park/lawn')];
 const { data, columns } = await run('views.exe', { sensors, context, args: ['--fov', '360', '--target', `${lawn}=green`] });
-// columns: sky_front, ground_front, obstruction_front, green_front, volume_front (all around: the isovist; docs/views.md)
+// columns: sky_front, ground_front, obstruction_front, ground_obstruction_front, green_front, volume_front (all around:
+// the isovist; docs/views.md)
 ```
 
 In-process (Node only, `daylight-mesh/native`): `daylight_c.dll` runs both tools in this process, so there are no files
@@ -118,7 +119,10 @@ await applyToThree(mesh, data[col].subarray(first, first + count)); // one value
 - `toDmesh(mesh, { matrix?, scale? })`: one mesh -> `Uint8Array` in the `.dmesh` layout below (flags 1 + the slot block
   when `mesh.slots` is set, else flags 0); throws on bad indices or a `slots` length other than the triangle count.
   With `matrix` (column-major 4x4) the positions are local three.js ones and take fromThree's conversion: the same bytes
-  as `toDmesh(fromThree(...)[0])` without the Float64 copy; `indices` may be absent (a triangle soup).
+  as `toDmesh(fromThree(...)[0])` without the Float64 copy; `indices` may be absent (a triangle soup). With
+  `mesh.counts` (the corners of each face, 3 or more, summing to the indices) the faces are written as the polygons they
+  are, so a quad is one receiver face and per-vertex receivers follow the points its faces share; `slots` then holds one
+  value per face, and a mirrored matrix turns each face around its first corner.
 - `meshIds({ sensors, context?, signal? })`: a job's mesh ids, sensors then context: a mesh's `id` if set, else the
   SHA-256 hex of its `.dmesh` bytes (8 bodies at a time; a named mesh's name folded in, since the server keeps one name
   per id); a context id equal to a sensor's is salted (`sha256(id \0 ctx)`: the server refuses a mesh in both roles).
@@ -212,7 +216,7 @@ offset  8  uint64    n_points
 offset 16  uint64    n_faces
 offset 24  uint64    n_indices
 offset 32  float64   xyz[3 * n_points]      world metres, Z-up
-           int32     counts[n_faces]        vertices per face (>= 3), right-handed winding; toDmesh writes 3
+           int32     counts[n_faces]        vertices per face (>= 3), right-handed winding; toDmesh writes 3 unless given counts
            int32     indices[n_indices]     0-based, sum(counts) == n_indices
            uint16    slot[n_faces]          only with flags bit 0: optics slot of each face (ObjMesh.slots)
 ```

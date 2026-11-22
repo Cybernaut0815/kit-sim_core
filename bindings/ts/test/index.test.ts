@@ -65,6 +65,21 @@ describe('toDmesh', () => {
     expect([dv.getUint16(end, true), dv.getUint16(end + 2, true)]).toEqual([7, 65535]);
     expect(() => toDmesh({ ...quad, slots: Uint16Array.of(0) })).toThrow(/one value per triangle \(2\), not 1/);
   });
+  it('with counts: polygons as they are, a slot per face, each face turned around its first corner when mirrored', () => {
+    const positions = [0, 0, 0, 1, 0, 0, 1, 1, 0, 0, 1, 0, 2, 0.5, 0], indices = [0, 1, 2, 3, 1, 4, 2], F = 2, at = 32 + 24 * 5;
+    const read = (b: Uint8Array<ArrayBuffer>) => ({ faces: Number(new DataView(b.buffer).getBigUint64(16, true)), counts: [...new Int32Array(b.buffer, at, F)], indices: [...new Int32Array(b.buffer, at + 4 * F, 7)] });
+    const bytes = toDmesh({ positions, indices, counts: [4, 3], slots: Uint16Array.of(1, 2) });
+    expect(read(bytes)).toEqual({ faces: 2, counts: [4, 3], indices });
+    expect([...new Uint16Array(bytes.buffer, at + 4 * F + 4 * 7, F)]).toEqual([1, 2]);
+    const mirror = [-1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1];
+    expect(read(toDmesh({ positions, indices, counts: [4, 3] }, { matrix: mirror })).indices).toEqual([0, 3, 2, 1, 1, 2, 4]);
+    // all 3 is what no counts writes: the bytes existing callers get do not change
+    const tris = { positions, indices: [0, 1, 2, 0, 2, 3] };
+    for (const opts of [{}, { matrix: mirror }]) expect(toDmesh({ ...tris, counts: [3, 3] }, opts)).toEqual(toDmesh(tris, opts));
+    expect(() => toDmesh({ positions, indices, counts: [4, 4] })).toThrow(/counts name 8 corners, indices hold 7/);
+    expect(() => toDmesh({ positions, indices, counts: [5, 2] })).toThrow(/face 1 has 2 corners/);
+    expect(() => toDmesh({ positions, indices, counts: [4, 3], slots: Uint16Array.of(0) })).toThrow(/one value per face \(2\), not 1/);
+  });
 });
 
 describe('fromGLB', () => {

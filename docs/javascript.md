@@ -161,7 +161,7 @@ const view = await run('views', ['--target', 'box=cube'], { sensors }, { signal:
 ```
 ```text
 views: 2 ms, scene reused true
-  columns sky_front ground_front obstruction_front ground_obstruction_front cube_front distance_front distance_min_front
+  columns sky_front ground_front obstruction_front obstruction_total_front cube_front distance_front distance_min_front
   facade row 0: sky 0.386, cube 0.085, distance 21.9 m, nearest 0.80 m
   facade row 1: sky 0.449, cube 0.067, distance 59.2 m, nearest 1.77 m
 ```
@@ -196,7 +196,7 @@ const view = await run('build/RelWithDebInfo/views.exe', { sensors, context,
 ```
 ```text
 core names: facade_floor_0, facade_floor_1, site_lake, site_block
-views.exe: 568 ms, columns sky_front ground_front obstruction_front ground_obstruction_front water_front distance_front distance_min_front reach_6_front reach_20_front reach_50_front
+views.exe: 568 ms, columns sky_front ground_front obstruction_front obstruction_total_front water_front distance_front distance_min_front reach_6_front reach_20_front reach_50_front
   facade_floor_0: sky 0.406, water 0.024, distance 42.7 m, sees 50 m 0.420
   facade_floor_1: sky 0.415, water 0.069, distance 80.4 m, sees 50 m 0.456
 ```
@@ -229,7 +229,7 @@ views.exe: 568 ms, columns sky_front ground_front obstruction_front ground_obstr
 | tool | columns | units |
 |---|---|---|
 | daylight | `<quantity>_<side>` in `--quantity` order | `radiation`, `direct`, `diffuse` kWh/m2 over the run; `irradiance` W/m2 and `illuminance` lux, means over the evaluated hours; `sunhours` hours |
-| views | the shares `sky`, `ground`, `obstruction` and one per target group (sum 1), with `ground_obstruction` (ground + obstruction) after `obstruction`; `glazing` (`--transmission on`); `volume` or `area` (the isovist, 360 mode's default); `distance`, `distance_min` (the default about the normal); with `--distance group` `<g>_distance`, `<g>_distance_min`; `reach_<D>` | shares 0..1 of the field's solid angle; distances in metres, from 0.1 to `--far`; volume m³, area m² |
+| views | the shares `sky`, `ground`, `obstruction` and one per target group (sum 1), with `obstruction_total` (all that is not sky: 1 - sky) after `obstruction`; `glazing` (`--transmission on`); `volume` or `area` (the isovist, 360 mode's default); `distance`, `distance_min` (the default about the normal); with `--distance group` `<g>_distance`, `<g>_distance_min`; `reach_<D>` | shares 0..1 of the field's solid angle; distances in metres, from 0.1 to `--far`; volume m³, area m² |
 
 - NaN: never in daylight (a face without area gives 0). In views, `distance` and `distance_min` are NaN when no ray of
   the field is traced (360 mode at `--offset 0` with the whole field behind the element, a face without area), and

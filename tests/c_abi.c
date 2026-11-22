@@ -232,7 +232,7 @@ int main(int argc, char** argv) {
   CHECK(run1(DL_VIEWS, open, 3, facade, NULL, &r5) == DL_OK && dl_result_rows(r5) == 1 && dl_result_cols(r5) == 6);
   size_t n5 = 0;
   double* v5 = r5 ? values_of(r5, &n5) : NULL;
-  CHECK(v5 && n5 == 6 && fabs(v5[0] - 0.4490987851112869) < 1e-9 && fabs(v5[1] - 0.5509012148887131) < 1e-9 && v5[2] == 0 && v5[3] == v5[1]);
+  CHECK(v5 && n5 == 6 && fabs(v5[0] - 0.4490987851112869) < 1e-9 && fabs(v5[1] - 0.5509012148887131) < 1e-9 && v5[2] == 0 && fabs(v5[3] - v5[1]) < 1e-12);   /* obstruction_total: the ground alone here */
   CHECK(r5 && has(dl_result_manifest(r5), "\"columns\": [\"sky_front\", \"ground_front\", \"obstruction_front\""));
 
   /* an interior through the DLL: the measure grid ignored by the rays, the window glass passed (glazing_front) */

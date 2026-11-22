@@ -133,13 +133,13 @@ daylight: 18 rows, scene reused 0, progress 1
   ...
   facade  2 faces:      1554      3522
 views: 18 rows, scene reused 1
-  columns "sky_front", "ground_front", "obstruction_front", "ground_obstruction_front", "cube_front", "distance_front", "distance_min_front"
+  columns "sky_front", "ground_front", "obstruction_front", "obstruction_total_front", "cube_front", "distance_front", "distance_min_front"
   ...
-  facade  2 faces:    0.4174     0.325    0.1814    0.5065   0.07617     40.55     1.282
+  facade  2 faces:    0.4174     0.325    0.1814    0.5826   0.07617     40.55     1.282
 isovists in the room, all around and horizontal:
-  columns "sky_front", "ground_front", "obstruction_front", "ground_obstruction_front", "volume_front"
+  columns "sky_front", "ground_front", "obstruction_front", "obstruction_total_front", "volume_front"
   grid   12 faces:         0         0         1         1     92.81
-  columns "sky_front", "ground_front", "obstruction_front", "ground_obstruction_front", "area_front"
+  columns "sky_front", "ground_front", "obstruction_front", "obstruction_total_front", "area_front"
   grid   12 faces:         0         0         1         1     32.11
 cancelled run: status 2, cancelled
 bad target: status 1, --target tree=green: no mesh of that name
@@ -207,7 +207,7 @@ daylight.exe: 778 ms, columns radiation_front sunhours_front
   facade_floor_0: 1573 kWh/m2, 3516 h
   facade_floor_1: 1631 kWh/m2, 3605 h
 core names: facade_floor_0, facade_floor_1, site_lake, site_block
-views.exe: 640 ms, columns sky_front ground_front obstruction_front ground_obstruction_front water_front distance_front distance_min_front reach_6_front reach_20_front reach_50_front
+views.exe: 640 ms, columns sky_front ground_front obstruction_front obstruction_total_front water_front distance_front distance_min_front reach_6_front reach_20_front reach_50_front
   facade_floor_0: sky 0.406, water 0.024, distance 42.7 m, sees 50 m 0.420
   facade_floor_1: sky 0.415, water 0.069, distance 80.4 m, sees 50 m 0.456
 ```

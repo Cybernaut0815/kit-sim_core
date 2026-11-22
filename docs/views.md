@@ -199,7 +199,7 @@ sums run in double over float directions: about 1e-7 relative to a double comput
 
 Target rules: NAME as in `--no-occlude` (`.dmesh` file stem, OBJ `o`/`g` group, USD prim path); the token splits at its
 last `=`; several meshes may share a GROUP; at most 16 groups. GROUP takes letters, digits, `_` and `-` and is not
-`sky`, `ground`, `obstruction`, `ground_obstruction`, `glazing`, `volume`, `area`, a name starting with `distance` or
+`sky`, `ground`, `obstruction`, `obstruction_total`, `glazing`, `volume`, `area`, a name starting with `distance` or
 `reach`, or one ending in `_distance` or `_distance_min` (another group's distance columns). Exit 1 after loading (library: `run()` fails) on an unknown or
 ambiguous name, a mesh named twice, a mesh that blocks no rays (a receiver under `--no-occlude` or `--no-self-occlude`)
 and a face slot `NAME/SLOT` (not supported yet: target the whole mesh). A target made only of passed glass (with
@@ -253,8 +253,8 @@ views tests/room_grid.obj --context tests/room.obj --no-occlude grid --offset 0.
 ```
 
 The shut room: 92.81 m³ on average over the 12 faces (the room holds 93.18) and 32.11 m² at eye height (its floor:
-32.13; columns `sky ground obstruction ground_obstruction volume` and `... area`). Through the window, with the rays
-capped at 20 m (`sky ground obstruction ground_obstruction glazing area`): 11 % of the horizontal rays see the sky through it, and the area grows to
+32.13; columns `sky ground obstruction obstruction_total volume` and `... area`). Through the window, with the rays
+capped at 20 m (`sky ground obstruction obstruction_total glazing area`): 11 % of the horizontal rays see the sky through it, and the area grows to
 155 to 190 m², a wedge 20 m deep outside on top of the room.
 
 ## Flags
@@ -300,13 +300,13 @@ a file, the scene, CUDA / OptiX, memory, writing the output, a `--dump-rays` abo
   the manifest's `meshes` ranges map them back.
 - Columns `<name>_<side>` (sides inner: `sky_front`, `sky_back`, ...; `--sides back` gives `_back` only), in this order:
   the shares `sky`, `ground`, `obstruction` and one per target group (first appearance in `--target`), which sum to 1;
-  after `obstruction` comes `ground_obstruction`, those two shares joined (the ground and every obstruction: what is
-  neither sky nor a target, so not another part of that sum);
+  after `obstruction` comes `obstruction_total`, the total view obstruction: everything that is not sky (the ground,
+  every obstruction and every target group, 1 - `sky`; it repeats those shares, so it is not another part of that sum);
   with `--transmission on` then `glazing` (the share seen through glass, not part of that sum either); then `volume` or
   `area` (the isovist, m³ / m²); then `distance`, `distance_min`, per group `<g>_distance` and `<g>_distance_min`; then
   `reach_<D>` (D as `%g`: `reach_6`, `reach_2.5`). Default columns with one group: about the normal `sky_front
-  ground_front obstruction_front ground_obstruction_front water_front distance_front distance_min_front`, all around
-  `sky_front ground_front obstruction_front ground_obstruction_front water_front volume_front` (`area_front` in a flat
+  ground_front obstruction_front obstruction_total_front water_front distance_front distance_min_front`, all around
+  `sky_front ground_front obstruction_front obstruction_total_front water_front volume_front` (`area_front` in a flat
   field).
 - Manifest `FILE.json`: `columns`; `view` with the field (`fov` [H, LO, HI], `cell` as given, `grid` [rows, columns]),
   `jitter`, `north`, `offset`, `far`, `near` (the 0.1 m floor), `virtual_ground`, `ground_z` (the plane's height in
@@ -330,7 +330,7 @@ runs views on `tests/box.obj` with a target, reach and a standing eye, beside da
 
 **`tests/box.obj`, defaults** (four 2 m ground quads at z 0 facing up, and a 1 m box floating 0.5 m above the fourth;
 both meshes are receivers and block). Without `--out` the values go to stdout and no manifest is written; the columns
-are `sky_front ground_front obstruction_front ground_obstruction_front distance_front distance_min_front`.
+are `sky_front ground_front obstruction_front obstruction_total_front distance_front distance_min_front`.
 
 ```
 views tests/box.obj
@@ -370,15 +370,15 @@ views facade.obj --context site.obj --target lake=water --distance mean,min,grou
 `facade.txt`:
 
 ```
-0.4061872616 0.5202675996 0.04802612514 0.5682937247 0.02551901372 43.35115397 1.596381426 24.20460493 15.5228529 0.5955391959 0.4947505679 0.4194863059
-0.4163650774 0.4696878629 0.04770744403 0.5173953069 0.06623961569 81.22328275 4.789838314 24.50706751 15.70222282 0.8876812754 0.5819547265 0.4585910701
+0.4061872616 0.5202675996 0.04802612514 0.5938127384 0.02551901372 43.35115397 1.596381426 24.20460493 15.5228529 0.5955391959 0.4947505679 0.4194863059
+0.4163650774 0.4696878629 0.04770744403 0.5836349226 0.06623961569 81.22328275 4.789838314 24.50706751 15.70222282 0.8876812754 0.5819547265 0.4585910701
 ```
 
 `facade.txt.json`:
 
 ```json
 {
-  "columns": ["sky_front", "ground_front", "obstruction_front", "ground_obstruction_front", "water_front", "distance_front", "distance_min_front", "water_distance_front", "water_distance_min_front", "reach_6_front", "reach_20_front", "reach_50_front"],
+  "columns": ["sky_front", "ground_front", "obstruction_front", "obstruction_total_front", "water_front", "distance_front", "distance_min_front", "water_distance_front", "water_distance_min_front", "reach_6_front", "reach_20_front", "reach_50_front"],
   "view": {"fov": [120, -70, 50], "cell": 2, "grid": [60, 60], "jitter": true, "north": 0, "offset": 0, "far": 1000, "near": 0.1, "virtual_ground": true, "ground_z": 0, "reach": [6, 20, 50], "classes": ["sky", "ground", "obstruction", "water"],
     "image": "rows from HI down, columns clockwise from the field's left edge (360: from north)"},
   "targets": [{"mesh": "lake", "group": "water"}],
@@ -396,8 +396,8 @@ the log means, 43 and 81 m, weigh that near ground against the open sky. 60 % / 
 
 ```
 views facade.obj --context site.obj --target lake=water --virtual-ground off
-0.4061872616 0.5202675996 0.04802612514 0.5682937247 0.02551901372 780.3725661 15.5228529
-0.4163650774 0.4696878629 0.04770744403 0.5173953069 0.06623961569 671.6198663 15.70222282
+0.4061872616 0.5202675996 0.04802612514 0.5938127384 0.02551901372 780.3725661 15.5228529
+0.4163650774 0.4696878629 0.04770744403 0.5836349226 0.06623961569 671.6198663 15.70222282
 views facade.obj --context site.obj --target lake=water --ground-z 0.5
 0.4061872616 0.5474912035 0.04632153492 0.5938127384 0 34.7388679 1.064254284
 0.4163650774 0.5383020324 0.04533289017 0.5836349226 0 76.25689397 4.257634163
@@ -423,8 +423,8 @@ views plaza.obj --context facade.obj --context site.obj --no-occlude plaza --fov
 `volume`, so `--distance mean,min` asks for the distances):
 
 ```
-0.342408523 0.4925232969 0.1486614502 0.641184747 0.01640672997 29.64483201 1.703250408 0.5289157871 0.3956413185 0.354911898
-0.342056726 0.4926377925 0.1491264989 0.6417642914 0.01617898261 29.58977927 1.702938914 0.5287227802 0.3952893916 0.354560101
+0.342408523 0.4925232969 0.1486614502 0.657591477 0.01640672997 29.64483201 1.703250408 0.5289157871 0.3956413185 0.354911898
+0.342056726 0.4926377925 0.1491264989 0.657943274 0.01617898261 29.58977927 1.702938914 0.5287227802 0.3952893916 0.354560101
 ```
 
 All around, the eye sees 34 % sky, 49 % ground, 15 % obstruction (the facade 5 m to the south, the block) and 1.6 %

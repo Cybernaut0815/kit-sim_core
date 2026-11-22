@@ -213,7 +213,7 @@ static bool run_views(const std::vector<SimulationMeshView>& meshes, const Optio
 
   // ---- the result: N elements x (columns x sides), written chunk by chunk --------------------------------------------
   stage = "allocating the result";
-  std::vector<std::string> names = {"sky", "ground", "obstruction", "ground_obstruction"};   // the last: the two before it, joined
+  std::vector<std::string> names = {"sky", "ground", "obstruction", "obstruction_total"};   // the last: all that is not sky
   names.insert(names.end(), groups.begin(), groups.end());
   if (opt.transmission) names.push_back("glazing");   // the share that passed glass, outside the shares' partition
   if (iso) names.push_back(fd.flat ? "area" : "volume");
@@ -253,7 +253,7 @@ static bool run_views(const std::vector<SimulationMeshView>& meshes, const Optio
     put(a[0] / total);
     put(a[3] / total);
     put((a[6] + own) / total);
-    put((a[3] + a[6] + own) / total);   // ground_obstruction: every ray that ends on neither the sky nor a target
+    put((total - a[0]) / total);   // obstruction_total: every ray that does not end on the sky (ground, obstructions, targets)
     for (size_t k = 0; k < groups.size(); ++k) put(a[3 * (3 + k)] / total);
     if (opt.transmission) put(a[3 * nClass + 1 + opt.reach.size()] / total);
     if (iso) put(a[NA - 1]);

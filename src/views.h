@@ -8,7 +8,7 @@
 namespace daylight::views {
 
 // Rays ending on mesh `mesh` (SimulationMesh::name, as --no-occlude) count for `group` ([A-Za-z0-9_-]+, not sky, ground,
-// obstruction, ground_obstruction, glazing, volume, area, distance*, reach*, *_distance or *_distance_min); several meshes
+// obstruction, obstruction_total, glazing, volume, area, distance*, reach*, *_distance or *_distance_min); several meshes
 // may share a group, at most 16 groups.
 struct Target { std::string mesh, group; };
 
@@ -40,8 +40,9 @@ struct Field { unsigned nAz = 0, nEl = 0, dist = 0; bool flat = false; double gr
 bool field(const std::vector<SimulationMeshView>& meshes, const Options& opt, Field& f, std::string& err);
 
 // Rows as daylight's run(): sensor meshes in input order, a row per face or point. Columns <name>_<side> (sides inner):
-// the shares sky, ground, obstruction and one per group (first appearance), summing to 1, with ground_obstruction (the
-// ground and the obstructions joined: what is neither sky nor a target) after obstruction; glazing (--transmission on);
+// the shares sky, ground, obstruction and one per group (first appearance), summing to 1, with obstruction_total (all
+// that is not sky: the ground, the obstructions and the target groups, 1 - sky) after obstruction; glazing
+// (--transmission on);
 // volume or area (the isovist, each ray's end point at min(distance, farDist), own surface at the eye: 0 when nothing is
 // traced); distance, distance_min (log mean and minimum of the distances clamped to [0.1, farDist]; NaN when no ray is
 // traced: all own surface, as a degenerate element's); per group <g>_distance, <g>_distance_min (NaN: not in view);

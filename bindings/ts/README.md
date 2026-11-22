@@ -55,7 +55,7 @@ const sensors = await fromGLB(await fs.readFile('facades.glb')), context = await
 const stems = dmeshStems([...sensors, ...context].map((m) => m.name)); // the core's names: 'park/lawn' -> 'park_lawn'
 const lawn = stems[sensors.length + context.findIndex((m) => m.name === 'park/lawn')];
 const { data, columns } = await run('views.exe', { sensors, context, args: ['--fov', '360', '--target', `${lawn}=green`] });
-// columns: sky_front, ground_front, obstruction_front, ground_obstruction_front, green_front, volume_front (all around:
+// columns: sky_front, ground_front, obstruction_front, obstruction_total_front, green_front, volume_front (all around:
 // the isovist; docs/views.md)
 ```
 

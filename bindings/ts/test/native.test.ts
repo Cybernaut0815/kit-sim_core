@@ -116,7 +116,7 @@ describe.skipIf(!existsSync(dll))('native (daylight_c.dll)', { timeout: 60_000 }
 
   it('the views facade: sky above the horizon, the virtual ground below, no obstruction', async () => {
     const r = await run('views', open, { sensors: [facade()] });
-    expect(r.columns).toEqual(['sky_front', 'ground_front', 'obstruction_front', 'ground_obstruction_front', 'distance_front', 'distance_min_front']);
+    expect(r.columns).toEqual(['sky_front', 'ground_front', 'obstruction_front', 'obstruction_total_front', 'distance_front', 'distance_min_front']);
     expect(r.data.map((c) => c.length)).toEqual([1, 1, 1, 1, 1, 1]);
     expect(r.data[0][0]).toBeCloseTo(0.4490987851112869, 9);
     expect(r.data[1][0]).toBeCloseTo(0.5509012148887131, 9);

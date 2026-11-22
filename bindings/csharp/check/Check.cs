@@ -133,7 +133,7 @@ static class Check
         // the views facade (check_views case 1): sky above the field's horizon, the virtual ground below, no obstruction
         string[] open = { "--no-self-occlude", "--jitter", "off" };
         Result r5 = Core.Run(Tool.Views, open, new[] { facade });
-        string[] columns = { "sky_front", "ground_front", "obstruction_front", "ground_obstruction_front", "distance_front", "distance_min_front" };
+        string[] columns = { "sky_front", "ground_front", "obstruction_front", "obstruction_total_front", "distance_front", "distance_min_front" };
         Expect(r5.Rows == 1 && r5.Columns.SequenceEqual(columns), "the facade's columns: " + string.Join(", ", r5.Columns));
         Expect(Math.Abs(r5.Column("sky_front")[0] - 0.4490987851112869) < 1e-9 &&
                Math.Abs(r5.Column("ground_front")[0] - 0.5509012148887131) < 1e-9 && r5.Column("obstruction_front")[0] == 0,

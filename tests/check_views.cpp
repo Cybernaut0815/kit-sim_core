@@ -278,12 +278,12 @@ static Result expect(const char* what, const std::vector<SimulationMesh>& meshes
       if (flat) iso += 0.5 * L[d] * L[d1] * (U[d][1] * U[d1][0] - U[d][0] * U[d1][1]);
       else if (row + 1 < nEl) iso += (L[d] * L[d1] * L[d2] * det(d, d1, d2) + L[d1] * L[d3] * L[d2] * det(d1, d3, d2)) / 6;
     }
-    // the columns, in views.h's order: shares, glazing, volume / area, distance, distance_min, per group, reach_<D>
+    // the columns, in views.h's order: shares (ground_obstruction after the three classes), glazing, volume / area, distance, distance_min, per group, reach_<D>
     double total = own, W = 0, WL = 0, M = INFINITY;
     for (size_t k = 0; k < w.size(); ++k) { total += w[k]; W += w[k]; WL += wl[k]; M = std::min(M, mn[k]); }
     const auto logMean = [](double sw, double swl) { return sw > 0 ? std::exp(swl / sw) : NAN; };
     const auto least = [](double m) { return std::isinf(m) ? NAN : m; };
-    std::vector<double> want = {w[0] / total, w[1] / total, (w[2] + own) / total};
+    std::vector<double> want = {w[0] / total, w[1] / total, (w[2] + own) / total, (w[1] + w[2] + own) / total};   // the last: ground_obstruction
     for (size_t g = 0; g < nG; ++g) want.push_back(w[3 + g] / total);
     if (o.transmission) want.push_back(gz / total);   // glazing
     const size_t shares = want.size(), isoAt = dist & views::DistIsovist ? shares : SIZE_MAX;
@@ -576,7 +576,7 @@ static void check_isovist(const char* testsDir, std::string& err) {
     o.selfOcclude = false;
     o.fovH = 360; o.elevLo = o.elevHi = 0; o.farDist = 50;
     const Result r = expect("isovist: open, flat all around", {s}, o);
-    CHECK(r.columns == std::vector<std::string>({"sky_front", "ground_front", "obstruction_front", "area_front"}));
+    CHECK(r.columns == std::vector<std::string>({"sky_front", "ground_front", "obstruction_front", "ground_obstruction_front", "area_front"}));
     CHECK(at(r, 0, "sky_front") == 1 && std::fabs(at(r, 0, "area_front") / (0.5 * 2500 * 180 * std::sin(2 * kDeg)) - 1) <= 1e-5);
     o.fovH = 120;
     o.distance = views::DistIsovist | views::DistMean;
@@ -743,8 +743,8 @@ int check_views(const char* testsDir) {
   o2.targets = {{"lake", "water"}};
   o2.distance = views::DistIsovist | views::DistMean | views::DistMin;
   const Result r2 = expect("360 over a 2 km target quad", {eye, lake}, o2);
-  CHECK(r2.columns == std::vector<std::string>({"sky_front", "ground_front", "obstruction_front", "water_front", "volume_front", "distance_front",
-                                                "distance_min_front"}));
+  CHECK(r2.columns == std::vector<std::string>({"sky_front", "ground_front", "obstruction_front", "ground_obstruction_front", "water_front", "volume_front",
+                                                "distance_front", "distance_min_front"}));
   CHECK(std::fabs(at(r2, 0, "sky_front") - kSky) <= 1e-9 && std::fabs(at(r2, 0, "water_front") - (1 - kSky)) <= 1e-9 && at(r2, 0, "ground_front") == 0);
   CHECK(std::fabs(at(r2, 0, "distance_min_front") / (10 / -sLow) - 1) <= 1e-6);
   {   // --ground-z 5: the plane ends the downward rays 5 m down, the quad below it is hidden (not in view: NaN)
@@ -794,8 +794,8 @@ int check_views(const char* testsDir) {
     o3.distance = views::DistMean | views::DistMin | views::DistGroup;
     o3.reach = {6, 20, 50};
     const Result r = expect("two rectangle targets", st, o3);
-    CHECK(r.columns == std::vector<std::string>({"sky_front", "ground_front", "obstruction_front", "water_front", "park_front", "distance_front",
-                                                 "distance_min_front", "water_distance_front", "water_distance_min_front", "park_distance_front",
+    CHECK(r.columns == std::vector<std::string>({"sky_front", "ground_front", "obstruction_front", "ground_obstruction_front", "water_front", "park_front",
+                                                 "distance_front", "distance_min_front", "water_distance_front", "water_distance_min_front", "park_distance_front",
                                                  "park_distance_min_front", "reach_6_front", "reach_20_front", "reach_50_front"}));
     CHECK(at(r, 0, "water_front") > 0.05 && at(r, 0, "park_front") > 0.005);   // most of b hides behind a
     // 360 at offset 0 (north 30): half the field is the facade's own surface, which reaches nothing; the reach of the
@@ -805,6 +805,9 @@ int check_views(const char* testsDir) {
     ow.north = 30;
     const Result rw = expect("two rectangle targets, 360", st, ow);
     CHECK(std::fabs(at(rw, 0, "obstruction_front") - 0.5) <= 1e-9 && at(rw, 0, "reach_6_front") < 0.5);
+    // ground_obstruction joins the two shares that are neither sky nor a target: here the ground and the own surface
+    CHECK(at(rw, 0, "ground_front") > 0 &&
+          std::fabs(at(rw, 0, "ground_obstruction_front") - (at(rw, 0, "ground_front") + at(rw, 0, "obstruction_front"))) <= 1e-12);
     // --virtual-ground off: nothing nearer than the targets, distance_min is the nearer one's
     views::Options of = o3;
     of.virtualGround = false;
@@ -822,8 +825,8 @@ int check_views(const char* testsDir) {
     views::Options on = o3;
     on.distance = 0;
     const Result rn = expect("two rectangle targets, --distance none", st, on);
-    CHECK(rn.columns == std::vector<std::string>({"sky_front", "ground_front", "obstruction_front", "water_front", "park_front", "reach_6_front",
-                                                  "reach_20_front", "reach_50_front"}));
+    CHECK(rn.columns == std::vector<std::string>({"sky_front", "ground_front", "obstruction_front", "ground_obstruction_front", "water_front", "park_front",
+                                                  "reach_6_front", "reach_20_front", "reach_50_front"}));
     // 16 groups, the most there are: 16 strips 10 m ahead
     std::vector<SimulationMesh> strips = {st[0]};
     views::Options o16;
@@ -834,7 +837,7 @@ int check_views(const char* testsDir) {
       o16.targets.push_back({strips.back().name, "g" + std::to_string(k)});
     }
     const Result r16 = expect("16 target groups", strips, o16);
-    CHECK(r16.columns.size() == 3 + 16 + 2 + 2 * 16);
+    CHECK(r16.columns.size() == 4 + 16 + 2 + 2 * 16);
   }
 
   // 7, 8, 9 on tests/box.obj (a ground and a box over it, both sensors; both sides, a target, group distances, reach)
@@ -849,7 +852,7 @@ int check_views(const char* testsDir) {
   Result a, b;
   CHECK(views::run(m, o, a, err) && a.stats.rays == 16u * 2 * 3600);   // 16 faces x 2 sides x 60 x 60 cells
   const size_t C = a.columns.size(), N = C ? a.values.size() / C : 0;
-  CHECK(C == 2 * 10 && N == 16);   // per side: 4 shares, 2 distances, 2 of the group, 2 reach
+  CHECK(C == 2 * 11 && N == 16);   // per side: 4 shares, ground_obstruction, 2 distances, 2 of the group, 2 reach
   {   // one sensor per chunk: the same bits, progress up to 1
     views::Options tiny = o;
     tiny.chunkBytes = 64;

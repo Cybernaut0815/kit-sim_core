@@ -256,9 +256,9 @@ bool resolve_targets(const std::vector<SimulationMeshView>& meshes, const std::v
       err = row + "GROUP takes letters, digits, _ and - only"; return false;
     }
     const auto ends = [&](const char* s) { const size_t n = std::strlen(s); return g.size() >= n && g.compare(g.size() - n, n, s) == 0; };
-    if (g == "sky" || g == "ground" || g == "obstruction" || g == "glazing" || g == "volume" || g == "area" || g.rfind("distance", 0) == 0 ||
+    if (g == "sky" || g == "ground" || g == "obstruction" || g == "ground_obstruction" || g == "glazing" || g == "volume" || g == "area" || g.rfind("distance", 0) == 0 ||
         g.rfind("reach", 0) == 0 || ends("_distance") || ends("_distance_min")) {   // column names: another group's distances
-      err = row + "GROUP is reserved (sky, ground, obstruction, glazing, volume, area, distance*, reach*, *_distance, *_distance_min)"; return false;
+      err = row + "GROUP is reserved (sky, ground, obstruction, ground_obstruction, glazing, volume, area, distance*, reach*, *_distance, *_distance_min)"; return false;
     }
     const size_t k = find_mesh(byName, t.mesh, row, err);
     if (k == SIZE_MAX) return false;

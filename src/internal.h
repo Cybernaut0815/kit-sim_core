@@ -103,7 +103,8 @@ inline bool resolve_no_occlude(const std::vector<SimulationMesh>& meshes, const 
 }
 // views::Options::targets: cls[k] = 3 + g when mesh k is a target of groups[g] (groups in order of first appearance), else
 // 2 (an obstruction). Errors: NAME/SLOT (face-slot targets are not supported), a GROUP not [A-Za-z0-9_-]+ or reserved (sky,
-// ground, obstruction, glazing, distance*, reach*, *_distance, *_distance_min: column names), an unknown or ambiguous name, a
+// ground, obstruction, ground_obstruction, glazing, volume, area, distance*, reach*, *_distance, *_distance_min: column
+// names), an unknown or ambiguous name, a
 // mesh given twice, a mesh that blocks no rays (a sensor mesh under --no-self-occlude or open[k], --no-occlude), more
 // than 16 groups.
 bool resolve_targets(const std::vector<SimulationMeshView>& meshes, const std::vector<views::Target>& targets, bool selfOcclude,

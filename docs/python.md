@@ -136,8 +136,8 @@ v = native.run('views', VIEWS, sensors, context)           # the same meshes in 
   a ray per 2 deg cell (3,600 per face). `--fov 360` turns all around, e.g. with `--offset 1.6` on a floor grid.
 - `--target ground=lawn`: rays that end on the mesh `ground` count for the group `lawn`, a share column of its own.
 - `--reach en17037`: the shares of the field that see at least 6, 20 and 50 m.
-- Columns: `sky_front ground_front obstruction_front lawn_front distance_front distance_min_front reach_6_front
-  reach_20_front reach_50_front`. Every flag: [views.md](views.md).
+- Columns: `sky_front ground_front obstruction_front ground_obstruction_front lawn_front distance_front
+  distance_min_front reach_6_front reach_20_front reach_50_front`. Every flag: [views.md](views.md).
 
 ```
 views, 120 deg about each normal: scene_reused True, 2 ms
@@ -218,6 +218,7 @@ The example's `per_mesh` does this; `process.py`'s `facade_rows` finds the facad
 | daylight | `illuminance_<side>` | lux, mean (physical mode) |
 | daylight | `sunhours_<side>` | hours |
 | views | `sky_<side>`, `ground_<side>`, `obstruction_<side>`, `<group>_<side>` | shares of the field's solid angle, 0..1, summing to 1 |
+| views | `ground_obstruction_<side>` | `ground` + `obstruction`: the share that is neither sky nor a target |
 | views | `distance_<side>`, `distance_min_<side>`, `<group>_distance_<side>`, `<group>_distance_min_<side>` | metres, 0.1 to `--far` (1000); an open ray counts as `--far` |
 | views | `reach_<D>_<side>` | share of the field that sees at least D metres |
 

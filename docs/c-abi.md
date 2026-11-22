@@ -96,8 +96,8 @@ double v[80];
 if (dl_run(DL_DAYLIGHT, 10, sun, &box, 1, NULL, 0, NULL, &r) != DL_OK) fprintf(stderr, "%s\n", dl_last_error());
 dl_result_values(r, v, 80);   /* 16 faces x 1 column (sunhours_front) */
 if (dl_run(DL_VIEWS, 4, view, &box, 1, NULL, 0, NULL, &w) != DL_OK) fprintf(stderr, "%s\n", dl_last_error());
-dl_result_values(w, v, 80);   /* 16 x 4: sky, ground, obstruction, volume (all around the isovist is the default;
-                                 --distance mean,min: the distances); the same GPU scene */
+dl_result_values(w, v, 80);   /* 16 x 5: sky, ground, obstruction, ground_obstruction, volume (all around the
+                                 isovist is the default; --distance mean,min: the distances); the same GPU scene */
 dl_result_free(r);
 dl_result_free(w);
 dl_mesh_free(box);
@@ -120,15 +120,15 @@ daylight: 18 rows, scene reused 0, progress 1
   box    12 faces:     914.5      2207
   facade  2 faces:      1554      3522
 views: 18 rows, scene reused 1
-  columns "sky_front", "ground_front", "obstruction_front", "cube_front", "distance_front", "distance_min_front"
-  ground  4 faces:    0.7096         0    0.1118    0.1786     352.5     1.546
-  box    12 faces:    0.3824    0.1991    0.4185         0     108.5     1.148
-  facade  2 faces:    0.4174     0.325    0.1814   0.07617     40.55     1.282
+  columns "sky_front", "ground_front", "obstruction_front", "ground_obstruction_front", "cube_front", "distance_front", "distance_min_front"
+  ground  4 faces:    0.7096         0    0.1118    0.1118    0.1786     352.5     1.546
+  box    12 faces:    0.3824    0.1991    0.4185    0.6176         0     108.5     1.148
+  facade  2 faces:    0.4174     0.325    0.1814    0.5065   0.07617     40.55     1.282
 isovists in the room, all around and horizontal:
-  columns "sky_front", "ground_front", "obstruction_front", "volume_front"
-  grid   12 faces:         0         0         1     92.81
-  columns "sky_front", "ground_front", "obstruction_front", "area_front"
-  grid   12 faces:         0         0         1     32.11
+  columns "sky_front", "ground_front", "obstruction_front", "ground_obstruction_front", "volume_front"
+  grid   12 faces:         0         0         1         1     92.81
+  columns "sky_front", "ground_front", "obstruction_front", "ground_obstruction_front", "area_front"
+  grid   12 faces:         0         0         1         1     32.11
 cancelled run: status 2, cancelled
 bad target: status 1, --target tree=green: no mesh of that name
 ```

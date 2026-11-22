@@ -103,10 +103,10 @@ def check_views_run():
     lake = QUAD * 20 + [-10, -21, 0.05]                              # 20 x 20 m of water in front of the facade
     v, m = run_meshes([('/site/facade', FACADE, [4], [0, 1, 2, 3])], [('/site/lake', lake, [4], [0, 1, 2, 3])],
                       args=['--target', 'site_lake=water', '--jitter', 'off'], tool='views')
-    assert m['columns'][:4] == ['sky_front', 'ground_front', 'obstruction_front', 'water_front'], m['columns']
+    assert m['columns'][:5] == ['sky_front', 'ground_front', 'obstruction_front', 'ground_obstruction_front', 'water_front'], m['columns']
     assert [x['name'] for x in m['meshes']] == ['site_facade'], m['meshes']
     assert m['targets'] == [{'mesh': 'site_lake', 'group': 'water'}], m['targets']
-    assert v.shape == (1, 6) and v[0, 3] > 0 and v[0, 2] == 0 and abs(v[0, :4].sum() - 1) < 1e-9, v
+    assert v.shape == (1, 7) and v[0, 4] > 0 and v[0, 2] == 0 and abs(v[0, [0, 1, 2, 4]].sum() - 1) < 1e-9, v   # column 3 joins 1 and 2
 
 
 def fails(status, msg, fn, *args):
@@ -204,9 +204,9 @@ def check_native():
 
     # the views facade (check_views case 1): sky above the field's horizon, the virtual ground below, no obstruction
     v, m = run('views', OPEN, facade)[:2]
-    assert m['columns'] == ['sky_front', 'ground_front', 'obstruction_front', 'distance_front', 'distance_min_front'], m
-    assert v.shape == (1, 5) and abs(v[0, 0] - 0.4490987851112869) < 1e-9 and abs(v[0, 1] - 0.5509012148887131) < 1e-9, v
-    assert v[0, 2] == 0, v
+    assert m['columns'] == ['sky_front', 'ground_front', 'obstruction_front', 'ground_obstruction_front', 'distance_front', 'distance_min_front'], m
+    assert v.shape == (1, 6) and abs(v[0, 0] - 0.4490987851112869) < 1e-9 and abs(v[0, 1] - 0.5509012148887131) < 1e-9, v
+    assert v[0, 2] == 0 and v[0, 3] == v[0, 1], v   # ground_obstruction: the ground alone here
 
     # a Path flag goes in the narrow (ANSI) encoding the core opens files with, as the CLI's argv; echoed back decoded
     if '\u00fc'.encode(_native.NARROW, 'replace') == b'?':
@@ -223,7 +223,7 @@ def check_native():
     with Control() as stop:
         stop.cancel()
         fails(2, 'cancelled', run, 'views', OPEN, facade, (), stop)
-    assert run('views', OPEN, facade).values.shape == (1, 5)
+    assert run('views', OPEN, facade).values.shape == (1, 6)
     facade.close()
     fails(1, 'NULL mesh handle', run, 'views', OPEN, facade)
     ctl.close()

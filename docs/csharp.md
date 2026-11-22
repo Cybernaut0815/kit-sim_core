@@ -147,8 +147,9 @@ views: 1 ms, scene reused True
   `obstruction`. NAME is a sensor or context mesh; several meshes may share a group (at most 16 groups).
 - `--reach en17037` adds `reach_6`, `reach_20` and `reach_50`: the shares of the field that see at least 6, 20 and
   50 m, EN 17037's view distance levels (no level is assigned).
-- The columns: `sky_front ground_front obstruction_front block_front distance_front distance_min_front reach_6_front
-  reach_20_front reach_50_front`. The four shares sum to 1 per face. `distance` is the log (geometric) mean over the
+- The columns: `sky_front ground_front obstruction_front ground_obstruction_front block_front distance_front
+  distance_min_front reach_6_front reach_20_front reach_50_front`. The four shares `sky`, `ground`, `obstruction` and
+  `block` sum to 1 per face; `ground_obstruction` is `ground` + `obstruction`. `distance` is the log (geometric) mean over the
   field, open rays counting as `--far` (1000 m); `distance_min` is the nearest thing in view.
 - Per face, the facade's panels (rows 16 and 17):
 
@@ -184,8 +185,8 @@ Program.cs) averages a mesh's rows: `r.Column(column).Skip(First).Take(Count).Av
 (weight by face area where they differ in size).
 
 **Columns** are `<name>_<side>`, sides inner (`--sides both`: `_front` and `_back`). daylight: one per `--quantity`, in
-its order. views: the shares `sky`, `ground`, `obstruction` and one per target group (in order of first appearance in
-`--target`), with `--transmission on` `glazing`, then `volume` or `area` (the isovist), `distance` and `distance_min`
+its order. views: the shares `sky`, `ground`, `obstruction`, `ground_obstruction` (the two before it joined) and one per target group (in order
+of first appearance in `--target`), with `--transmission on` `glazing`, then `volume` or `area` (the isovist), `distance` and `distance_min`
 (`--distance`; all around the default is the isovist alone, about the normal the two distances), per group
 `<g>_distance` and `<g>_distance_min`
 (`--distance group`), then `reach_<D>`.
@@ -196,7 +197,7 @@ its order. views: the shares `sky`, `ground`, `obstruction` and one per target g
 | `irradiance` | W/m2, mean over the evaluated hours (instantaneous for one `--time`) |
 | `illuminance` | lux, mean over the evaluated hours |
 | `sunhours` | hours (equivalent full-sun hours behind translucent slots, `--transmission on`) |
-| `sky`, `ground`, `obstruction`, `<g>`, `reach_<D>` | share of the field's solid angle, 0..1 |
+| `sky`, `ground`, `obstruction`, `ground_obstruction`, `<g>`, `reach_<D>` | share of the field's solid angle, 0..1 |
 | `distance`, `distance_min`, `<g>_distance`, `<g>_distance_min` | metres, 0.1 to `--far` (1000) |
 | `volume`, `area` | m3, m2: the isovist, each ray at most `--far` long |
 

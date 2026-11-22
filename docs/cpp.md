@@ -188,7 +188,7 @@ as such (built under other names, or the name now on another `SimulationMesh`), 
 |---|---|
 | `values` | N x C doubles, row-major: N rows = the elements of the sensor meshes in input order (faces in `counts` order, or points with `onVertices`), C = `columns.size()` |
 | `f32` | with `f32Columns`: C x N float32, column-major, and `values` stays empty (half the memory) |
-| `columns` | daylight: `<quantity>_<side>` in `quantities` order, sides inner (`radiation_front`, `sunhours_back`); views: the shares `sky`, `ground`, `obstruction` and one per group, then `glazing`, `volume` or `area`, `distance`, `distance_min`, `<g>_distance`, `<g>_distance_min`, `reach_<D>` (as `distance` and the flags select), each `_<side>` |
+| `columns` | daylight: `<quantity>_<side>` in `quantities` order, sides inner (`radiation_front`, `sunhours_back`); views: the shares `sky`, `ground`, `obstruction`, `ground_obstruction` (the two before it joined) and one per group, then `glazing`, `volume` or `area`, `distance`, `distance_min`, `<g>_distance`, `<g>_distance_min`, `reach_<D>` (as `distance` and the flags select), each `_<side>` |
 | `ranges` | (mesh name, rows) per sensor mesh in input order: the manifest's `meshes` |
 | `durationHours`, `nSky`, `nSun` | daylight: the hours evaluated and the directions traced; views: 0 |
 | `sceneReused` | a resident scene served the run |
@@ -205,6 +205,7 @@ averages a column over one mesh that way.
 | `illuminance` | lux, mean (physical mode) |
 | `sunhours` | hours (an hour behind a surface transmitting 0.6 counts 0.6) |
 | `sky`, `ground`, `obstruction`, `<group>` | shares of the field's solid angle, summing to 1 |
+| `ground_obstruction` | `ground` + `obstruction`: the share that is neither sky nor a target |
 | `distance`, `distance_min`, `<g>_distance`, `<g>_distance_min` | metres, clamped to [0.1, `farDist`] |
 | `volume`, `area` | the isovist: m3 (all around) or m2 (a flat field), each ray at most `farDist` long |
 | `glazing` | the share of the field seen through glass (`transmission`) |

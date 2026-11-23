@@ -268,9 +268,23 @@ static bool run_views(const std::vector<SimulationMeshView>& meshes, const Optio
 
   stage = "tracing";
   const size_t ncMax = std::max<size_t>(1, chunkBytes / perSensor);
+  // The own surface (360 mode at offset 0, not a flat field) is that of the sensors whose mesh blocks rays: a receiver
+  // that blocks none (--no-occlude, --no-self-occlude) traces the directions behind its plane like any other. Sensors
+  // come in mesh order: runs of meshes alike (the sensor each run ends at, its cull), and no chunk crosses a run.
+  // ponytail: a launch per run; a per-sensor flag on the device if receivers alternating between the two make many
+  const bool cull = world && opt.offset == 0 && !fd.flat;
+  std::vector<std::pair<size_t, bool>> runs;
+  for (size_t k = 0, at = 0; k < meshes.size(); ++k) {
+    const size_t n = !meshes[k].sensor ? 0 : (opt.onVertices ? meshes[k].mesh->numPoints() : meshes[k].mesh->numFaces()) * nS;
+    if (!n) continue;
+    at += n;
+    if (!runs.empty() && runs.back().second == (cull && blocks(k))) runs.back().first = at;
+    else runs.push_back({at, cull && blocks(k)});
+  }
+  if (runs.empty() || runs.back().first != nSens) { err = "internal: the sensor runs do not cover the sensors"; return false; }
   ViewLaunch vl;
   vl.nAz = fd.nAz; vl.nEl = fd.nEl; vl.az0 = float(world ? 0 : -opt.fovH / 2); vl.dAz = float(dAz); vl.rowSin = rowSin.data();
-  vl.world = world; vl.cull = world && opt.offset == 0 && !fd.flat; vl.jitter = opt.jitter; vl.back = opt.sides == Sides::Back;
+  vl.world = world; vl.jitter = opt.jitter; vl.back = opt.sides == Sides::Back;
   vl.vground = opt.virtualGround; vl.nS = unsigned(nS); vl.groundZ = plane; vl.north = opt.north; vl.cancel = opt.cancel;
   const unsigned flags = gpu_bounce_flags(opt.cullBackfaces);   // closest hits, no any-hit
   std::vector<float> reach;   // compared with the float distances
@@ -279,9 +293,11 @@ static bool run_views(const std::vector<SimulationMeshView>& meshes, const Optio
   std::vector<uint8_t> clsBuf;
   std::vector<float> distBuf;
   size_t launch = 0;
-  for (size_t i0 = 0; i0 < nSens; i0 += ncMax) {
+  for (size_t i0 = 0, nc = 0, r = 0; i0 < nSens; i0 += nc) {
     if (cancelled()) return false;
-    const size_t nc = std::min(ncMax, nSens - i0);
+    while (runs[r].first <= i0) ++r;
+    vl.cull = runs[r].second;
+    nc = std::min(ncMax, runs[r].first - i0);
     if (!gpu_view(*g, i0, nc, flags, vl, launch, err)) return false;
     const auto tRed = Clk::now();
     sums.resize(nc * NA);

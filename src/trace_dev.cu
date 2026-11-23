@@ -203,7 +203,7 @@ extern "C" __global__ void __raygen__view() {
     const float3 dir = l.x * r + l.y * f + l.z * u;
     unsigned char cl = 2;
     float t = inf;
-    if (none || (params.cull && dot(n, dir) <= 0.f)) cl = 254;   // degenerate, or behind the sensor (360 mode, offset 0)
+    if (none || (params.cull && dot(n, dir) <= 0.f)) cl = 254;   // degenerate, or behind the sensor (360, offset 0, blocking mesh)
     else if (params.vground && dir.z < 0.f && !(o.z > params.groundZ)) { cl = 1; t = 0.1f; }   // eye on or below the plane
     else {
       const bool plane = params.vground && dir.z < 0.f;

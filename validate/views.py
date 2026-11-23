@@ -20,7 +20,8 @@ triangles at its float32 vertex positions, one plastic modifier per class (c2 ob
 whose hit lies past where the core's ray ends (1 cm under the virtual ground, tmax = (o.z - plane + 0.01) / -dir.z),
 or that hits nothing, is `ground` at its exact plane distance (eye on or below the plane: ground at 0.1 m, untraced),
 with --virtual-ground off a downward miss is `ground` at +inf; a miss on or above the horizon (dir.z >= 0) is `sky`
-(+inf). Own-surface rays (360 mode, --offset 0, n.d <= 0) must be class 254 and are not traced.
+(+inf). Own-surface rays (360 mode, --offset 0, n.d <= 0, the sensor's mesh blocking rays: not --no-self-occlude or
+--no-occlude) must be class 254 and are not traced.
 Per case, hard: >= 99.9 % of the compared rays in the same class, and >= 99.9 % of those with a finite distance within
 |dt| <= 1e-5 t + 1e-4 m. Not compared: grazing hits (|cos| < 0.05 between the ray and the face rtrace hit), hits within
 1 mm (in z) of where the core's downward rays end, and rays within 1e-6 of a sign test (n.d for the own surface,
@@ -71,6 +72,7 @@ CASES = {
     'box_vertices': ([BOX], [], ['--on', 'vertices']),                                  # box corners: 3-face normals
     'box_360_both': ([BOX], [], ['--fov', '360', '--offset', '1.6', '--sides', 'both', '--cell', '3']),
     'box_360_own': ([BOX], [], ['--fov', '360', '--cell', '4']),                        # offset 0: own surface
+    'box_360_open': ([BOX], [], ['--fov', '360', '--cell', '4', '--no-occlude', 'box']),   # ... but none on the box
     'fixture_box_north': ([FIX / 'box' / 'sensors.obj'], [FIX / 'box' / 'context.obj'],
                           ['--north', '30', '--cell', '3']),                            # up-facing: east turned by north
     'fixture_tilt30': ([FIX / 'tilt30' / 'sensors.obj'], [], ['--cell', '3']),
@@ -219,6 +221,11 @@ def flag(flags, name, default=None):
     return flags[flags.index(name) + 1] if name in flags else default
 
 
+def no_occlude(flags):
+    """The --no-occlude mesh names (every such flag, ;-separated)."""
+    return set(';'.join(flags[k + 1] for k, f in enumerate(flags) if f == '--no-occlude').split(';'))
+
+
 def layout(receivers, context, flags):
     """-> (receiver meshes, blocking meshes [(points, faces, class code)], bbox centre C, virtual ground z): the
     receivers are mesh-major in file order; a target mesh gets 3 + its group's first appearance."""
@@ -232,7 +239,7 @@ def layout(receivers, context, flags):
             mesh, g = spec.rsplit('=', 1)
             groups += [g] if g not in groups else []
             code[mesh] = 3 + groups.index(g)
-    open_ = set(';'.join(flags[k + 1] for k, f in enumerate(flags) if f == '--no-occlude').split(';'))
+    open_ = no_occlude(flags)
     glass = set()   # meshes the rays pass: --transmission on and a whole-mesh --optics row NAME=0,TAU,glass
     if flag(flags, '--transmission') == 'on':
         for spec in ';'.join(flags[k + 1] for k, f in enumerate(flags) if f == '--optics').split(';'):
@@ -299,18 +306,24 @@ def run_views(exe, receivers, context, flags, d):
 
 
 def eyes(rec, flags, C):
-    """Rows in dump order -> (float32 recentred sensor points after offset_ray, float32 normals)."""
+    """Rows in dump order -> (float32 recentred sensor points after offset_ray, float32 normals, whether each one's mesh
+    blocks rays: the views run's own surface is a blocking receiver's)."""
     on, sides, off = flag(flags, '--on', 'faces'), flag(flags, '--sides', 'front'), float(flag(flags, '--offset', 0))
-    P, N = [], []
-    for q, n in elements(rec, on):
-        if sides != 'back':
-            P.append(q + n * off)
-            N.append(n)
-        if sides != 'front':
-            P.append(q - n * off)
-            N.append(n * -1)
+    open_ = no_occlude(flags)
+    P, N, B = [], [], []
+    for m in rec:
+        blocks = '--no-self-occlude' not in flags and m[0] not in open_
+        for q, n in elements([m], on):
+            if sides != 'back':
+                P.append(q + n * off)
+                N.append(n)
+                B.append(blocks)
+            if sides != 'front':
+                P.append(q - n * off)
+                N.append(n * -1)
+                B.append(blocks)
     P32, N32 = (np.array(P) - C).astype(F32), np.array(N).astype(F32)
-    return offset_ray(P32, N32), N32
+    return offset_ray(P32, N32), N32, np.array(B, bool)
 
 
 def local_dirs(view):
@@ -351,9 +364,10 @@ def rays(view, N32):
     return D / np.linalg.norm(D, axis=2, keepdims=True)
 
 
-def expect(view, o32, N32, C, gz, dirs, octree, vground, panes=None):
+def expect(view, o32, N32, blocks, C, gz, dirs, octree, vground, panes=None):
     """The host's class and distance of every ray -> (cls uint8, t float64, excluded, distance not compared, why) [S x K].
-    panes: the octree of the glass the rays pass (--transmission on): a ray meeting it before its end gets + 128."""
+    blocks: per sensor, its mesh blocks rays (an own surface). panes: the octree of the glass the rays pass
+    (--transmission on): a ray meeting it before its end gets + 128."""
     S, K = dirs.shape[:2]
     cls, t = np.full((S, K), 2, np.uint8), np.full((S, K), np.inf)
     dz, eye = dirs[..., 2], o32.astype(np.float64) + C
@@ -361,8 +375,8 @@ def expect(view, o32, N32, C, gz, dirs, octree, vground, panes=None):
     own = np.zeros((S, K), bool)
     sign = (np.abs(dz) < SIGN) & (dz != 0)      # dir.z decides sky / ground and the virtual ground; exact zeros agree
     if view['fov'][0] == 360 and view['offset'] == 0 and view['fov'][1:] != [0, 0]:   # a flat field culls nothing
-        own = nd <= 0
-        sign |= (np.abs(nd) < SIGN) & (nd != 0)
+        own = (nd <= 0) & blocks[:, None]
+        sign |= (np.abs(nd) < SIGN) & (nd != 0) & blocks[:, None]
         cls[own] = 254
     down = dz < 0
     below = vground & down & ~(o32[:, 2] > F32(gz - C[2]))[:, None] & ~own   # the core's float test of its eye
@@ -417,6 +431,7 @@ def columns(man, vals, cls, dep):
     groups = v['classes'][3:]
     exp = {name: (w * (cls == c)).sum(axis=1) / total for c, name in enumerate(v['classes'])}
     exp['obstruction'] = exp['obstruction'] + (w * own).sum(axis=1) / total
+    exp['obstruction_total'] = (w * (cls != 0)).sum(axis=1) / total   # all that is not sky, the own surface too
 
     def logmean(m):
         ws = (w * m).sum(axis=1)
@@ -476,10 +491,10 @@ def case_rays(exe, name, receivers, context, flags):
     rec, blocking, C, gz, panes = layout(receivers, context, flags)
     v = man['view']
     assert abs(v['ground_z'] - gz) <= 1e-9 * max(1, abs(gz)), (v['ground_z'], gz)
-    o32, N32 = eyes(rec, flags, C)
+    o32, N32, blocks = eyes(rec, flags, C)
     dirs = rays(v, N32)
     assert gcls.shape == dirs.shape[:2], (gcls.shape, dirs.shape)
-    cls, t, ex, nodist, why = expect(v, o32, N32, C, gz, dirs, radiance(d, blocking, C), v['virtual_ground'],
+    cls, t, ex, nodist, why = expect(v, o32, N32, blocks, C, gz, dirs, radiance(d, blocking, C), v['virtual_ground'],
                                      radiance(d, panes, C, 'panes') if panes else None)
     gt = gdep.astype(np.float64)
     same = gcls == cls

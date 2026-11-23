@@ -177,7 +177,7 @@ octree. The virtual ground is applied on the host, not in the Radiance scene: a 
 core's ray end (1 cm under the plane) or that hits nothing is `ground` at its plane distance; an eye on or below the
 plane gives `ground` at 0.1 m (untraced); with `--virtual-ground off` a downward miss is `ground` at +inf; a miss on or
 above the horizon (dir.z >= 0, so `box_360_own`'s level row) is `sky`. Own-surface rays (360 mode, `--offset 0`,
-n.d <= 0) must be class 254.
+n.d <= 0, the sensor's mesh blocking rays) must be class 254.
 
 | check | reference | metric | limit | hard |
 |---|---|---|---|---|
@@ -199,6 +199,7 @@ horizon). Ladybug type 1 (Horizontal30DegreeOffset) is left out: its band depend
 | `box_vertices` | `tests/box.obj` | `--on vertices` (box corners: normals of 3 faces) |
 | `box_360_both` | `tests/box.obj` | `--fov 360 --offset 1.6 --sides both --cell 3` (back eyes below the plane) |
 | `box_360_own` | `tests/box.obj` | `--fov 360 --cell 4` (own surface) |
+| `box_360_open` | `tests/box.obj` | `--fov 360 --cell 4 --no-occlude box` (own surface on the ground only) |
 | `fixture_box_north` | `box` fixture | `--north 30 --cell 3` (facing up: right = east turned by north) |
 | `fixture_tilt30` | `tilt30` fixture | `--cell 3` |
 | `street_facade` | street `facade` | `--target lake=water;park=park --distance mean,min,group --reach en17037` |

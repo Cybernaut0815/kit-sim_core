@@ -188,6 +188,8 @@ struct ViewLaunch {
   unsigned nAz = 1, nEl = 1;
   float az0 = 0, dAz = 1;              // degrees: the first column's left edge (-H / 2 about the gaze; 360 mode: 0 = north)
   const float* rowSin = nullptr;       // [2 nEl] host: sin of each row's bottom and top elevation
+  // cull: the directions behind a sensor's plane are its own surface, not traced (360 mode at offset 0, the sensors of
+  // a mesh that blocks rays)
   bool world = false, cull = false, jitter = true, back = false, vground = true;
   unsigned nS = 1;                     // sides per element (sensor i is element i / nS: the seeds)
   float groundZ = 0;                   // the virtual ground plane (recentred)

@@ -46,7 +46,9 @@ bool field(const std::vector<SimulationMeshView>& meshes, const Options& opt, Fi
 // volume or area (the isovist, each ray's end point at min(distance, farDist), own surface at the eye: 0 when nothing is
 // traced); distance, distance_min (log mean and minimum of the distances clamped to [0.1, farDist]; NaN when no ray is
 // traced: all own surface, as a degenerate element's); per group <g>_distance, <g>_distance_min (NaN: not in view);
-// reach_<D>. Result::nSky, nSun and durationHours stay 0. Fails on bad options, target or --no-occlude names the meshes
+// reach_<D>. Own surface: in 360 mode at offset 0, the directions behind the plane of an element whose mesh blocks rays,
+// not traced, in obstruction without a distance (a receiver that blocks none, noOcclude or selfOcclude false, traces
+// them like any other). Result::nSky, nSun and durationHours stay 0. Fails on bad options, target or --no-occlude names the meshes
 // do not resolve, and memory running out ("out of memory: ...", never the process). One call at a time per process.
 bool run(const std::vector<SimulationMeshView>& meshes, const Options& opt, Result& out, std::string& err);
 bool run(const std::vector<SimulationMesh>& meshes, const Options& opt, Result& out, std::string& err);

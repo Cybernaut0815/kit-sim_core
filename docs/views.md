@@ -47,7 +47,7 @@ degrees. The default `120,-70,50` at 2 deg is 60 x 60 = 3,600 rays per element; 
   of the surface.
 - **360 mode** (H = 360): one world frame for every element: azimuth clockwise from model north (+Y, turned
   counter-clockwise by `--north` as in daylight), elevation about the horizon. With `--offset 0` the directions behind
-  the element's own plane are not traced (own surface, below).
+  the element's own plane are not traced where its mesh blocks rays (own surface, below).
 - **Flat field** (`--fov H,0,0`, LO = HI = 0 only): one row of rays along the horizon of the frame, `round(H / DEG)`
   of them: horizontal in 360 mode (and about the normal of a vertical face), the plane of forward and right on a
   tilted one. The 2D isovist: `--fov 360,0,0` gives its area. A flat field traces every direction, also at `--offset
@@ -79,7 +79,7 @@ classes) and ends in one class:
 | `ground` | points below the horizon and meets nothing down to the virtual ground; never sky | the virtual plane's; open with `--virtual-ground off` |
 | `obstruction` | ends on a mesh that is not a target: context, a receiver (receivers block by default), a modelled terrain | the hit's |
 | target group | ends on a mesh that `--target NAME=GROUP` names | the hit's |
-| own surface, counted in `obstruction` | 360 mode with `--offset 0`: a direction behind the element's own plane, not traced | none |
+| own surface, counted in `obstruction` | 360 mode with `--offset 0`, the element's mesh blocking rays: a direction behind its own plane, not traced | none |
 
 The horizon itself counts as sky (as daylight's sky patches and Ladybug's HorizontalRadial count it): a ray exactly
 along it that meets nothing is `sky`; the virtual ground ends only rays pointing below it. Every ray of a flat field
@@ -92,7 +92,10 @@ without a distance (daylight gives such a face 0).
 Own surface: in 360 mode with `--offset 0`, a direction behind the element's plane would only see the surface the
 element lies on; it is not traced and counts as `obstruction` without a distance (as daylight's hemisphere cull). With
 a non-zero `--offset` these directions are traced like any other: a floor grid lifted 1.6 m sees the floor (unless the
-floor is `--no-occlude`) and over a balcony's edge. View mode has no own-surface rays. A ray that meets the element's
+floor is `--no-occlude`) and over a balcony's edge. A receiver that blocks no rays (`--no-occlude`, `--no-self-occlude`)
+has no own surface: at `--offset 0` too its elements trace the directions behind their plane, through the mesh (a
+floor grid on the virtual ground sees ground below it, one over a context floor that floor). View mode has no
+own-surface rays. A ray that meets the element's
 own plane through float error (an element lying in a large triangle) passes it as in daylight ([input.md](input.md));
 after four such crossings it ends there as an obstruction.
 
@@ -282,7 +285,7 @@ capped at 20 m (`sky ground obstruction obstruction_total glazing area`): 11 % o
 | `--optics SPEC[;SPEC...]` | `NAME[/SLOT]=RHO[,TAU[,glass\|porous]]`, repeatable | none | daylight's rows ([daylight.md](daylight.md)); views uses only which slots are glass with TAU > 0, and only with `--transmission on`; names and ranges checked as in daylight (exit 1) | `optics` |
 | `--transmission` | `off` \| `on` | `off` | `on`: rays pass glass slots and the `glazing` column is added ([Glass and interiors](#glass-and-interiors)) | `transmission` |
 | `--north DEG` | degrees, counter-clockwise from +Y | `0` | model north (90 = west): 360 mode's azimuth 0, and the east a face looking straight up or down takes as right | `north` |
-| `--offset M` | metres | `0` | the eye moved along the normal (e.g. 1.6 above a floor grid: a standing eye); in 360 mode a non-zero offset also traces the directions behind the element | `offset` |
+| `--offset M` | metres | `0` | the eye moved along the normal (e.g. 1.6 above a floor grid: a standing eye); in 360 mode a non-zero offset (or a receiver that blocks no rays) also traces the directions behind the element | `offset` |
 | `--out FILE[.npy]` | path | stdout (no manifest) | values: text (one line per element, `%.10g`) or NumPy float64 `[N x C]`; manifest at `FILE.json` | `Result` |
 | `--dump-rays F.npy` | path | off | every ray's class (`F.npy`, uint8) and distance (`F.npy.depth.npy`, float32), see Output | `dumpPath` |
 | `--bench [NSENS NTRIS]` | counts | `1000000 10000000` | street-grid city benchmark ([performance.md](performance.md#views)), prints timings, no output file | |
@@ -446,7 +449,8 @@ print(depth[0][cls[0] == 3].min())               # the nearest water the first q
 10.280711
 ```
 
-The same quads at `--offset 0` (no target, no reach): everything below their plane is their own surface, so ground is
+The same quads at `--offset 0`, blocking again (no `--no-occlude`, no target, no reach): everything below their plane
+is their own surface, so ground is
 0, obstruction holds the own surface (0.551 of the field) plus the facade and the block, and the distances leave the
 own surface out (the nearest thing is the facade, 5 m from the first quad's centre):
 

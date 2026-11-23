@@ -3,7 +3,8 @@
 // device's float sensor origins (every ray's class and distance through --dump-rays, then every column): facades,
 // tilted, turned, flat and nearly flat faces, vertices, --north, an eye 10 m over a 2 km target quad (360), the virtual
 // ground's height and switch, a screen nearer than 0.1 m, a wall past --far, sensors in the plane of a 2 km quad,
-// rectangle targets with group distances and --reach (also past --far). Then the horizon, degenerate faces, the jitter
+// receivers that block no rays (no own surface), rectangle targets with group distances and --reach (also past --far).
+// Then the horizon, degenerate faces, the jitter
 // (in its cells), chunks and sub-launches, progress, f32 columns, sides, a scene shared with daylight, labels on reused,
 // renamed, reordered and name-swapped resident scenes, cancel (no dump left), ray counts, the option, target and CLI
 // rules, the manifest's escaping and the dump size guard; the isovist (area, volume) against the host model and known
@@ -95,8 +96,8 @@ static bool glass_face(const views::Options& o, const SimulationMesh& m, size_t 
   return best && best->glass && best->tau > 0;
 }
 
-// The device's ray from o along unit d (n: the sensor's normal), as views.h defines it: 360 at offset 0 culls the
-// sensor's back (254), the closest quad, else sky on or above the horizon, ground below it, ended by the virtual ground (to
+// The device's ray from o along unit d (n: the sensor's normal), as views.h defines it: cull (360 at offset 0, the
+// sensor's mesh blocking rays) takes the sensor's back (254), the closest quad, else sky on or above the horizon, ground below it, ended by the virtual ground (to
 // 1 cm past its plane; the eye on or below it: 0.1 m). margin shrinks to how close (radians) the ray passes a quad's
 // edge, the horizon or, culled, the sensor's plane.
 static End trace(const double o[3], const double d[3], const double n[3], bool cull, bool vground, double plane,
@@ -169,13 +170,15 @@ static Result expect(const char* what, const std::vector<SimulationMesh>& meshes
   for (const views::Target& tg : o.targets) if (std::find(groups.begin(), groups.end(), tg.group) == groups.end()) groups.push_back(tg.group);
   std::vector<Quad> quads;
   std::vector<float3> P, N;
+  std::vector<char> B;   // per sensor: its mesh blocks rays (it has an own surface)
   const size_t nS = o.sides == Sides::Both ? 2 : 1;
   for (const SimulationMesh& m : meshes) {
     uint8_t cl = 2;
     for (const views::Target& tg : o.targets)
       if (tg.mesh == m.name) cl = uint8_t(3 + (std::find(groups.begin(), groups.end(), tg.group) - groups.begin()));
     const bool open = std::find(o.noOcclude.begin(), o.noOcclude.end(), m.name) != o.noOcclude.end();
-    if (!m.sensor || (o.selfOcclude && !open))
+    const bool blocks = !m.sensor || (o.selfOcclude && !open);
+    if (blocks)
       for (size_t f = 0, at = 0; f < m.numFaces(); at += size_t(m.counts[f++])) {
         Quad q{{INFINITY, INFINITY, INFINITY}, {-INFINITY, -INFINITY, -INFINITY}, -1, cl, glass_face(o, m, f)};
         for (size_t j = at; j < at + size_t(m.counts[f]); ++j)
@@ -192,6 +195,7 @@ static Result expect(const char* what, const std::vector<SimulationMesh>& meshes
       const size_t n = (o.onVertices ? m.numPoints() : m.numFaces()) * nS;
       P.resize(P.size() + n);
       N.resize(N.size() + n);
+      B.resize(B.size() + n, blocks);
       std::string warn;
       make_sensors_into(m, o, false, c, P.data() + P.size() - n, N.data() + N.size() - n, warn);
     }
@@ -241,7 +245,7 @@ static Result expect(const char* what, const std::vector<SimulationMesh>& meshes
       const double s = sRow[d / nAz], cs = std::sqrt(1 - s * s), a = (az0 + (double(d % nAz) + 0.5) * dAz) * kDeg;
       double dir[3];
       for (int b = 0; b < 3; ++b) dir[b] = cs * std::sin(a) * rt[b] + cs * std::cos(a) * f[b] + s * u[b];
-      const End h = trace(O, dir, n, world && o.offset == 0 && !flat, o.virtualGround, plane, quads, margin);
+      const End h = trace(O, dir, n, world && o.offset == 0 && !flat && B[i], o.virtualGround, plane, quads, margin);
       U[d] = {cs * std::sin(a), cs * std::cos(a), s};
       L[d] = h.cls == 254 ? 0 : std::min(h.t, o.farDist);
       // the device's ray: its class, and how far its end lies from the host's across the surface, in tolerances
@@ -688,14 +692,18 @@ int check_views(const char* testsDir) {
                                    quad("screen", false, {-5, -0.05, -1, 5, -0.05, -1, 5, -0.05, 3, -5, -0.05, 3})};
     expect("a screen 5 cm in front", scr, views::Options{});
   }
-  {   // the horizon is sky: --fov 360,-1,1 at --jitter off puts every ray on it (dir.z = 0); in the open the facade sees
-      // sky in front and its own surface behind (360, offset 0), no ray is ground (none points below the horizon)
+  {   // the horizon is sky: --fov 360,-1,1 at --jitter off puts every ray on it (dir.z = 0); in the open the faces, which
+      // block no rays, see sky all around (no own surface), a blocking facade sky in front and its own surface behind
+      // (360, offset 0); no ray is ground (none points below the horizon)
     views::Options oh = o1;
     oh.fovH = 360; oh.elevLo = -1; oh.elevHi = 1; oh.jitter = false;
     oh.distance = views::DistMean;   // one ring: no isovist mesh
-    Result rh;
-    CHECK(views::run({faces}, oh, rh, err) && std::fabs(at(rh, 0, "sky_front") - 0.5) <= 1e-12 && std::fabs(at(rh, 0, "obstruction_front") - 0.5) <= 1e-12);
-    for (size_t e = 0; e < 7; ++e) CHECK(at(rh, e, "ground_front") == 0);
+    Result rh, rw;
+    CHECK(views::run({faces}, oh, rh, err));
+    for (size_t e = 0; e < 7; ++e) CHECK(std::fabs(at(rh, e, "sky_front") - 1) <= 1e-12 && at(rh, e, "ground_front") == 0);
+    oh.selfOcclude = true;
+    CHECK(views::run({quad("wall", true, {-1, 0, 0, 1, 0, 0, 1, 0, 2, -1, 0, 2})}, oh, rw, err) && std::fabs(at(rw, 0, "sky_front") - 0.5) <= 1e-12 &&
+          std::fabs(at(rw, 0, "obstruction_front") - 0.5) <= 1e-12 && at(rw, 0, "ground_front") == 0);
   }
   {   // a degenerate face (no area, no normal) traces no ray, in view mode and 360 at an offset: all own surface, as 360
       // at offset 0 gives it (obstruction 1, no distance, no reach, an isovist of 0: every ray ends at the eye)
@@ -782,6 +790,32 @@ int check_views(const char* testsDir) {
       for (size_t e = 0; e < 3 && x->values.size() == 15; ++e)
         CHECK(std::fabs(at(*x, e, "sky_front") - kSky) <= 1e-9 && std::fabs(at(*x, e, "obstruction_front") - (1 - kSky)) <= 1e-9 &&
               at(*x, e, "ground_front") == 0);
+    // receivers that block no rays (--no-occlude, --no-self-occlude alike) have no own surface: on the virtual ground (the
+    // plaza gone), all below their plane is ground
+    views::Options open5 = o5;
+    open5.noOcclude = {"spots"};
+    const Result ro = expect("own plane: sensors on the virtual ground, --no-occlude", {spots}, open5);
+    for (size_t e = 0; e < 3 && ro.values.size() == 15; ++e)
+      CHECK(std::fabs(at(ro, e, "sky_front") - kSky) <= 1e-9 && std::fabs(at(ro, e, "ground_front") - (1 - kSky)) <= 1e-9 &&
+            at(ro, e, "obstruction_front") == 0);
+    views::Options unself = o5;
+    unself.selfOcclude = false;
+    unself.jitter = false;
+    Result ru;
+    CHECK(views::run({spots}, unself, ru, err) && same(ro, ru));
+    // blocking and open receivers in turn: each culls by its own mesh (a launch per run, none across), a sensor per chunk alike
+    const SimulationMesh lo = quad("lo", true, {-50.1, -0.1, 0, -49.9, -0.1, 0, -49.9, 0.1, 0, -50.1, 0.1, 0}),
+                         hi = quad("hi", true, {49.9, 49.9, 0, 50.1, 49.9, 0, 50.1, 50.1, 0, 49.9, 50.1, 0});
+    const Result rm = expect("own plane: blocking and open receivers in turn", {lo, spots, hi}, open5);
+    CHECK(rm.stats.launches >= 3 && rm.values.size() == 25);
+    for (size_t e = 0; e < 5 && rm.values.size() == 25; ++e)
+      CHECK(std::fabs(at(rm, e, e == 0 || e == 4 ? "obstruction_front" : "ground_front") - (1 - kSky)) <= 1e-9 &&
+            at(rm, e, e == 0 || e == 4 ? "ground_front" : "obstruction_front") == 0);
+    views::Options tiny5 = open5;
+    tiny5.chunkBytes = 64;
+    tiny5.jitter = false;
+    Result rt;
+    CHECK(views::run({lo, spots, hi}, tiny5, rt, err) && same(rm, rt));
   }
 
   // 3, 6, 6b: two targets (the CLI's --target a=water;b=park) in front of a facade: a at 10 m, b at 30 m behind it in part
@@ -810,6 +844,17 @@ int check_views(const char* testsDir) {
           std::fabs(at(rw, 0, "obstruction_total_front") - (at(rw, 0, "ground_front") + at(rw, 0, "obstruction_front") + at(rw, 0, "water_front") +
                                                               at(rw, 0, "park_front"))) <= 1e-12 &&
           std::fabs(at(rw, 0, "obstruction_total_front") - (1 - at(rw, 0, "sky_front"))) <= 1e-12);
+    // the facade blocking no rays: no own surface, the sky and ground behind it in view (--no-occlude, --no-self-occlude alike)
+    views::Options owo = ow;
+    owo.noOcclude = {"facade"};
+    const Result rwo = expect("two rectangle targets, 360, the facade --no-occlude", st, owo);
+    CHECK(at(rwo, 0, "obstruction_front") == 0 && at(rwo, 0, "sky_front") > at(rw, 0, "sky_front") &&
+          at(rwo, 0, "ground_front") > at(rw, 0, "ground_front"));
+    views::Options ows = ow;
+    ows.selfOcclude = false;
+    ows.jitter = false;
+    Result rws;
+    CHECK(views::run(st, ows, rws, err) && same(rwo, rws));
     // --virtual-ground off: nothing nearer than the targets, distance_min is the nearer one's
     views::Options of = o3;
     of.virtualGround = false;

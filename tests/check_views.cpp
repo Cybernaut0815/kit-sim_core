@@ -1,7 +1,8 @@
 // SPDX-License-Identifier: Apache-2.0 AND LicenseRef-Commons-Clause-1.0
 // Checks for views (views.h). Runs with --jitter off against a host model of the same cells, traced in double from the
 // device's float sensor origins (every ray's class and distance through --dump-rays, then every column): facades,
-// tilted, turned, flat and nearly flat faces, vertices, --north, an eye 10 m over a 2 km target quad (360), the virtual
+// tilted, turned, flat and nearly flat faces, vertices, --north, --gaze level (and its own surface), an eye 10 m over a
+// 2 km target quad (360), the virtual
 // ground's height and switch, a screen nearer than 0.1 m, a wall past --far, sensors in the plane of a 2 km quad,
 // receivers that block no rays (no own surface), rectangle targets with group distances and --reach (also past --far).
 // Then the horizon, degenerate faces, the jitter
@@ -96,7 +97,7 @@ static bool glass_face(const views::Options& o, const SimulationMesh& m, size_t 
   return best && best->glass && best->tau > 0;
 }
 
-// The device's ray from o along unit d (n: the sensor's normal), as views.h defines it: cull (360 at offset 0, the
+// The device's ray from o along unit d (n: the sensor's normal), as views.h defines it: cull (360 or a level gaze at offset 0, the
 // sensor's mesh blocking rays) takes the sensor's back (254), the closest quad, else sky on or above the horizon, ground below it, ended by the virtual ground (to
 // 1 cm past its plane; the eye on or below it: 0.1 m). margin shrinks to how close (radians) the ray passes a quad's
 // edge, the horizon or, culled, the sensor's plane.
@@ -142,7 +143,8 @@ static End trace(const double o[3], const double d[3], const double n[3], bool c
 // One views run with --jitter off and its dump against the host model: the field's cells (centres in azimuth and in sine
 // of elevation, rows top-down from HI, columns clockwise from the left edge, weights = solid angles) from each sensor's
 // frame (forward = normal, right = horizontal or, within 1e-3 of straight up or down, east turned by --north and made
-// square to the normal, up = right x forward; 360: true north, east, up), traced from the device's origin (the sensors of
+// square to the normal, up = right x forward; a level gaze: forward = the normal's horizontal part, up = +z, but within
+// 1e-3 of straight up or down the normal's frame; 360: true north, east, up), traced from the device's origin (the sensors of
 // make_sensors_into, offset_ray)
 // against the blocking meshes' faces. Every ray's class must match and its end lie within tol x its distance (plus End::off)
 // of the host's, measured across the surface it ends on; every column as views.h defines it (shares and reach 1e-9,
@@ -230,8 +232,10 @@ static Result expect(const char* what, const std::vector<SimulationMesh>& meshes
     double f[3] = {-sinN, cosN, 0}, rt[3] = {cosN, sinN, 0}, u[3] = {0, 0, 1};
     if (!world) {
       std::copy(n, n + 3, f);
-      if (l > 1e-3) { rt[0] = n[1] / l; rt[1] = -n[0] / l; rt[2] = 0; }
-      else if (l > 0) {
+      if (l > 1e-3) {
+        rt[0] = n[1] / l; rt[1] = -n[0] / l; rt[2] = 0;
+        if (o.level) { f[0] = n[0] / l; f[1] = n[1] / l; f[2] = 0; }
+      } else if (l > 0) {
         const double en = rt[0] * n[0] + rt[1] * n[1];
         for (int b = 0; b < 3; ++b) rt[b] -= en * n[b];
         const double len = std::sqrt(rt[0] * rt[0] + rt[1] * rt[1] + rt[2] * rt[2]);
@@ -245,7 +249,7 @@ static Result expect(const char* what, const std::vector<SimulationMesh>& meshes
       const double s = sRow[d / nAz], cs = std::sqrt(1 - s * s), a = (az0 + (double(d % nAz) + 0.5) * dAz) * kDeg;
       double dir[3];
       for (int b = 0; b < 3; ++b) dir[b] = cs * std::sin(a) * rt[b] + cs * std::cos(a) * f[b] + s * u[b];
-      const End h = trace(O, dir, n, world && o.offset == 0 && !flat && B[i], o.virtualGround, plane, quads, margin);
+      const End h = trace(O, dir, n, (world || o.level) && o.offset == 0 && !flat && B[i], o.virtualGround, plane, quads, margin);
       U[d] = {cs * std::sin(a), cs * std::cos(a), s};
       L[d] = h.cls == 254 ? 0 : std::min(h.t, o.farDist);
       // the device's ray: its class, and how far its end lies from the host's across the surface, in tolerances
@@ -440,6 +444,9 @@ static void check_rules() {
   CHECK(parse({"f.obj", "--jitter", "off", "--virtual-ground", "off", "--ground-z", "-2.5", "--far", "300"}, a, err) == 0 && !a.opt.jitter &&
         !a.opt.virtualGround && a.opt.groundZ == -2.5 && a.opt.farDist == 300);
   CHECK(parse({"f.obj", "--north", "-30.5", "--offset", "1.6"}, a, err) == 0 && a.opt.north == -30.5 && a.opt.offset == 1.6);
+  CHECK(parse({"f.obj"}, a, err) == 0 && !a.opt.level);   // the gaze: the normal unless asked
+  CHECK(parse({"f.obj", "--gaze", "level"}, a, err) == 0 && a.opt.level && parse({"f.obj", "--gaze", "normal"}, a, err) == 0 && !a.opt.level);
+  CHECK(parse({"f.obj", "--gaze", "up"}, a, err) == 1 && err.find("--gaze normal|level") != std::string::npos);
   for (const std::vector<const char*>& bad : std::vector<std::vector<const char*>>{{"f.obj", "--fov", "1,2"}, {"f.obj", "--fov", "200"}, {"f.obj", "--jitter", "no"},
                                                                                   {"f.obj", "--far", "0.1"}, {"f.obj", "--cell", "x"}, {"f.obj", "--reach", "6,,20"},
                                                                                   {"f.obj", "--fov", "360,-90,90", "--cell", "0.1"}, {"f.obj", "--fov", "120,,50"},
@@ -455,6 +462,12 @@ static void check_rules() {
     const std::string j = views::cli::manifest_json(r, mo, views::Field{});
     CHECK(j.find("{\"name\": \"w\\\"1\\\\x\\u0001\", \"first\": 0, \"count\": 1}") != std::string::npos &&
           j.find("{\"mesh\": \"t\\\"0\", \"group\": \"g\"}") != std::string::npos);
+    // a level gaze only when on, in view mode (all around it means nothing)
+    CHECK(j.find("\"gaze\"") == std::string::npos);
+    mo.level = true;
+    CHECK(views::cli::manifest_json(r, mo, views::Field{}).find("\"gaze\": \"level\", \"cell\"") != std::string::npos);
+    mo.fovH = 360;
+    CHECK(views::cli::manifest_json(r, mo, views::Field{}).find("\"gaze\"") == std::string::npos);
   }
 }
 
@@ -736,6 +749,33 @@ int check_views(const char* testsDir) {
     face(roofs, {5, 0, 2, 6, 0, 2, 6, 1, 2.0001, 5, 1, 2.0001});
     const Result rr = expect("a flat and a nearly flat roof under a canopy", {roofs, canopy[1]}, n0);
     CHECK(at(rr, 0, "obstruction_front") > 0.01 && std::fabs(at(rr, 1, "obstruction_front") - at(rr, 0, "obstruction_front")) <= 1e-3);
+  }
+  {   // --gaze level: the field about the normal turned level. The facade and the turned face (vertical) see as before,
+      // the roof, the ceiling and the face looking down (no level direction) exactly as before; the tilted faces see
+      // the field split at the horizon, as the facade does (rows wholly above or below it)
+    views::Options ol = o1;
+    ol.level = true;
+    const Result rl = expect("faces in an empty scene, --gaze level", {faces}, ol);
+    CHECK(rl.columns == r1.columns && rl.values.size() == r1.values.size() && !r1.values.empty());
+    if (rl.columns == r1.columns && rl.values.size() == r1.values.size()) {
+      for (const size_t e : {0, 3})
+        for (const std::string& c : r1.columns)
+          CHECK(std::fabs(at(rl, e, c.c_str()) - at(r1, e, c.c_str())) <= 1e-6 * std::max(1.0, std::fabs(at(r1, e, c.c_str()))));
+      for (const size_t e : {1, 5, 6})
+        for (const std::string& c : r1.columns) CHECK(at(rl, e, c.c_str()) == at(r1, e, c.c_str()));
+      for (const size_t e : {2, 4}) CHECK(std::fabs(at(rl, e, "sky_front") - kSky) <= 1e-9 && std::fabs(at(rl, e, "ground_front") - (1 - kSky)) <= 1e-9);
+      CHECK(at(r1, 2, "sky_front") > kSky + 0.1);   // about its normal, tilted 30 deg up, it sees more sky
+    }
+    // at offset 0 a tilted face whose mesh blocks rays: a level field reaches behind its plane, its own surface
+    // (obstruction, not traced); about its normal none does (the host model knows no tilted blocker: shares only)
+    SimulationMesh roof = mesh("roof", true);
+    tilted(roof, 0, 0, 0.5, 0, 30);
+    views::Options blocking;
+    Result rn, rb;
+    CHECK(views::run({roof}, blocking, rn, err));
+    blocking.level = true;
+    CHECK(views::run({roof}, blocking, rb, err));
+    CHECK(at(rn, 0, "obstruction_front") == 0 && at(rb, 0, "obstruction_front") > 0.05 && std::fabs(at(rb, 0, "sky_front") - kSky) <= 1e-9);
   }
 
   // 2: 360 degrees from an eye 10 m over a 2 km target quad (a facade sensor at --offset 0.5: its back is traced too). The

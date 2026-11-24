@@ -23,6 +23,9 @@ struct Options : RunOptions {
   // elevation LO to HI (-90 <= LO < HI <= 90, or LO = HI = 0: a flat field of horizontal rays, the 2D isovist), one ray
   // per cell of `cell` degrees, at most 2^20 per sensor.
   double fovH = 120, elevLo = -70, elevHi = 50, cell = 2;
+  // H < 360: the field about the normal turned level (forward = its horizontal part, elevation about the horizon, as a
+  // person looks; a face looking straight up or down keeps its normal), not about the normal itself
+  bool level = false;
   bool jitter = true;                 // each ray at a seeded random point of its cell (uniform in solid angle); false = the centre
   std::vector<Target> targets;
   unsigned distance = DistAuto;       // Dist bits

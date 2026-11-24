@@ -52,6 +52,7 @@ struct Params {
   unsigned nAz, nEl;
   float az0, dAz;         // degrees: the first column's left edge, the column width
   unsigned world;         // 360 mode: the world frame (true north, horizon); else the sensor's (gaze = normal)
+  unsigned level;         // the sensor's frame turned level: gaze = the normal's horizontal part, up = +z (--gaze level)
   unsigned cull;          // own surface: directions behind the sensor (n . d <= 0) are not traced (the launch's sensors block rays)
   unsigned jitter;        // one point per cell uniform in solid angle, seeded by (element, cell, side); else the centre
   unsigned nS, back;      // sides per element; the one side is the back (seeds)

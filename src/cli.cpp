@@ -279,6 +279,9 @@ const char* const kUsage =
     "  --target NAME=GROUP[;NAME=GROUP...]  rays ending on mesh NAME count for GROUP (repeatable; at most 16 groups)\n"
     "  --fov H[,LO,HI]          field in degrees: H wide about the normal (up to 180) or 360 all around, elevation LO..HI\n"
     "                           (default 120,-70,50; H alone keeps LO,HI; H,0,0: horizontal rays only, the 2D isovist)\n"
+    "  --gaze normal|level      H < 360: the field about the normal, or about the normal turned level with elevation\n"
+    "                           about the horizon, as a person looks (default normal; faces looking straight up or down\n"
+    "                           keep their normal)\n"
     "  --cell DEG               degrees per ray, rows and columns (default 2)\n"
     "  --jitter on|off          each ray at a random point of its cell (default on; off: the cell centres)\n"
     "  --distance STAT[,STAT...]  isovist|mean|min|group|none (default: isovist with --fov 360, else mean,min)\n"
@@ -344,6 +347,7 @@ int parse(int argc, char** argv, Args& a, std::string& err) {
       o.fovH = x[0];
       if (x.size() == 3) { o.elevLo = x[1]; o.elevHi = x[2]; }
     }
+    else if (f == "--gaze") { if (!(v = need(i, "--gaze"))) return 1; if (!std::strcmp(v, "level")) o.level = true; else if (!std::strcmp(v, "normal")) o.level = false; else { err = "--gaze normal|level"; return 1; } }
     else if (f == "--cell") { if (!(v = need(i, "--cell"))) return 1; if (!one(v, o.cell)) { err = "--cell DEG"; return 1; } }
     else if (f == "--jitter") { if (!(v = need(i, "--jitter"))) return 1; if (!std::strcmp(v, "on")) o.jitter = true; else if (!std::strcmp(v, "off")) o.jitter = false; else { err = "--jitter on|off"; return 1; } }
     else if (f == "--distance") {
@@ -380,7 +384,8 @@ std::string manifest_json(const Result& r, const Options& opt, const Field& f) {
   const auto num = [](double v) { char s[32]; std::snprintf(s, sizeof s, "%.10g", v); return std::string(std::isfinite(v) ? s : "null"); };
   std::string m = "{\n  \"columns\": [";
   for (size_t c = 0; c < r.columns.size(); ++c) m += (c ? ", \"" : "\"") + r.columns[c] + "\"";
-  m += "],\n  \"view\": {\"fov\": [" + num(opt.fovH) + ", " + num(opt.elevLo) + ", " + num(opt.elevHi) + "], \"cell\": " + num(opt.cell) +
+  m += "],\n  \"view\": {\"fov\": [" + num(opt.fovH) + ", " + num(opt.elevLo) + ", " + num(opt.elevHi) + "], " +
+       (opt.level && opt.fovH < 360 ? "\"gaze\": \"level\", " : "") + "\"cell\": " + num(opt.cell) +
        ", \"grid\": [" + std::to_string(f.nEl) + ", " + std::to_string(f.nAz) + "], \"jitter\": " + (opt.jitter ? "true" : "false") +
        ", \"north\": " + num(opt.north) + ", \"offset\": " + num(opt.offset) + ", \"far\": " + num(opt.farDist) + ", \"near\": 0.1, \"virtual_ground\": " +
        (opt.virtualGround ? "true" : "false") + ", \"ground_z\": " + num(f.groundZ) + (opt.transmission ? ", \"transmission\": true" : "") +

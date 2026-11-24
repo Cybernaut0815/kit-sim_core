@@ -167,7 +167,8 @@ extern "C" __global__ void __anyhit__tr() {
 // Views, launched as __raygen__bits: a warp traces one direction for 32 neighbouring sensors. Direction d = row * nAz +
 // column, one point per cell (jitter: uniform in the cell's solid angle, seeded by the global element, d and the side, so
 // chunks and launches change nothing; else the cell's middle in azimuth and in sine of elevation), in the sensor's frame
-// (forward = n, right = horizontal, up) or, 360 mode, the world's (forward = true north, up = +z). The closest hit
+// (forward = n, right = horizontal, up; a level gaze: forward = n turned level, up = +z) or, 360 mode, the world's
+// (forward = true north, up = +z). The closest hit
 // passes the sensor's own plane as past_own_plane does (at most 4 segments, then an obstruction at the last); its class
 // is the hit triangle's label (one build input: primitive index = triangle order); a triangle labelled kLabelPass (glass,
 // --transmission on) is passed, at most kMaxPanes of them, and marks the ray kViewGlazed. A ray meeting nothing is sky on or
@@ -184,12 +185,15 @@ extern "C" __global__ void __raygen__view() {
   const bool none = !(dot(n, n) > 0.f);
   float3 f, r, u;
   if (params.world) { f = make_float3(-params.sinN, params.cosN, 0.f); r = make_float3(params.cosN, params.sinN, 0.f); u = make_float3(0.f, 0.f, 1.f); }
-  else {   // right = n x z normalised; within 1e-3 of straight up or down (float noise on a flat roof): east turned by
-           // --north, made square to n
+  else {   // right = n x z normalised (a level gaze: forward = n's horizontal part, so up = +z); within 1e-3 of straight
+           // up or down (float noise on a flat roof), no level direction: forward = n, right = east turned by --north,
+           // made square to n
     const float l = sqrtf(n.x * n.x + n.y * n.y);
     f = n;
-    if (l > 1e-3f) r = make_float3(n.y / l, -n.x / l, 0.f);
-    else {
+    if (l > 1e-3f) {
+      r = make_float3(n.y / l, -n.x / l, 0.f);
+      if (params.level) f = make_float3(n.x / l, n.y / l, 0.f);
+    } else {
       r = make_float3(params.cosN, params.sinN, 0.f);
       if (l > 0.f) { r = r - dot(r, n) * n; r = rsqrtf(dot(r, r)) * r; }
     }

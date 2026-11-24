@@ -92,6 +92,7 @@ export interface RemoteManifest {
     };
     view?: {
         fov: [h: number, lo: number, hi: number];
+        gaze?: 'level';
         cell: number;
         grid: [rows: number, columns: number];
         jitter: boolean;

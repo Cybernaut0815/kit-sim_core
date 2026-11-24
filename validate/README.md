@@ -202,6 +202,7 @@ horizon). Ladybug type 1 (Horizontal30DegreeOffset) is left out: its band depend
 | `box_360_open` | `tests/box.obj` | `--fov 360 --cell 4 --no-occlude box` (own surface on the ground only) |
 | `fixture_box_north` | `box` fixture | `--north 30 --cell 3` (facing up: right = east turned by north) |
 | `fixture_tilt30` | `tilt30` fixture | `--cell 3` |
+| `fixture_tilt30_level` | `tilt30` fixture | `--cell 3 --gaze level` (the field turned level: own surface behind the tilted faces) |
 | `street_facade` | street `facade` | `--target lake=water;park=park --distance mean,min,group --reach en17037` |
 | `street_360` | street `street` | targets, `--fov 360 --offset 1.6 --north 20 --distance mean,min,group --reach 6,20,50,100` |
 | `street_vg_off` | street `facade` | targets, `--virtual-ground off --cell 3` |

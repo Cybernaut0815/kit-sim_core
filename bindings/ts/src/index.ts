@@ -259,7 +259,7 @@ export interface RemoteManifest {
   duration_h?: number;
   dirs?: { sky: number; ground: number; sun: number };
   view?: {
-    fov: [h: number, lo: number, hi: number]; cell: number; grid: [rows: number, columns: number]; jitter: boolean; north: number; offset: number;
+    fov: [h: number, lo: number, hi: number]; gaze?: 'level'; cell: number; grid: [rows: number, columns: number]; jitter: boolean; north: number; offset: number;
     far: number; near: number; virtual_ground: boolean; ground_z: number; transmission?: true; reach: number[]; classes: string[]; image: string;
   };
   targets?: { mesh: string; group: string }[];

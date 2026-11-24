@@ -45,6 +45,13 @@ degrees. The default `120,-70,50` at 2 deg is 60 x 60 = 3,600 rays per element; 
   different ways see differently turned fields. Where that matters, `--fov 360` (one world frame for every element,
   e.g. `--fov 360,0,90` for the hemisphere an upward face sees) does not depend on the tilt. Every ray leaves in front
   of the surface.
+- **Level gaze** (`--gaze level`, view mode only; default `normal`): the field is centred on the normal turned level,
+  as a person looks out of a window: forward = the normal's horizontal part (normalised), right = the same horizontal
+  right as above, up = +Z, so elevation runs from LO to HI about the horizon. A vertical face gets exactly the frame
+  above; a tilted face no longer tilts its field. A face looking straight up or down (the same 1e-3 test) has no level
+  direction and keeps the frame above. A back side turns its reversed normal level. On a tilted face the level field
+  can reach behind the face's plane: with `--offset 0` those directions are its own surface where its mesh blocks rays,
+  as in 360 mode. A flat field is one row of horizontal rays about the level gaze. `--fov 360` ignores the flag.
 - **360 mode** (H = 360): one world frame for every element: azimuth clockwise from model north (+Y, turned
   counter-clockwise by `--north` as in daylight), elevation about the horizon. With `--offset 0` the directions behind
   the element's own plane are not traced where its mesh blocks rays (own surface, below).
@@ -79,7 +86,7 @@ classes) and ends in one class:
 | `ground` | points below the horizon and meets nothing down to the virtual ground; never sky | the virtual plane's; open with `--virtual-ground off` |
 | `obstruction` | ends on a mesh that is not a target: context, a receiver (receivers block by default), a modelled terrain | the hit's |
 | target group | ends on a mesh that `--target NAME=GROUP` names | the hit's |
-| own surface, counted in `obstruction` | 360 mode with `--offset 0`, the element's mesh blocking rays: a direction behind its own plane, not traced | none |
+| own surface, counted in `obstruction` | 360 mode or `--gaze level` with `--offset 0`, the element's mesh blocking rays: a direction behind its own plane, not traced | none |
 
 The horizon itself counts as sky (as daylight's sky patches and Ladybug's HorizontalRadial count it): a ray exactly
 along it that meets nothing is `sky`; the virtual ground ends only rays pointing below it. Every ray of a flat field
@@ -89,13 +96,13 @@ of a row centred on the horizon (`--fov 360,-1,1 --distance mean,min`); jittered
 A degenerate face (no area, so no normal; `-v` warns) traces no ray: its whole field is own surface, `obstruction` 1
 without a distance (daylight gives such a face 0).
 
-Own surface: in 360 mode with `--offset 0`, a direction behind the element's plane would only see the surface the
+Own surface: in 360 mode (or with `--gaze level`) with `--offset 0`, a direction behind the element's plane would only see the surface the
 element lies on; it is not traced and counts as `obstruction` without a distance (as daylight's hemisphere cull). With
 a non-zero `--offset` these directions are traced like any other: a floor grid lifted 1.6 m sees the floor (unless the
 floor is `--no-occlude`) and over a balcony's edge. A receiver that blocks no rays (`--no-occlude`, `--no-self-occlude`)
 has no own surface: at `--offset 0` too its elements trace the directions behind their plane, through the mesh (a
-floor grid on the virtual ground sees ground below it, one over a context floor that floor). View mode has no
-own-surface rays. A ray that meets the element's
+floor grid on the virtual ground sees ground below it, one over a context floor that floor). View mode about the
+normal has no own-surface rays (every ray leaves in front of the surface). A ray that meets the element's
 own plane through float error (an element lying in a large triangle) passes it as in daylight ([input.md](input.md));
 after four such crossings it ends there as an obstruction.
 
@@ -270,6 +277,7 @@ capped at 20 m (`sky ground obstruction obstruction_total glazing area`): 11 % o
 | `--context FILE` | mesh file, repeatable | none | blocks rays only, never analysed | `SimulationMesh::sensor = false` |
 | `--target NAME=GROUP[;NAME=GROUP...]` | mesh names, repeatable | none | rays ending on mesh NAME count for GROUP: a share column per group, in order of first appearance; `;` packs several into one token; rules above | `targets` (`Target {mesh, group}`) |
 | `--fov H[,LO,HI]` | degrees | `120,-70,50` | the field: H wide about the normal (0 < H <= 180, view mode) or 360 (all around), elevation LO to HI (-90 <= LO < HI <= 90, or LO = HI = 0: a flat field of horizontal rays, the 2D isovist); H alone keeps LO, HI | `fovH`, `elevLo`, `elevHi` |
+| `--gaze` | `normal` \| `level` | `normal` | view mode: the field about the normal, or about the normal turned level with elevation about the horizon ([Field of view](#field-of-view)); faces looking straight up or down keep the normal; 360 mode ignores it | `level` |
 | `--cell DEG` | degrees, > 0 | `2` | degrees per ray, rows and columns (rounded to fill the field; at most 2^20 rays per element) | `cell` |
 | `--jitter` | `on` \| `off` | `on` | each ray at a random point of its cell (deterministic); off: the cell's middle | `jitter` |
 | `--distance STAT[,STAT...]` | `isovist` \| `mean` \| `min` \| `group` \| `none` | `isovist` in 360 mode, else `mean,min` | distance columns: `volume` or, flat, `area` ([Isovist](#isovist)), `distance` (log mean), `distance_min`; `group`: also per target group (with `mean` and / or `min`); `none` alone: no distance column | `distance` (`Dist` bits: `DistIsovist`, `DistMean`, `DistMin`, `DistGroup`; `DistAuto` the default by mode) |
@@ -311,7 +319,8 @@ a file, the scene, CUDA / OptiX, memory, writing the output, a `--dump-rays` abo
   ground_front obstruction_front obstruction_total_front water_front distance_front distance_min_front`, all around
   `sky_front ground_front obstruction_front obstruction_total_front water_front volume_front` (`area_front` in a flat
   field).
-- Manifest `FILE.json`: `columns`; `view` with the field (`fov` [H, LO, HI], `cell` as given, `grid` [rows, columns]),
+- Manifest `FILE.json`: `columns`; `view` with the field (`fov` [H, LO, HI], `gaze: "level"` (only with `--gaze
+  level` in view mode), `cell` as given, `grid` [rows, columns]),
   `jitter`, `north`, `offset`, `far`, `near` (the 0.1 m floor), `virtual_ground`, `ground_z` (the plane's height in
   input metres, also with the plane off), `transmission: true` (only when on), `reach`, `classes` (the dump's class names in code order) and `image` (the
   dump's ray order); `targets`; `meshes` as daylight's. No `duration_h` or `dirs`. An example is in the examples below.

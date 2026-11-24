@@ -582,7 +582,7 @@ bool gpu_view(Gpu& g, size_t i0, size_t nc, unsigned rayFlags, const ViewLaunch&
   p.gas = g.gas; p.rayFlags = rayFlags; p.cosN = float(std::cos(rad)); p.sinN = float(std::sin(rad));
   p.label = static_cast<const unsigned char*>(g.dLabel); p.rowSin = reinterpret_cast<const float2*>(b + sines);
   p.nAz = v.nAz; p.nEl = v.nEl; p.az0 = v.az0; p.dAz = v.dAz;
-  p.world = v.world; p.cull = v.cull; p.jitter = v.jitter; p.nS = v.nS; p.back = v.back; p.vground = v.vground; p.groundZ = v.groundZ;
+  p.world = v.world; p.level = v.level; p.cull = v.cull; p.jitter = v.jitter; p.nS = v.nS; p.back = v.back; p.vground = v.vground; p.groundZ = v.groundZ;
   // Closest hits cost as varied as gpu_trace's byte mode (a street's rays end at the next facade, a roof's cross the
   // city), so its policy: 2^13 threads first and at least, then ~40 ms, at most doubling.
   // ponytail: the size carries across chunks, so sensors > ~50x costlier than the previous launch's (open views, then a

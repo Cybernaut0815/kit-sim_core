@@ -268,11 +268,12 @@ static bool run_views(const std::vector<SimulationMeshView>& meshes, const Optio
 
   stage = "tracing";
   const size_t ncMax = std::max<size_t>(1, chunkBytes / perSensor);
-  // The own surface (360 mode at offset 0, not a flat field) is that of the sensors whose mesh blocks rays: a receiver
-  // that blocks none (--no-occlude, --no-self-occlude) traces the directions behind its plane like any other. Sensors
-  // come in mesh order: runs of meshes alike (the sensor each run ends at, its cull), and no chunk crosses a run.
+  // The own surface (360 mode or a level gaze, whose field reaches behind a tilted face's plane, at offset 0, not a
+  // flat field) is that of the sensors whose mesh blocks rays: a receiver that blocks none (--no-occlude,
+  // --no-self-occlude) traces the directions behind its plane like any other. Sensors come in mesh order: runs of
+  // meshes alike (the sensor each run ends at, its cull), and no chunk crosses a run.
   // ponytail: a launch per run; a per-sensor flag on the device if receivers alternating between the two make many
-  const bool cull = world && opt.offset == 0 && !fd.flat;
+  const bool level = !world && opt.level, cull = (world || level) && opt.offset == 0 && !fd.flat;
   std::vector<std::pair<size_t, bool>> runs;
   for (size_t k = 0, at = 0; k < meshes.size(); ++k) {
     const size_t n = !meshes[k].sensor ? 0 : (opt.onVertices ? meshes[k].mesh->numPoints() : meshes[k].mesh->numFaces()) * nS;
@@ -284,7 +285,7 @@ static bool run_views(const std::vector<SimulationMeshView>& meshes, const Optio
   if (runs.empty() || runs.back().first != nSens) { err = "internal: the sensor runs do not cover the sensors"; return false; }
   ViewLaunch vl;
   vl.nAz = fd.nAz; vl.nEl = fd.nEl; vl.az0 = float(world ? 0 : -opt.fovH / 2); vl.dAz = float(dAz); vl.rowSin = rowSin.data();
-  vl.world = world; vl.jitter = opt.jitter; vl.back = opt.sides == Sides::Back;
+  vl.world = world; vl.level = level; vl.jitter = opt.jitter; vl.back = opt.sides == Sides::Back;
   vl.vground = opt.virtualGround; vl.nS = unsigned(nS); vl.groundZ = plane; vl.north = opt.north; vl.cancel = opt.cancel;
   const unsigned flags = gpu_bounce_flags(opt.cullBackfaces);   // closest hits, no any-hit
   std::vector<float> reach;   // compared with the float distances

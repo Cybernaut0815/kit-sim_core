@@ -163,6 +163,7 @@ meshes under the same `sceneKey`, so it traced on the scene the daylight run had
 | field | default | |
 |---|---|---|
 | `fovH`, `elevLo`, `elevHi` | 120, -70, 50 | the field, degrees: H wide about the normal (up to 180), or 360 all around (azimuth from north); `elevLo = elevHi = 0`: horizontal rays only (the 2D isovist) |
+| `level` | false | `fovH` < 360: the field about the normal turned level (forward = its horizontal part, elevation about the horizon; a face looking straight up or down keeps its normal), with an own surface at `offset` 0 as in 360 mode; false: about the normal (`--gaze`) |
 | `cell`, `jitter` | 2, true | degrees per ray; each ray at a seeded random point of its cell (false: the centre) |
 | `targets` | none | `views::Target {mesh, group}`: rays ending on the mesh of that `SimulationMesh::name` count for `group` (at most 16 groups) |
 | `distance` | `DistAuto` | the distance columns, `views::Dist` bits: `DistIsovist` (`volume`, or `area` in a flat field), `DistMean` (`distance`, log mean), `DistMin` (`distance_min`), `DistGroup` (per group too); 0: none; `DistAuto`: `DistIsovist` when `fovH = 360`, else `DistMean \| DistMin` |

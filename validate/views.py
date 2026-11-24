@@ -12,15 +12,16 @@ normal, a back side at minus the offset with the negated normal; rows element by
 core's float32 recentring on the bounding-box centre and offset_ray's nudge, and every ray of a row as
 src/trace_dev.cu __raygen__view does at --jitter off (cell centres: the middle of the azimuth and of the sine of the
 elevation; rows top-down from HI, columns clockwise; view mode: forward = the normal, right = normal x z, or, within 1e-3
-of vertical, east turned by --north and made square to the normal, up = right x forward; 360 mode: forward = north
-turned by --north, up = +z).
+of vertical, east turned by --north and made square to the normal, up = right x forward; --gaze level: forward = the
+normal's horizontal part, up = +z, but within 1e-3 of vertical the normal's frame; 360 mode: forward = north turned by
+--north, up = +z).
 The blocking meshes (context, receivers unless --no-self-occlude / --no-occlude) go to Radiance as the core's
 triangles at its float32 vertex positions, one plastic modifier per class (c2 obstruction, c3 + g target group g);
 `rtrace -ab 0 -oLmN` gives each ray's first hit. There is no plane in the Radiance scene: on the host a downward ray
 whose hit lies past where the core's ray ends (1 cm under the virtual ground, tmax = (o.z - plane + 0.01) / -dir.z),
 or that hits nothing, is `ground` at its exact plane distance (eye on or below the plane: ground at 0.1 m, untraced),
 with --virtual-ground off a downward miss is `ground` at +inf; a miss on or above the horizon (dir.z >= 0) is `sky`
-(+inf). Own-surface rays (360 mode, --offset 0, n.d <= 0, the sensor's mesh blocking rays: not --no-self-occlude or
+(+inf). Own-surface rays (360 mode or --gaze level, --offset 0, n.d <= 0, the sensor's mesh blocking rays: not --no-self-occlude or
 --no-occlude) must be class 254 and are not traced.
 Per case, hard: >= 99.9 % of the compared rays in the same class, and >= 99.9 % of those with a finite distance within
 |dt| <= 1e-5 t + 1e-4 m. Not compared: grazing hits (|cos| < 0.05 between the ray and the face rtrace hit), hits within
@@ -76,6 +77,7 @@ CASES = {
     'fixture_box_north': ([FIX / 'box' / 'sensors.obj'], [FIX / 'box' / 'context.obj'],
                           ['--north', '30', '--cell', '3']),                            # up-facing: east turned by north
     'fixture_tilt30': ([FIX / 'tilt30' / 'sensors.obj'], [], ['--cell', '3']),
+    'fixture_tilt30_level': ([FIX / 'tilt30' / 'sensors.obj'], [], ['--cell', '3', '--gaze', 'level']),   # + own surface
     'street_facade': ([STREET / 'facade.obj'], [STREET / 'context.obj'],
                       TARGETS + ['--distance', 'mean,min,group', '--reach', 'en17037']),
     'street_360': ([STREET / 'street.obj'], [STREET / 'context.obj'],
@@ -357,7 +359,11 @@ def rays(view, N32):
         side = np.stack([n[:, 1], -n[:, 0], np.zeros(len(n))], axis=1) / np.where(ln > 0, ln, 1)[:, None]
         east = np.array([cn, sn, 0.0]) - (n @ np.array([cn, sn, 0.0]))[:, None] * n
         east /= np.maximum(np.linalg.norm(east, axis=1, keepdims=True), 1e-300)   # 0 only where side is taken
-        r = np.where((np.sqrt(N32[:, 0] * N32[:, 0] + N32[:, 1] * N32[:, 1]) > F32(1e-3))[:, None], side, east)
+        tilt = (np.sqrt(N32[:, 0] * N32[:, 0] + N32[:, 1] * N32[:, 1]) > F32(1e-3))[:, None]
+        r = np.where(tilt, side, east)
+        if view.get('gaze') == 'level':         # forward = the normal's horizontal part (up = +z), where it has one
+            level = np.stack([n[:, 0], n[:, 1], np.zeros(len(n))], axis=1) / np.where(ln > 0, ln, 1)[:, None]
+            f = np.where(tilt, level, n)
     u = np.cross(r, f)
     cs, cc, sd = loc[:, 0], loc[:, 1], loc[:, 2]                                            # per direction d
     D = cs[None, :, None] * r[:, None, :] + cc[None, :, None] * f[:, None, :] + sd[None, :, None] * u[:, None, :]
@@ -374,7 +380,8 @@ def expect(view, o32, N32, blocks, C, gz, dirs, octree, vground, panes=None):
     nd = (dirs * N32.astype(np.float64)[:, None, :]).sum(axis=2)
     own = np.zeros((S, K), bool)
     sign = (np.abs(dz) < SIGN) & (dz != 0)      # dir.z decides sky / ground and the virtual ground; exact zeros agree
-    if view['fov'][0] == 360 and view['offset'] == 0 and view['fov'][1:] != [0, 0]:   # a flat field culls nothing
+    world_or_level = view['fov'][0] == 360 or view.get('gaze') == 'level'
+    if world_or_level and view['offset'] == 0 and view['fov'][1:] != [0, 0]:   # a flat field culls nothing
         own = (nd <= 0) & blocks[:, None]
         sign |= (np.abs(nd) < SIGN) & (nd != 0) & blocks[:, None]
         cls[own] = 254

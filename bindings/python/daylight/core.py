@@ -10,6 +10,8 @@ from pathlib import Path
 
 import numpy as np
 
+from .options import args_of
+
 REPO = Path(__file__).resolve().parents[3]
 TOOLS = ('daylight', 'views')                                    # index = the C ABI's tool id (DL_DAYLIGHT, DL_VIEWS)
 
@@ -34,11 +36,12 @@ def _paths(p):
 def run(sensors, context=(), epw=None, args=(), out=None, tool='daylight'):
     """`sensors` / `context`: a mesh file (.obj / .dmesh) or an iterable of them; sensors are analysed and block,
     context blocks only. -> (values [N x C] float64, manifest dict). `args` are further flags of `tool` ('daylight' or
-    'views'; `epw` is daylight's); `out` keeps the value file (`.npy` = binary, default; any other suffix = text)."""
+    'views'; `epw` is daylight's), raw or as a DaylightOptions / ViewsOptions dict (options.to_args); `out` keeps the
+    value file (`.npy` = binary, default; any other suffix = text)."""
     with tempfile.TemporaryDirectory() as d:
         out = Path(out or Path(d) / 'values.npy')
         cmd = [find_exe(tool), *_paths(sensors)] + [a for c in _paths(context) for a in ('--context', c)] \
-            + (['--epw', str(epw)] if epw else []) + list(args) + ['--out', str(out)]
+            + (['--epw', str(epw)] if epw else []) + [str(a) for a in args_of(args)] + ['--out', str(out)]
         subprocess.run(cmd, check=True)
         values = np.load(out) if out.suffix == '.npy' else np.loadtxt(out, ndmin=2)
         return values, json.loads(Path(f'{out}.json').read_text())

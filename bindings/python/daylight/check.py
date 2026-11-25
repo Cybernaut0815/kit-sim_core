@@ -25,6 +25,7 @@ from pxr import Sdf, Usd, UsdGeom, Vt
 from . import _native
 from .core import REPO, VIRIDIS, colormap, run_meshes, to_dmesh
 from .native import Control, DaylightError, SimulationMesh, _run, run, usage
+from .options import args_of, to_args
 from .usd import meshes, to_obj, write_results
 
 FIX = REPO / 'validate' / '_out' / 'fixtures' / 'usd_xform' / 'usd_xform.usda'
@@ -76,6 +77,29 @@ def check_masking():
         raise AssertionError('negative count accepted')
     except ValueError as e:
         assert '/m' in str(e), e
+
+
+def check_options():
+    """to_args on the cases bindings/ts/test/flags.test.ts gives toArgs (the same flags from the same options)."""
+    assert to_args({'epw': 'site.epw', 'quantity': ['radiation', 'sunhours'], 'sky_density': 2, 'cull_backfaces': True,
+                    'no_self_occlude': False, 'virtual_ground': False, 'fresnel': True, 'lat': 51.5, 'from_': '06-21T08:00',
+                    'verbose': True, 'offset': None}) == \
+        ['--epw', 'site.epw', '--quantity', 'radiation,sunhours', '--sky-density', '2', '--cull-backfaces',
+         '--virtual-ground', 'off', '--fresnel', 'on', '--lat', '51.5', '--from', '06-21T08:00', '-v']
+    assert to_args({'optics': [{'name': '*', 'rho': 0.5}, {'name': 'Glass', 'slot': 2, 'rho': 0, 'tau': 0.64, 'kind': 'glass'},
+                               'Tree=0.2,0.3']}) == ['--optics', '*=0.5;Glass/2=0,0.64,glass;Tree=0.2,0.3']
+    assert to_args({'optics': [{'name': 'Screen', 'rho': 0.1, 'kind': 'porous'}]}) == ['--optics', 'Screen=0.1,0,porous']
+    assert to_args({'target': {'park': 'green', 'lake': 'blue'}, 'no_occlude': ['a', 'b'], 'fov': (360, 0, 0),
+                    'reach': 'en17037', 'ground_z': -1}) == \
+        ['--target', 'park=green;lake=blue', '--no-occlude', 'a;b', '--fov', '360,0,0', '--reach', 'en17037', '--ground-z', '-1']
+    assert to_args({'quantity': [], 'no_occlude': [], 'distance': []}) == []
+    p = Path('site.epw')
+    assert to_args({'epw': p}) == ['--epw', p] and args_of(['--fov', '360']) == ['--fov', '360']
+    try:
+        to_args({'no_occlude': ['a;b']})
+        raise AssertionError("a name with ';' accepted")
+    except ValueError as e:
+        assert "--no-occlude: 'a;b' holds a ';'" in str(e), e
 
 
 def check_instancing():
@@ -211,6 +235,8 @@ def check_native():
     v3, m3, s3 = _run('views', ['--fov', '360', '--offset', '1.6', '--sides', 'both'], box, (), None)
     assert s3['scene_reused'], s3                                     # an opaque scene is views' too
     same_as_cli(v3, m3, 'views_smoke.npy')
+    typed = run('views', {'fov': 360, 'offset': 1.6, 'sides': 'both'}, box)   # typed options: the same flags
+    assert np.array_equal(typed.values, v3) and typed.manifest == json.loads(m3)
     box.close()
     with SimulationMesh.load(TESTS / 'box.obj') as box2:                        # a closed handle's scene is never reused
         r4 = run('daylight', SUN, [box2])
@@ -293,6 +319,7 @@ def main():
     check_colormap()
     check_write_results()
     check_masking()
+    check_options()
     check_instancing()
     if not FIX.exists():
         print(f'skip: {FIX} missing (run validate/fixtures.py)')

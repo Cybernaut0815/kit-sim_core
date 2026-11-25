@@ -214,7 +214,7 @@ describe('runRemote', () => {
         : json({ id: 'j1', state: 'done', ...manifest, values: { url: '/jobs/j1/values', dtype: '<f4', order: 'column-major', shape: [2, 2], bytes: 16 }, values_b64: 'not base64' });
     }) as unknown as typeof fetch;
     const seen: string[] = [];
-    const r = await runRemote('http://h/', { sensors: [m], args: ['--quantity', 'sunhours'], clientId: 'tab-1', onStatus: (j) => seen.push(`${j.state}:${j.position}`), fetch: fetchMock });
+    const r = await runRemote('http://h/', { sensors: [m], args: { quantity: ['sunhours'] }, clientId: 'tab-1', onStatus: (j) => seen.push(`${j.state}:${j.position}`), fetch: fetchMock });
     expect(calls.map((c) => `${c.method ?? 'GET'} ${c.url}`)).toEqual([
       'POST http://h/meshes/missing', 'PUT http://h/mesh/id-1?name=box', 'POST http://h/jobs', 'GET http://h/jobs/j1?wait=25', 'GET http://h/jobs/j1?wait=25', 'GET http://h/jobs/j1/values',
     ]);
@@ -428,4 +428,6 @@ it.skipIf(!exe)('run() on a box through the core via .dmesh in, .npy out (set DA
   for (const col of r.data) for (const v of col) expect(v).toBeGreaterThanOrEqual(0), expect(v).toBeLessThanOrEqual(1);
   const slotted = fromThree([box()]).map((m) => ({ ...m, slots: Uint16Array.from({ length: m.indices.length / 3 }, (_, i) => i % 3) }));
   expect((await run(exe, { sensors: slotted, args })).data).toEqual(r.data); // the core reads the slot block; same values
+  const typed = { lat: 42.35, lon: -71.07, tz: -5, quantity: ['sunhours' as const], time: '06-21T12:00' };
+  expect((await run(exe, { sensors: fromThree([box()]), args: typed })).data).toEqual(r.data); // typed options: the same flags
 });

@@ -22,6 +22,7 @@ import numpy as np
 from ._native import RUNTIME, STATS, USAGE, DaylightError, check, lib, text
 from ._native import path as _path
 from .core import _tool
+from .options import args_of
 
 __all__ = ['Control', 'DaylightError', 'SimulationMesh', 'Result', 'run', 'usage']
 
@@ -124,7 +125,7 @@ def usage(tool):
 def run(tool, args, sensors, context=(), control=None):
     """One run of `tool`, 'daylight' (docs/daylight.md) or 'views' (docs/views.md): `args` its CLI flags (str as UTF-8, an
     os.PathLike in the narrow encoding the core opens files with; mesh files, --context, --out, --bench and -h are
-    refused), `sensors` / `context` a SimulationMesh or an iterable of them in place of the CLI's mesh files and --context files,
+    refused) or a DaylightOptions / ViewsOptions dict (options.to_args), `sensors` / `context` a SimulationMesh or an iterable of them in place of the CLI's mesh files and --context files,
     `control` None or a Control. -> Result, values and manifest bit for bit the CLI's (numbers read and written with
     '.' whatever C locale is set). DaylightError: status 1 for bad flags or names the meshes do not resolve, 2 when the
     run fails (a file, the GPU, 'cancelled'). Runs take turns (one GPU run per process); each releases the GIL."""
@@ -135,7 +136,7 @@ def run(tool, args, sensors, context=(), control=None):
 def _run(tool, args, sensors, context, control):
     """run() with the manifest as the core's text (check.py compares it with the CLI's FILE.json byte for byte)."""
     t = _tool(tool)
-    argv = [_path(a) if isinstance(a, os.PathLike) else str(a).encode() for a in args]
+    argv = [_path(a) if isinstance(a, os.PathLike) else str(a).encode() for a in args_of(args)]
     sens, ctx = _meshes(sensors), _meshes(context)               # referenced until dl_run returns, so never freed in it
     dll, out = lib(), c_void_p()
     check(dll.dl_run(t, len(argv), (c_char_p * len(argv))(*argv), _handles(sens), len(sens), _handles(ctx), len(ctx),

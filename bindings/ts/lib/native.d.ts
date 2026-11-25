@@ -1,4 +1,5 @@
 import type { ObjMesh } from './index.js';
+import type { RunArgs } from './options.js';
 /**
  * Loads daylight_c.dll for this process, once: `dll`, else env DAYLIGHT_DLL, else <repo>/build/RelWithDebInfo/
  * daylight_c.dll (found from this file, in src/ or lib/). SimulationMesh, run and usage call it without a path. Throws when the
@@ -59,15 +60,16 @@ export declare class DaylightError extends Error {
     constructor(message: string, status: number);
 }
 /**
- * One run of `tool` with its CLI flags (`args`, without the program name; mesh paths, --context, --out, --bench and -h
- * are refused) over mesh handles: `sensors` in place of the CLI's mesh arguments, `context` of its --context meshes.
+ * One run of `tool` with its CLI flags (`args`, without the program name, raw or as DaylightOptions / ViewsOptions;
+ * mesh paths, --context, --out, --bench and -h are refused) over mesh handles: `sensors` in place of the CLI's mesh
+ * arguments, `context` of its --context meshes.
  * Flags go as UTF-8 (mesh names match SimulationMesh.names); file paths in them (--epw, ...) must be ASCII, as for SimulationMesh.load.
  * Runs go one at a time on a worker thread, so the event loop stays free. Aborting `signal` cancels: the run stops at
  * its next check, and the call rejects with DaylightError 2 "cancelled" (also when the run got past its last check).
  * `onProgress` gets the share of sensors traced, 0..1, polled every 100 ms and once at the end. The meshes stay
  * referenced (free() throws) until it settles. Rejects with a DaylightError.
  */
-export declare function run(tool: Tool, args: string[], input: {
+export declare function run(tool: Tool, args: RunArgs, input: {
     sensors: SimulationMesh[];
     context?: SimulationMesh[];
 }, opts?: {

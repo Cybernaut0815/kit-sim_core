@@ -1,4 +1,6 @@
 import type { Mesh, Object3D } from 'three';
+import { type RunArgs } from './options.js';
+export * from './options.js';
 export interface ObjMesh {
     name: string;
     positions: ArrayLike<number>;
@@ -69,12 +71,13 @@ export declare function applyToThree(mesh: Mesh, values: ArrayLike<number>, opts
  * Node only: writes the inputs into a temp dir, runs `exe <sensor files> [--context <file>]... ...args --out out.npy`,
  * returns the values as columns, `data[c][element]` for `columns[c]` (the core's doubles; runRemote has the same shape
  * in float32), and the `out.npy.json` manifest. A string input is OBJ text (one .obj); an ObjMesh[] becomes
- * one `<name>.dmesh` per mesh via toDmesh() (name sanitised to [A-Za-z0-9._-], made unique).
+ * one `<name>.dmesh` per mesh via toDmesh() (name sanitised to [A-Za-z0-9._-], made unique). `args`: raw flags, or
+ * DaylightOptions / ViewsOptions (toArgs()) for the tool `exe` is.
  */
 export declare function run(exe: string, input: {
     sensors: string | ObjMesh[];
     context?: string | ObjMesh[];
-    args?: string[];
+    args?: RunArgs;
 }): Promise<{
     data: Float64Array[];
     columns: string[];
@@ -164,8 +167,8 @@ export declare function meshIds(input: {
  * `{missing}` anyway (restarted, or it evicted the mesh) those go up again before one retry. The job is then long-polled (`GET /jobs/<id>?wait=25`); `onStatus` sees every
  * queued / running state. Aborting `signal` cancels the job on the server (`DELETE /jobs/<id>`), also one aborted
  * while the server was making it (the POST itself is not aborted, so its id is always known). `epw` is a Blob
- * (uploaded) or `{ url }` (the server fetches it through its allowlisted proxy cache). `args` are CLI flags verbatim
- * (no files), of the `tool` (daylight, the default, or views: docs/views.md). `clientId` (header `X-Client-Id`) identifies this client for the per-client job limit. Rejects with the
+ * (uploaded) or `{ url }` (the server fetches it through its allowlisted proxy cache). `args` are the `tool`'s CLI
+ * flags (daylight, the default, or views: docs/views.md), raw or as DaylightOptions / ViewsOptions; no file flags. `clientId` (header `X-Client-Id`) identifies this client for the per-client job limit. Rejects with the
  * server's text on 4xx / 5xx or a failed job. Resolves with the values as columns, `data[c][row]` for `columns[c]`
  * (rows of mesh k from `manifest.meshes[k].first`): float32, read from `GET <url>/jobs/<id>/values` as one buffer that
  * every column is a view of; `manifest` is the finished job's JSON.
@@ -176,7 +179,7 @@ export declare function runRemote(url: string, input: {
     epw?: Blob | {
         url: string;
     };
-    args?: string[];
+    args?: RunArgs;
     signal?: AbortSignal;
     clientId?: string;
     onStatus?: (job: RemoteJob) => void;

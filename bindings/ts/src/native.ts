@@ -7,6 +7,7 @@ import { fileURLToPath } from 'node:url';
 import { Worker, parentPort, workerData } from 'node:worker_threads';
 import koffi from 'koffi';
 import type { ObjMesh } from './index.js';
+import type { RunArgs } from './options.js';
 
 const ABI = 1; // DL_ABI_VERSION this binding was written against
 
@@ -203,15 +204,16 @@ function post(job: Omit<Job, 'id'>): Promise<Reply> {
 }
 
 /**
- * One run of `tool` with its CLI flags (`args`, without the program name; mesh paths, --context, --out, --bench and -h
- * are refused) over mesh handles: `sensors` in place of the CLI's mesh arguments, `context` of its --context meshes.
+ * One run of `tool` with its CLI flags (`args`, without the program name, raw or as DaylightOptions / ViewsOptions;
+ * mesh paths, --context, --out, --bench and -h are refused) over mesh handles: `sensors` in place of the CLI's mesh
+ * arguments, `context` of its --context meshes.
  * Flags go as UTF-8 (mesh names match SimulationMesh.names); file paths in them (--epw, ...) must be ASCII, as for SimulationMesh.load.
  * Runs go one at a time on a worker thread, so the event loop stays free. Aborting `signal` cancels: the run stops at
  * its next check, and the call rejects with DaylightError 2 "cancelled" (also when the run got past its last check).
  * `onProgress` gets the share of sensors traced, 0..1, polled every 100 ms and once at the end. The meshes stay
  * referenced (free() throws) until it settles. Rejects with a DaylightError.
  */
-export async function run(tool: Tool, args: string[], input: { sensors: SimulationMesh[]; context?: SimulationMesh[] },
+export async function run(tool: Tool, args: RunArgs, input: { sensors: SimulationMesh[]; context?: SimulationMesh[] },
   opts: { signal?: AbortSignal; onProgress?: (p: number) => void } = {}): Promise<NativeResult> {
   const d = native(), meshes = [...input.sensors, ...(input.context ?? [])];
   const handles = meshes.map((m) => state.get(m)?.handle ?? null); // a freed mesh: the core's "NULL mesh handle"
@@ -228,8 +230,10 @@ export async function run(tool: Tool, args: string[], input: { sensors: Simulati
   const timer = opts.onProgress ? setInterval(progress, 100) : undefined;
   count(1);
   try {
+    // imported here, after the meshes are counted in: this file is also the run thread, which loads no sibling module
+    const { argsOf } = await import('./options.js');
     const n = input.sensors.length;
-    const r = await post({ tool: toolId(tool), args, sensors: handles.slice(0, n), context: handles.slice(n), control });
+    const r = await post({ tool: toolId(tool), args: argsOf(args), sensors: handles.slice(0, n), context: handles.slice(n), control });
     if (r.error !== undefined) throw r.status > 0 ? new DaylightError(r.error, r.status) : new Error(r.error);
     if (opts.signal?.aborted) throw new DaylightError('cancelled', 2);
     progress();

@@ -3,6 +3,9 @@
 // Core contract: world metres, Z-up, right-handed winding; .dmesh = one mesh per file, OBJ = one `o` group per mesh.
 import { NodeIO, Primitive } from '@gltf-transform/core';
 import type { Mesh, Object3D } from 'three';
+import { argsOf, type RunArgs } from './options.js';
+
+export * from './options.js';
 
 export interface ObjMesh {
   name: string;
@@ -219,9 +222,10 @@ export async function applyToThree(mesh: Mesh, values: ArrayLike<number>, opts: 
  * Node only: writes the inputs into a temp dir, runs `exe <sensor files> [--context <file>]... ...args --out out.npy`,
  * returns the values as columns, `data[c][element]` for `columns[c]` (the core's doubles; runRemote has the same shape
  * in float32), and the `out.npy.json` manifest. A string input is OBJ text (one .obj); an ObjMesh[] becomes
- * one `<name>.dmesh` per mesh via toDmesh() (name sanitised to [A-Za-z0-9._-], made unique).
+ * one `<name>.dmesh` per mesh via toDmesh() (name sanitised to [A-Za-z0-9._-], made unique). `args`: raw flags, or
+ * DaylightOptions / ViewsOptions (toArgs()) for the tool `exe` is.
  */
-export async function run(exe: string, input: { sensors: string | ObjMesh[]; context?: string | ObjMesh[]; args?: string[] }): Promise<{ data: Float64Array[]; columns: string[]; manifest: unknown }> {
+export async function run(exe: string, input: { sensors: string | ObjMesh[]; context?: string | ObjMesh[]; args?: RunArgs }): Promise<{ data: Float64Array[]; columns: string[]; manifest: unknown }> {
   const fs = await import('node:fs/promises'); // dynamic so the browser-safe functions above bundle without node builtins
   const { tmpdir } = await import('node:os');
   const { join } = await import('node:path');
@@ -243,7 +247,7 @@ export async function run(exe: string, input: { sensors: string | ObjMesh[]; con
     const out = join(dir, 'out.npy');
     const args = await write('sensors', input.sensors, 0);
     if (input.context) for (const p of await write('context', input.context, sens.length)) args.push('--context', p);
-    args.push(...(input.args ?? []), '--out', out);
+    args.push(...argsOf(input.args), '--out', out);
     await new Promise<void>((res, rej) => execFile(exe, args, { maxBuffer: 1 << 26 }, (e, _o, stderr) => (e ? rej(new Error(`${exe} failed: ${stderr.trim() || e.message}`)) : res())));
     const manifest = JSON.parse(await fs.readFile(out + '.json', 'utf8')) as { columns: string[] };
     return { data: parseNpy(await fs.readFile(out), manifest.columns.length), columns: manifest.columns, manifest };
@@ -330,8 +334,8 @@ const uploaded = new Map<string, Set<string>>();
  * `{missing}` anyway (restarted, or it evicted the mesh) those go up again before one retry. The job is then long-polled (`GET /jobs/<id>?wait=25`); `onStatus` sees every
  * queued / running state. Aborting `signal` cancels the job on the server (`DELETE /jobs/<id>`), also one aborted
  * while the server was making it (the POST itself is not aborted, so its id is always known). `epw` is a Blob
- * (uploaded) or `{ url }` (the server fetches it through its allowlisted proxy cache). `args` are CLI flags verbatim
- * (no files), of the `tool` (daylight, the default, or views: docs/views.md). `clientId` (header `X-Client-Id`) identifies this client for the per-client job limit. Rejects with the
+ * (uploaded) or `{ url }` (the server fetches it through its allowlisted proxy cache). `args` are the `tool`'s CLI
+ * flags (daylight, the default, or views: docs/views.md), raw or as DaylightOptions / ViewsOptions; no file flags. `clientId` (header `X-Client-Id`) identifies this client for the per-client job limit. Rejects with the
  * server's text on 4xx / 5xx or a failed job. Resolves with the values as columns, `data[c][row]` for `columns[c]`
  * (rows of mesh k from `manifest.meshes[k].first`): float32, read from `GET <url>/jobs/<id>/values` as one buffer that
  * every column is a view of; `manifest` is the finished job's JSON.
@@ -339,7 +343,7 @@ const uploaded = new Map<string, Set<string>>();
 export async function runRemote(
   url: string,
   input: {
-    sensors: RemoteMesh[]; context?: RemoteMesh[]; epw?: Blob | { url: string }; args?: string[];
+    sensors: RemoteMesh[]; context?: RemoteMesh[]; epw?: Blob | { url: string }; args?: RunArgs;
     signal?: AbortSignal; clientId?: string; onStatus?: (job: RemoteJob) => void; onUpload?: (done: number, total: number) => void;
     fetch?: typeof globalThis.fetch;
     tool?: 'daylight' | 'views'; // the core tool the job runs: views takes no epw (form field `tool`, sent for views only)
@@ -376,7 +380,7 @@ export async function runRemote(
     ids.forEach((id, k) => fd.append(k < input.sensors.length ? 'sensors' : 'context', id));
     if (input.epw instanceof Blob) fd.append('epw', input.epw, 'weather.epw');
     else if (input.epw) fd.append('epw_url', input.epw.url);
-    for (const a of input.args ?? []) fd.append('args', a);
+    for (const a of argsOf(input.args)) fd.append('args', a);
     return fd;
   };
   const fresh = [...first.keys()].filter((id) => !sent.has(id)); // new to this server as far as this process knows

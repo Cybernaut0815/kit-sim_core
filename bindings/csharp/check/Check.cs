@@ -87,6 +87,26 @@ static class Check
         ExpectError(() => Run(Tool.Views, facade, "--target", "nosuch=g"), 1, "nosuch");
         ExpectError(() => Run(Tool.Daylight, facade, "--epw", Path.Combine(tests, "nosuch.epw")), 2, "nosuch.epw");
 
+        // typed options: the flags bindings/ts/test/flags.test.ts expects of toArgs, in Options.cs's fixed order
+        var dopt = new DaylightOptions
+        {
+            Epw = "site.epw", Quantities = new[] { Quantity.Radiation, Quantity.Sunhours }, SkyDensity = 2, CullBackfaces = true,
+            VirtualGround = false, Fresnel = true, Lat = 51.5, From = "06-21T08:00", Verbose = true,
+            Optics = new[] { new OpticsSpec("*", 0.5), new OpticsSpec("Glass", 0, 0.64, OpticsKind.Glass, 2), new OpticsSpec("Screen", 0.1, kind: OpticsKind.Porous) },
+        };
+        Expect(dopt.ToArgs().SequenceEqual(new[] { "--cull-backfaces", "--virtual-ground", "off", "--optics",
+            "*=0.5;Glass/2=0,0.64,glass;Screen=0.1,0,porous", "-v", "--epw", "site.epw", "--lat", "51.5", "--from", "06-21T08:00",
+            "--quantity", "radiation,sunhours", "--sky-density", "2", "--fresnel", "on" }), "DaylightOptions.ToArgs: " + string.Join(" ", dopt.ToArgs()));
+        var vopt = new ViewsOptions
+        {
+            Targets = new[] { new TargetSpec("park", "green") }, NoOcclude = new[] { "a", "b" }, Fov = new[] { 360.0, 0, 0 },
+            Reach = new double[0], GroundZ = -1, Gaze = Gaze.Level, Distances = new[] { DistanceStat.Isovist },
+        };
+        Expect(vopt.ToArgs().SequenceEqual(new[] { "--no-occlude", "a;b", "--target", "park=green", "--fov", "360,0,0",
+            "--gaze", "level", "--distance", "isovist", "--ground-z", "-1" }), "ViewsOptions.ToArgs: " + string.Join(" ", vopt.ToArgs()));
+        ExpectError(() => new ViewsOptions { NoOcclude = new[] { "a;b" } }.ToArgs(), 1, "--no-occlude: 'a;b' holds a ';'");
+        ExpectError(() => Core.Run(new DaylightOptions { Optics = new[] { new OpticsSpec("nosuch", 0.5) } }, new[] { facade }), 1, "nosuch");
+
         // C. the GPU: tests/box.obj (a ground of 4 quads, a floating box) as the CLI's smokes run it
         SimulationMesh box = SimulationMesh.Load(Path.Combine(tests, "box.obj"));
         Expect(box.Names.SequenceEqual(new[] { "ground", "box" }), "box.obj's groups: " + string.Join(", ", box.Names));
@@ -122,6 +142,8 @@ static class Check
         Result r3 = Core.Run(Tool.Views, new[] { "--fov", "360", "--offset", "1.6", "--sides", "both" }, new[] { box });
         Expect(r3.SceneReused, "views reuses daylight's opaque scene");
         Expect(SameAsCli(r3, build, "views_smoke.npy"), "views on box.obj != build/views_smoke.npy(.json) (or they are missing)");
+        Result typed = Core.Run(new ViewsOptions { Fov = new[] { 360.0 }, Offset = 1.6, Sides = Sides.Both }, new[] { box });
+        Expect(Bytes(typed.Values).SequenceEqual(Bytes(r3.Values)) && typed.Manifest == r3.Manifest, "typed ViewsOptions: the same run");
 
         // a disposed SimulationMesh is refused; a reloaded one builds its scene again, with the same values
         box.Dispose();

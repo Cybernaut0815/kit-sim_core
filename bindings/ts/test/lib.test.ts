@@ -14,6 +14,6 @@ it('lib/ is the build of src/ (after editing src: npm run build)', { timeout: 60
   const out = cfg.options.outDir!, emitted: Record<string, string> = {}, committed: Record<string, string> = {};
   program.emit(undefined, (path, text) => (emitted[relative(out, path)] = text));
   for (const f of readdirSync(out)) committed[f] = readFileSync(join(out, f), 'utf8').replace(/\r\n/g, '\n');
-  expect(Object.keys(emitted).sort()).toEqual(['index.d.ts', 'index.js', 'native.d.ts', 'native.js']);
+  expect(Object.keys(emitted).sort()).toEqual(['index.d.ts', 'index.js', 'native.d.ts', 'native.js', 'options.d.ts', 'options.js']);
   expect(committed).toEqual(emitted);
 });

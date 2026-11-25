@@ -104,6 +104,7 @@ describe.skipIf(!existsSync(dll))('native (daylight_c.dll)', { timeout: 60_000 }
       const r = await run('views', view360, { sensors: [box()] });
       expect(r.stats.sceneReused).toBe(true);
       sameAsCli(r, 'views_smoke.npy');
+      sameAsCli(await run('views', { fov: 360, offset: 1.6, sides: 'both' }, { sensors: [box()] }), 'views_smoke.npy'); // typed options
     });
 
     it('the event loop runs while the GPU does: a timer fires before the run settles', async () => {

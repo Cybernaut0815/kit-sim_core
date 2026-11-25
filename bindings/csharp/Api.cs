@@ -252,7 +252,28 @@ namespace Daylight
         }
 
         /// <summary>
-        /// <see cref="Run"/> on the thread pool. A cancelled <paramref name="token"/> cancels the run (through
+        /// One run with typed options: the tool is theirs (<see cref="DaylightOptions"/> or <see cref="ViewsOptions"/>), the
+        /// flags <see cref="CommonOptions.ToArgs"/>; otherwise as the raw-flag overload.
+        /// </summary>
+        public static Result Run(CommonOptions options, IReadOnlyList<SimulationMesh> sensors,
+                                 IReadOnlyList<SimulationMesh> context = null, RunControl control = null)
+        {
+            if (options == null) throw new ArgumentNullException(nameof(options));
+            return Run(options.Tool, options.ToArgs(), sensors, context, control);
+        }
+
+        /// <summary><see cref="Run(CommonOptions, IReadOnlyList{SimulationMesh}, IReadOnlyList{SimulationMesh}, RunControl)"/> on the thread pool, cancelled by <paramref name="token"/>.</summary>
+        public static Task<Result> RunAsync(CommonOptions options, IReadOnlyList<SimulationMesh> sensors,
+                                            IReadOnlyList<SimulationMesh> context = null, RunControl control = null,
+                                            CancellationToken token = default(CancellationToken))
+        {
+            if (options == null) throw new ArgumentNullException(nameof(options));
+            return RunAsync(options.Tool, options.ToArgs(), sensors, context, control, token);
+        }
+
+        /// <summary>
+        /// <see cref="Run(Tool, IReadOnlyList{string}, IReadOnlyList{SimulationMesh}, IReadOnlyList{SimulationMesh}, RunControl)"/>
+        /// on the thread pool. A cancelled <paramref name="token"/> cancels the run (through
         /// <paramref name="control"/>, or a control of its own) and the task ends cancelled.
         /// </summary>
         public static Task<Result> RunAsync(Tool tool, IReadOnlyList<string> args, IReadOnlyList<SimulationMesh> sensors,

@@ -181,8 +181,9 @@ function post(job) {
     });
 }
 /**
- * One run of `tool` with its CLI flags (`args`, without the program name; mesh paths, --context, --out, --bench and -h
- * are refused) over mesh handles: `sensors` in place of the CLI's mesh arguments, `context` of its --context meshes.
+ * One run of `tool` with its CLI flags (`args`, without the program name, raw or as DaylightOptions / ViewsOptions;
+ * mesh paths, --context, --out, --bench and -h are refused) over mesh handles: `sensors` in place of the CLI's mesh
+ * arguments, `context` of its --context meshes.
  * Flags go as UTF-8 (mesh names match SimulationMesh.names); file paths in them (--epw, ...) must be ASCII, as for SimulationMesh.load.
  * Runs go one at a time on a worker thread, so the event loop stays free. Aborting `signal` cancels: the run stops at
  * its next check, and the call rejects with DaylightError 2 "cancelled" (also when the run got past its last check).
@@ -214,8 +215,10 @@ export async function run(tool, args, input, opts = {}) {
     const timer = opts.onProgress ? setInterval(progress, 100) : undefined;
     count(1);
     try {
+        // imported here, after the meshes are counted in: this file is also the run thread, which loads no sibling module
+        const { argsOf } = await import('./options.js');
         const n = input.sensors.length;
-        const r = await post({ tool: toolId(tool), args, sensors: handles.slice(0, n), context: handles.slice(n), control });
+        const r = await post({ tool: toolId(tool), args: argsOf(args), sensors: handles.slice(0, n), context: handles.slice(n), control });
         if (r.error !== undefined)
             throw r.status > 0 ? new DaylightError(r.error, r.status) : new Error(r.error);
         if (opts.signal?.aborted)

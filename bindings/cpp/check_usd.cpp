@@ -1,5 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0 AND LicenseRef-Commons-Clause-1.0
-// read_usd checks against box.usda: hand-computed world Z-up metres, winding flips, pruning. Run: check_usd <dir>.
+// read_usd checks against box.usda (hand-computed world Z-up metres, winding flips, pruning) and instanced.usda
+// (instanceable references, a point instancer with prototype xform, scale, orientation, invisibleIds).
+// Run: check_usd <dir>.
 #include "daylight_usd.h"
 #include <cmath>
 #include <cstdio>
@@ -92,6 +94,31 @@ int main(int argc, char** argv) {
   if (ms.size() == 3) {
     const double raw0[3] = {50, 150, 350};
     CHECK(near3(&ms[0].points[0], raw0, 1e-9));
+  }
+
+  // instanced.usda (Z-up metres): two instanceable references of a unit quad at x 10 and x 20 (the class itself not
+  // drawn), a point instancer of three: its prototype 1 m up by its own xform, instance 1 scaled 2x, turned 90 deg
+  // about Z and moved to x 5, instance 2 invisible. Quaternions are half floats: 2e-3.
+  ms.clear();
+  CHECK(daylight::read_usd(dir + "/instanced.usda", 'A', 0, ms, err));
+  const char* instNames[4] = {"/World/TileA/Quad", "/World/TileB/Quad", "/World/Trees[0]/World/Trees/Protos/Box/Quad",
+                              "/World/Trees[1]/World/Trees/Protos/Box/Quad"};
+  const double instPts[4][12] = {{10, 0, 0, 11, 0, 0, 11, 1, 0, 10, 1, 0},
+                                 {20, 0, 0, 21, 0, 0, 21, 1, 0, 20, 1, 0},
+                                 {0, 0, 1, 1, 0, 1, 1, 1, 1, 0, 1, 1},
+                                 {5, 0, 2, 5, 2, 2, 3, 2, 2, 3, 0, 2}};
+  CHECK(ms.size() == 4);
+  if (ms.size() != 4)
+    for (const SimulationMesh& m : ms)
+      std::printf("  got %s, %zu points, first (%g %g %g)\n", m.name.c_str(), m.numPoints(), m.points.empty() ? 0 : m.points[0],
+                  m.points.size() < 3 ? 0 : m.points[1], m.points.size() < 3 ? 0 : m.points[2]);
+  for (size_t k = 0; k < ms.size() && k < 4; ++k) {
+    const SimulationMesh& m = ms[k];
+    CHECK(m.name == instNames[k]);
+    CHECK(m.numPoints() == 4 && m.numFaces() == 1);
+    if (m.numPoints() != 4 || m.indices.size() != 4) continue;
+    for (size_t i = 0; i < 4; ++i) CHECK(near3(&m.points[3 * i], instPts[k] + 3 * i, 2e-3));
+    for (int i = 0; i < 4; ++i) CHECK(m.indices[size_t(i)] == i);   // scale 2 and a rotation keep det > 0: no flip
   }
   std::printf("%s: %d failure(s)\n", fails ? "FAIL" : "OK", fails);
   return fails ? 1 : 0;

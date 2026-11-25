@@ -1,6 +1,7 @@
 # SPDX-License-Identifier: Apache-2.0 AND LicenseRef-Commons-Clause-1.0
 """python -m daylight.check: `to_dmesh` round trip and hole / winding / degenerate-face masking on an in-memory
-stage (no exe needed), then convert validate/_out/fixtures/usd_xform/usd_xform.usda (fixtures.py) and compare
+stage (no exe needed), bindings/cpp/instanced.usda as check_usd.cpp reads it (instances and point instancers), then
+convert validate/_out/fixtures/usd_xform/usd_xform.usda (fixtures.py) and compare
 counts, winding and world points with values derived from the fixture generator (scene_box authored on a Y-up cm
 stage: nested rotations, leftHanded sensors, mirrored box_b, guide / inactive / invisible lids), then `run_meshes`
 end to end when the exes exist (daylight: sun hours of one quad with / without a slab above it; views: named meshes
@@ -75,6 +76,19 @@ def check_masking():
         raise AssertionError('negative count accepted')
     except ValueError as e:
         assert '/m' in str(e), e
+
+
+def check_instancing():
+    """bindings/cpp/instanced.usda: the names, face counts and world points check_usd.cpp expects from read_usd."""
+    got = {name: (p, c) for name, p, c, _ in meshes(str(REPO / 'bindings' / 'cpp' / 'instanced.usda'))}
+    want = {'/World/TileA/Quad': [(10, 0, 0), (11, 0, 0), (11, 1, 0), (10, 1, 0)],
+            '/World/TileB/Quad': [(20, 0, 0), (21, 0, 0), (21, 1, 0), (20, 1, 0)],
+            '/World/Trees[0]/World/Trees/Protos/Box/Quad': [(0, 0, 1), (1, 0, 1), (1, 1, 1), (0, 1, 1)],
+            '/World/Trees[1]/World/Trees/Protos/Box/Quad': [(5, 0, 2), (5, 2, 2), (3, 2, 2), (3, 0, 2)]}
+    assert list(got) == list(want), list(got)
+    for name, pts in want.items():
+        p, c = got[name]
+        assert c.tolist() == [4] and np.allclose(p, pts, atol=2e-3), (name, p)
 
 
 def check_exe(name, fn, tries=5):
@@ -279,6 +293,7 @@ def main():
     check_colormap()
     check_write_results()
     check_masking()
+    check_instancing()
     if not FIX.exists():
         print(f'skip: {FIX} missing (run validate/fixtures.py)')
     else:

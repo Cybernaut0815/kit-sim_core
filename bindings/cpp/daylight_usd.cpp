@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0 AND LicenseRef-Commons-Clause-1.0
 // USD reader: LightUSD composed stage (sublayers, references, payloads, ...) -> SimulationMesh[] in world metres, Z-up.
 #include "daylight_usd.h"
+#include <unordered_map>
 #pragma warning(push)
 #pragma warning(disable : 4127)   // LightUSD headers: constant conditionals in templates
 #include <composition.hh>
@@ -14,24 +15,40 @@
 namespace daylight {
 namespace {
 
-// visibility (default time) and purpose of an imageable prim of type T; false when the prim is not a T.
+// visibility (default time), purpose and specifier of an imageable prim of type T; false when the prim is not a T.
+// The specifier is the typed prim's: LightUSD leaves Prim::specifier() at def.
 template <class T>
-bool imageable_of(const lightusd::Prim& p, lightusd::Visibility& v, lightusd::Purpose& pu) {
+bool imageable_of(const lightusd::Prim& p, lightusd::Visibility& v, lightusd::Purpose& pu, lightusd::Specifier& s) {
   const T* t = p.as<T>();
   if (!t) return false;
   t->visibility.get_value().get(lightusd::value::TimeCode::Default(), &v);
   pu = t->purpose.get_value();
+  s = t->spec;
   return true;
 }
 
+// True for a prim whose subtree is not drawn: inactive, a class (Usd.PrimRange's default predicate), invisible, or
+// proxy / guide purpose. Instanceable prims are drawn: composition puts their prototype's prims under them.
 bool prim_skipped(const lightusd::Prim& p) {
-  // ponytail: instanceable prims and PointInstancers are skipped, not expanded; flatten / de-instance the stage first.
-  if (!p.metas().get_active() || p.IsInstance() || p.is<lightusd::GeomPointInstancer>()) return true;
+  if (!p.metas().get_active()) return true;
   lightusd::Visibility v = lightusd::Visibility::Inherited;
   lightusd::Purpose pu = lightusd::Purpose::Default;
-  (void)(imageable_of<lightusd::Xform>(p, v, pu) || imageable_of<lightusd::Scope>(p, v, pu) ||
-         imageable_of<lightusd::GeomMesh>(p, v, pu));
-  return v == lightusd::Visibility::Invisible || pu == lightusd::Purpose::Proxy || pu == lightusd::Purpose::Guide;
+  lightusd::Specifier s = p.specifier();
+  if (const auto* untyped = p.as<lightusd::Model>()) s = untyped->spec;
+  (void)(imageable_of<lightusd::Xform>(p, v, pu, s) || imageable_of<lightusd::Scope>(p, v, pu, s) ||
+         imageable_of<lightusd::GeomMesh>(p, v, pu, s) || imageable_of<lightusd::GeomPointInstancer>(p, v, pu, s));
+  return s == lightusd::Specifier::Class || v == lightusd::Visibility::Invisible || pu == lightusd::Purpose::Proxy ||
+         pu == lightusd::Purpose::Guide;
+}
+
+using Matrix = lightusd::value::matrix4d;
+
+// a x b in the row-vector convention: p * (a x b) applies a first.
+Matrix mul(const Matrix& a, const Matrix& b) {
+  Matrix r;
+  for (int i = 0; i < 4; ++i)
+    for (int j = 0; j < 4; ++j) r.m[i][j] = a.m[i][0] * b.m[0][j] + a.m[i][1] * b.m[1][j] + a.m[i][2] * b.m[2][j] + a.m[i][3] * b.m[3][j];
+  return r;
 }
 
 // Row-vector convention: p' = [p,1] * W. Winding flipped when leftHanded XOR det(W3) < 0; authored normals ignored.
@@ -89,14 +106,74 @@ bool convert(const lightusd::GeomMesh& g, const lightusd::value::matrix4d& W, co
   return true;
 }
 
-bool walk(const lightusd::tydra::XformNode& n, bool skip, bool yup, double mpu, std::vector<SimulationMesh>& out, std::string& err) {
-  if (n.prim) {
-    skip = skip || prim_skipped(*n.prim);
-    if (!skip)
-      if (const auto* g = n.prim->as<lightusd::GeomMesh>())
-        if (!convert(*g, n.get_world_matrix(), n.absolute_path.full_path_name(), yup, mpu, out, err)) return false;
+// One read: the stage's axis and unit, the output, and every node of the transform tree by path (prototype lookup).
+struct Walk {
+  bool yup;
+  double mpu;
+  std::vector<SimulationMesh>& out;
+  std::string& err;
+  std::unordered_map<std::string, const lightusd::tydra::XformNode*> nodes;
+};
+
+void index_nodes(const lightusd::tydra::XformNode& n, Walk& w) {
+  w.nodes.emplace(n.absolute_path.full_path_name(), &n);
+  for (const auto& c : n.children) index_nodes(c, w);
+}
+
+bool walk(const lightusd::tydra::XformNode& n, const Matrix& world, const std::string& prefix, bool inPrototype, int depth, Walk& w);
+
+// Each visible instance of a point instancer: its prototype's subtree again, at prototype xform x scale x orientation
+// x position x the instancer's world matrix, named "<instancer>[k]<mesh path>" (daylight.usd's names). The
+// instancer's own children are only drawn this way.
+bool instances(const lightusd::GeomPointInstancer& pi, const std::string& name, const Matrix& world, int depth, Walk& w) {
+  if (depth >= 8) { w.err = name + ": point instancers nested more than 8 deep"; return false; }
+  std::vector<std::string> prototypes;
+  if (pi.prototypes) {
+    if (pi.prototypes->is_path()) prototypes.push_back(pi.prototypes->targetPath.full_path_name());
+    else if (pi.prototypes->is_pathvector())
+      for (const auto& target : pi.prototypes->targetPathVector) prototypes.push_back(target.full_path_name());
   }
-  for (const auto& c : n.children) if (!walk(c, skip, yup, mpu, out, err)) return false;
+  const double t = lightusd::value::TimeCode::Default();
+  const std::vector<int32_t> protoIndices = pi.get_protoIndices(t);
+  std::vector<Matrix> placements;
+  std::vector<bool> shown;
+  std::string e;
+  if (!lightusd::ComputeInstanceTransformsAtTime(pi, t, lightusd::value::TimeSampleInterpolationType::Linear, &placements, &e) ||
+      !lightusd::ComputeMaskAtTime(pi, t, &shown, &e)) {
+    w.err = name + ": " + e;
+    return false;
+  }
+  for (size_t k = 0; k < protoIndices.size() && k < placements.size(); ++k) {
+    if (k < shown.size() && !shown[k]) continue;
+    const int32_t p = protoIndices[k];
+    if (p < 0 || size_t(p) >= prototypes.size()) {
+      w.err = name + ": protoIndices[" + std::to_string(k) + "] = " + std::to_string(p) + ", but " +
+              std::to_string(prototypes.size()) + " prototypes";
+      return false;
+    }
+    const auto it = w.nodes.find(prototypes[size_t(p)]);
+    if (it == w.nodes.end()) continue;   // an inactive or missing prototype draws nothing, as in pxr
+    const auto& proto = *it->second;
+    const Matrix at = mul(mul(proto.get_local_matrix(), placements[k]), world);
+    if (!walk(proto, at, name + "[" + std::to_string(k) + "]", true, depth + 1, w)) return false;
+  }
+  return true;
+}
+
+// Every drawn mesh at or under n into w.out, n at `world`, its names behind `prefix`. Under a point instance
+// (inPrototype) the children's world matrices are composed here; elsewhere they are the transform tree's.
+bool walk(const lightusd::tydra::XformNode& n, const Matrix& world, const std::string& prefix, bool inPrototype, int depth, Walk& w) {
+  if (n.prim) {
+    if (prim_skipped(*n.prim)) return true;
+    const std::string name = prefix + n.absolute_path.full_path_name();
+    if (const auto* g = n.prim->as<lightusd::GeomMesh>())
+      if (!convert(*g, world, name, w.yup, w.mpu, w.out, w.err)) return false;
+    if (const auto* pi = n.prim->as<lightusd::GeomPointInstancer>()) return instances(*pi, name, world, depth, w);
+  }
+  for (const auto& c : n.children) {
+    const Matrix at = !inPrototype ? c.get_world_matrix() : c.has_resetXformStack() ? c.get_local_matrix() : mul(c.get_local_matrix(), world);
+    if (!walk(c, at, prefix, inPrototype, depth, w)) return false;
+  }
   return true;
 }
 
@@ -154,7 +231,9 @@ bool read_usd(const std::string& path, char upAxis, double metersPerUnit, std::v
   const bool yup = upAxis == 'Z' ? false : upAxis == 'Y' ? true : !(sm.upAxis.authored() && sm.upAxis.get_value() == lightusd::Axis::Z);
   lightusd::tydra::XformNode root;
   if (!lightusd::tydra::BuildXformNodeFromStage(stage, &root)) { err = path + ": cannot build the transform tree"; return false; }
-  return walk(root, false, yup, mpu, out, err);
+  Walk w{yup, mpu, out, err, {}};
+  index_nodes(root, w);
+  return walk(root, root.get_world_matrix(), "", false, 0, w);
 }
 
 }  // namespace daylight

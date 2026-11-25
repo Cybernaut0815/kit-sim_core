@@ -51,7 +51,8 @@ A `daylight::SimulationMesh` holds `points` (xyz interleaved, world metres, Z up
 slot 0), `name` (what `optics`, `noOcclude` and `targets` refer to, and what `Result::ranges` reports) and `sensor`
 (true: analysed, a row per element, and blocking; false: context, blocks rays only). Conventions: [input.md](input.md).
 
-**USD.** `bindings/cpp` adds `read_usd` (LightUSD: sublayers, references, payloads, xforms, up axis, units): configure
+**USD.** `bindings/cpp` adds `read_usd` (LightUSD: sublayers, references, payloads, xforms, up axis, units; instanceable
+prims and PointInstancers expanded, each point instance named `<instancer>[k]<prototype mesh path>`): configure
 with `-DDAYLIGHT_USD=ON` (preset `vs2022-usd`) and link `daylight_usd`
 ([bindings/cpp/README.md](../bindings/cpp/README.md)).
 

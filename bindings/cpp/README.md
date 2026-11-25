@@ -28,8 +28,11 @@ if (!daylight::views::run({m}, vo, v, err)) throw std::runtime_error(err);   // 
 ## USD (optional, LightUSD)
 
 `daylight_usd` is a reader library: USD stage (sublayers, references, payloads, xforms, up axis, units) ->
-`daylight::SimulationMesh[]` in world metres, Z-up. Configure with `-DDAYLIGHT_USD=ON` (preset `vs2022-usd`): the CLI then
-takes `.usd/.usda/.usdc/.usdz` directly, `ctest` adds `check_usd` + `cli_usd`. In-process:
+`daylight::SimulationMesh[]` in world metres, Z-up. Instanceable prims are drawn under their own path; a PointInstancer
+draws each visible instance (`invisibleIds`, `inactiveIds` honoured) as `<instancer>[k]<prototype mesh path>`, the names
+the Python reader gives. Inactive, `class`, invisible, guide and proxy prims are skipped. Configure with
+`-DDAYLIGHT_USD=ON` (preset `vs2022-usd`): the CLI then takes `.usd/.usda/.usdc/.usdz` directly, `ctest` adds `check_usd`
+(`box.usda`, `instanced.usda`) + `cli_usd`. In-process:
 
 ```cpp
 #include "daylight_usd.h"                          // target_link_libraries(app PRIVATE daylight_usd)

@@ -1,0 +1,66 @@
+#usda 1.0
+(
+    doc = """read_usd / daylight.usd.meshes fixture: two instances of a class (instanceable references) and a point
+    instancer of three (the third invisible), its prototype moved 1 m up by its own xform, the second instance
+    scaled 2x and turned 90 deg about Z. Expected meshes: check_usd.cpp and daylight/check.py."""
+    defaultPrim = "World"
+    metersPerUnit = 1
+    upAxis = "Z"
+)
+
+class Xform "TileClass"
+{
+    def Mesh "Quad"
+    {
+        int[] faceVertexCounts = [4]
+        int[] faceVertexIndices = [0, 1, 2, 3]
+        point3f[] points = [(0, 0, 0), (1, 0, 0), (1, 1, 0), (0, 1, 0)]
+    }
+}
+
+def Xform "World"
+{
+    def Xform "TileA" (
+        instanceable = true
+        references = </TileClass>
+    )
+    {
+        double3 xformOp:translate = (10, 0, 0)
+        uniform token[] xformOpOrder = ["xformOp:translate"]
+    }
+
+    def Xform "TileB" (
+        instanceable = true
+        references = </TileClass>
+    )
+    {
+        double3 xformOp:translate = (20, 0, 0)
+        uniform token[] xformOpOrder = ["xformOp:translate"]
+    }
+
+    def PointInstancer "Trees"
+    {
+        rel prototypes = [</World/Trees/Protos/Box>]
+        int[] protoIndices = [0, 0, 0]
+        point3f[] positions = [(0, 0, 0), (5, 0, 0), (0, 5, 0)]
+        quath[] orientations = [(1, 0, 0, 0), (0.70710677, 0, 0, 0.70710677), (1, 0, 0, 0)]
+        float3[] scales = [(1, 1, 1), (2, 2, 2), (1, 1, 1)]
+        int64[] invisibleIds = [2]
+
+        def Scope "Protos"
+        {
+            def Xform "Box"
+            {
+                double3 xformOp:translate = (0, 0, 1)
+                uniform token[] xformOpOrder = ["xformOp:translate"]
+
+                def Mesh "Quad"
+                {
+                    int[] faceVertexCounts = [4]
+                    int[] faceVertexIndices = [0, 1, 2, 3]
+                    point3f[] points = [(0, 0, 0), (1, 0, 0), (1, 1, 0), (0, 1, 0)]
+                }
+            }
+        }
+    }
+}

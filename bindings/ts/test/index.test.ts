@@ -208,7 +208,8 @@ describe('runRemote', () => {
     m.id = 'id-1';
     const calls: { url: string; method?: string; body?: unknown; headers?: HeadersInit }[] = [];
     let polls = 0;
-    const fetchMock = (async (url: string, init?: RequestInit) => {
+    const fetchMock = (async function (this: unknown, url: string, init?: RequestInit) {
+      if (this !== undefined && this !== globalThis) throw new TypeError("Failed to execute 'fetch' on 'Window': Illegal invocation"); // as a browser's
       calls.push({ url, method: init?.method, body: init?.body, headers: init?.headers });
       if (url.endsWith('/meshes/missing')) return json({ missing: JSON.parse(init!.body as string).ids });
       if (init?.method === 'PUT') return new Response(null, { status: 204 });

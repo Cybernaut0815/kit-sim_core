@@ -498,8 +498,10 @@ async function values(r: Remote, manifest: RemoteManifest, id: string): Promise<
  */
 export async function runRemote(url: string, input: RemoteInput):
   Promise<{ data: Float32Array<ArrayBuffer>[]; columns: string[]; manifest: RemoteManifest; cache?: Record<string, string> }> {
+  const send = input.fetch ?? globalThis.fetch;
   const r: Remote = {
-    base: url.replace(/\/$/, ''), fetch: input.fetch ?? globalThis.fetch, signal: input.signal,
+    // called unbound: a browser's fetch throws "Illegal invocation" when its `this` is not the window
+    base: url.replace(/\/$/, ''), fetch: (resource, init) => send(resource, init), signal: input.signal,
     headers: input.clientId ? { 'X-Client-Id': input.clientId } : {},
   };
   const ids = await meshIds(input);

@@ -490,8 +490,10 @@ async function values(r, manifest, id) {
  * every column is a view of; `manifest` is the finished job's JSON.
  */
 export async function runRemote(url, input) {
+    const send = input.fetch ?? globalThis.fetch;
     const r = {
-        base: url.replace(/\/$/, ''), fetch: input.fetch ?? globalThis.fetch, signal: input.signal,
+        // called unbound: a browser's fetch throws "Illegal invocation" when its `this` is not the window
+        base: url.replace(/\/$/, ''), fetch: (resource, init) => send(resource, init), signal: input.signal,
         headers: input.clientId ? { 'X-Client-Id': input.clientId } : {},
     };
     const ids = await meshIds(input);

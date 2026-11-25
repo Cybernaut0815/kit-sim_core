@@ -364,6 +364,27 @@ int check_mesh(const char* testsDir) {
     Options lbb; lbb.mode = Mode::Ladybug; lbb.bounces = 2;
     Options few; few.bounceSamples = 0;
     CHECK(!optics_ok(lbb, err) && !optics_ok(few, err));   // run() checks the same
+    // number flags: one whole, finite token each ('.' the decimal point), never read as 0 when they are no number
+    CHECK(parse({"m.obj", "--lat", "51.5", "--lon", "-0.13", "--tz", "1", "--ground", "0.35", "--turbidity", "4", "--altitude", "120",
+                 "--sky-density", "2", "--patch-samples", "4", "--step", "30"}, a, err) == 0 &&
+          a.opt.lat == 51.5 && a.opt.lon == -0.13 && a.opt.tz == 1 && a.opt.ground == 0.35 && a.turbidity == 4 && a.altitude == 120 &&
+          a.opt.mf == 2 && a.opt.patchSamples == 4 && a.opt.stepMin == 30);
+    const char* badN[][3] = {{"--lat", "abc", "--lat DEG"}, {"--lon", "1,5", "--lon DEG"}, {"--tz", "nan", "--tz H"}, {"--ground", "0,2", "--ground RHO"},
+                             {"--turbidity", "3x", "--turbidity TL"}, {"--altitude", "1e999", "--altitude M"}, {"--lat", "", "--lat DEG"},
+                             {"--sky-density", "2.5", "--sky-density needs a whole number"}, {"--patch-samples", "four", "--patch-samples needs a whole number"},
+                             {"--step", "15min", "--step needs a whole number"}, {"--step", "0", "--step must be positive minutes"}};
+    for (const auto& b : badN) {   // the message starts with the flag and what it takes
+      const int rc = parse({"m.obj", b[0], b[1]}, a, err);
+      CHECK(rc == 1 && err.rfind(b[2], 0) == 0);
+      if (rc != 1 || err.rfind(b[2], 0) != 0) std::printf("  %s '%s': rc %d, '%s'\n", b[0], b[1], rc, err.c_str());
+    }
+    CHECK(parse({"m.obj", "--lat", "abc"}, a, err) == 1 && err == "--lat DEG: 'abc' is not a number");
+    CHECK(parse({"m.obj", "--on", "edges"}, a, err) == 1 && err == "--on faces|vertices");
+    CHECK(parse({"m.obj", "--sides", "top"}, a, err) == 1 && err == "--sides front|back|both");
+    CHECK(parse({"m.obj", "--mode", "radiance"}, a, err) == 1 && err == "--mode physical|ladybug");
+    CHECK(parse({"m.obj", "--sides", "both", "--on", "vertices", "--mode", "ladybug"}, a, err) == 0 && a.opt.sides == Sides::Both &&
+          a.opt.onVertices && a.opt.mode == Mode::Ladybug);
+    CHECK(parse({"m.obj", "--quantity", "radiation,lux"}, a, err) == 1 && err.find("unknown quantity") != std::string::npos);
     // --no-occlude NAME[;NAME...]: repeatable, ';' packs names (every other character belongs to one); an empty NAME is refused
     CHECK(parse({"m.obj", "--no-occlude", "Facade/East;/World/Roof/2", "--no-occlude", "a=b"}, a, err) == 0 &&
           a.opt.noOcclude == std::vector<std::string>({"Facade/East", "/World/Roof/2", "a=b"}));

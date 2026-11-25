@@ -451,8 +451,13 @@ static void check_rules() {
                                                                                   {"f.obj", "--far", "0.1"}, {"f.obj", "--cell", "x"}, {"f.obj", "--reach", "6,,20"},
                                                                                   {"f.obj", "--fov", "360,-90,90", "--cell", "0.1"}, {"f.obj", "--fov", "120,,50"},
                                                                                   {"f.obj", "--cell", "inf"}, {"f.obj", "--reach", "6,6"}, {"f.obj", "--offset", "1,6"},
-                                                                                  {"f.obj", "--offset", "1e999"}, {"f.obj", "--north", "abc"}, {"f.obj", "--north", "nan"}})
+                                                                                  {"f.obj", "--offset", "1e999"}, {"f.obj", "--north", "abc"}, {"f.obj", "--north", "nan"},
+                                                                                  {"f.obj", "--far", "300m"}, {"f.obj", "--ground-z", "inf"}, {"f.obj", "--reach", "6,nan"},
+                                                                                  {"f.obj", "--fov", "120,-70,inf"}})
     CHECK(parse(bad, a, err) == 1);
+  CHECK(parse({"f.obj", "--far", "300m"}, a, err) == 1 && err == "--far M: '300m' is not a number");
+  CHECK(parse({"f.obj", "--ground-z", "0,5"}, a, err) == 1 && err == "--ground-z Z: '0,5' is not a number");
+  CHECK(parse({"f.obj", "--jitter", "no"}, a, err) == 1 && err == "--jitter on|off");
   // the manifest writes names as JSON strings: quote, backslash and control bytes escaped
   {
     Result r;

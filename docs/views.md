@@ -269,7 +269,11 @@ capped at 20 m (`sky ground obstruction obstruction_total glazing area`): 11 % o
 
 ## Flags
 
-`views --help` prints the short form; the `daylight::views::Options` field is given for in-process callers.
+`views --help` prints every flag grouped by topic (meshes, field of view, distances, ground and glass, output) with its
+default, a few examples and the exit codes; the server serves the same text at `GET /usage/views`. The
+`daylight::views::Options` field is given for in-process callers; the Python, TypeScript and C# bindings also take the
+flags as typed options ([api.md](api.md#typed-options)). Numbers are whole tokens with `.` as the decimal point, as in
+daylight.
 
 | flag | value | default | meaning | `views::Options` |
 |---|---|---|---|---|

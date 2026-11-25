@@ -11,21 +11,24 @@
 
 namespace daylight::cli {
 
+// daylight's -h text: every flag grouped by topic with its meaning and default, examples and the exit codes.
 extern const char* const kUsage;
 
 // What every CLI of the library parses alike (parse_common): mesh files, the output, --bench, -h.
 struct CommonArgs {
   std::vector<std::string> sensors, context;   // positional mesh files / --context files
-  std::string out;
-  bool bench = false, help = false;
-  size_t benchSens = 1000000, benchTris = 10000000;
+  std::string out;                             // --out FILE[.npy]; empty = text on stdout, no manifest
+  bool bench = false, help = false;            // --bench (a synthetic scene, timings only); -h / --help
+  size_t benchSens = 1000000, benchTris = 10000000;   // --bench NSENS NTRIS
 };
 
+// daylight's flags: the run options, plus the weather and time flags prepare() turns into weather and opt.t0 / t1.
 struct Args : CommonArgs {
   Options opt;
-  std::string epw, timeStr, fromStr, toStr;
-  bool clearSky = false;
-  double turbidity = 3, altitude = 0;
+  std::string epw;                             // --epw FILE
+  std::string timeStr, fromStr, toStr;         // --time, --from, --to as given ([YYYY-]MM-DDTHH:MM)
+  bool clearSky = false;                       // --clear-sky
+  double turbidity = 3, altitude = 0;          // --turbidity TL, --altitude M (clear sky only)
 };
 
 // argv[1..argc): the shared flags (-v --context --on --sides --cull-backfaces --no-self-occlude --no-occlude --offset
@@ -51,8 +54,10 @@ std::string manifest_json(const Result& r, const std::string& extraFields = "");
 
 namespace daylight::views::cli {
 
+// views' -h text, laid out as daylight's.
 extern const char* const kUsage;
 
+// views' flags: parse_common's and the field, target, distance and ground flags, all in opt.
 struct Args : daylight::cli::CommonArgs {
   Options opt;
 };

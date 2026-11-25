@@ -3,18 +3,28 @@
 // Core contract: world metres, Z-up, right-handed winding; .dmesh = one mesh per file, OBJ = one `o` group per mesh.
 import { NodeIO, Primitive } from '@gltf-transform/core';
 import type { Mesh, Object3D } from 'three';
+import { argsOf, type RunArgs } from './options.ts';
 
+export * from './options.ts';
+
+/** A triangle mesh in the core's frame, as fromThree() / fromGLB() give it and toObj() / toDmesh() / run() take it. */
 export interface ObjMesh {
+  /** The mesh's name: its `.dmesh` stem through dmeshStems(), its OBJ `o` group. */
   name: string;
-  positions: ArrayLike<number>; // xyz interleaved, world metres, Z-up
-  indices: ArrayLike<number>; // triangle indices, 0-based
-  slots?: Uint16Array; // optics slot per triangle (core SimulationMesh::slot; toDmesh writes it, toObj does not); absent = all slot 0
-  id?: string; // runRemote(): the server caches the mesh under it; absent: meshIds() derives it from the bytes
+  /** xyz interleaved, world metres, Z-up. */
+  positions: ArrayLike<number>;
+  /** Triangle indices, 0-based, right-handed winding. */
+  indices: ArrayLike<number>;
+  /** Optics slot per triangle (core SimulationMesh::slot; toDmesh writes it, toObj does not); absent = all slot 0. */
+  slots?: Uint16Array;
+  /** runRemote(): the server caches the mesh under it; absent: meshIds() derives it from the bytes. */
+  id?: string;
 }
 
 /**
- * `.dmesh` file stems (= core mesh names) for `names`: sanitised to `[A-Za-z0-9._-]`, empty -> `fallback`, made unique
- * case-insensitively (`_2`, `_3`, ... suffixes; Windows/macOS file systems ignore case). Shared by run() and runRemote().
+ * `.dmesh` file stems (= core mesh names) for `names`: every character outside `[A-Za-z0-9._-]` becomes `_`
+ * (`/World/lake` -> `_World_lake`), empty -> `fallback`, made unique case-insensitively (`_2`, `_3`, ... suffixes;
+ * Windows/macOS file systems ignore case). Shared by run() and runRemote(); the Python binding's stems follow it.
  */
 export function dmeshStems(names: ArrayLike<string>, fallback = 'mesh'): string[] {
   const used = new Set<string>(), out: string[] = [];
@@ -28,6 +38,11 @@ export function dmeshStems(names: ArrayLike<string>, fallback = 'mesh'): string[
   return out;
 }
 
+/**
+ * Meshes -> the core's OBJ text (interop): one `o <name>` group per mesh, `v` lines in world metres Z-up, `f` lines with
+ * 1-based global indices. Slots are not written (OBJ input is slot 0). Throws for positions that are not xyz triples,
+ * indices that are not triangle triples, or an index out of range.
+ */
 export function toObj(meshes: ObjMesh[]): string {
   let out = '';
   let base = 0;
@@ -219,9 +234,10 @@ export async function applyToThree(mesh: Mesh, values: ArrayLike<number>, opts: 
  * Node only: writes the inputs into a temp dir, runs `exe <sensor files> [--context <file>]... ...args --out out.npy`,
  * returns the values as columns, `data[c][element]` for `columns[c]` (the core's doubles; runRemote has the same shape
  * in float32), and the `out.npy.json` manifest. A string input is OBJ text (one .obj); an ObjMesh[] becomes
- * one `<name>.dmesh` per mesh via toDmesh() (name sanitised to [A-Za-z0-9._-], made unique).
+ * one `<name>.dmesh` per mesh via toDmesh() (name sanitised to [A-Za-z0-9._-], made unique). `args`: raw flags, or
+ * DaylightOptions / ViewsOptions (toArgs()) for the tool `exe` is.
  */
-export async function run(exe: string, input: { sensors: string | ObjMesh[]; context?: string | ObjMesh[]; args?: string[] }): Promise<{ data: Float64Array[]; columns: string[]; manifest: unknown }> {
+export async function run(exe: string, input: { sensors: string | ObjMesh[]; context?: string | ObjMesh[]; args?: RunArgs }): Promise<{ data: Float64Array[]; columns: string[]; manifest: unknown }> {
   const fs = await import('node:fs/promises'); // dynamic so the browser-safe functions above bundle without node builtins
   const { tmpdir } = await import('node:os');
   const { join } = await import('node:path');
@@ -243,7 +259,7 @@ export async function run(exe: string, input: { sensors: string | ObjMesh[]; con
     const out = join(dir, 'out.npy');
     const args = await write('sensors', input.sensors, 0);
     if (input.context) for (const p of await write('context', input.context, sens.length)) args.push('--context', p);
-    args.push(...(input.args ?? []), '--out', out);
+    args.push(...argsOf(input.args), '--out', out);
     await new Promise<void>((res, rej) => execFile(exe, args, { maxBuffer: 1 << 26 }, (e, _o, stderr) => (e ? rej(new Error(`${exe} failed: ${stderr.trim() || e.message}`)) : res())));
     const manifest = JSON.parse(await fs.readFile(out + '.json', 'utf8')) as { columns: string[] };
     return { data: parseNpy(await fs.readFile(out), manifest.columns.length), columns: manifest.columns, manifest };
@@ -320,6 +336,150 @@ export async function meshIds(input: { sensors: readonly RemoteMesh[]; context?:
 /** Mesh ids this process has put on, or found on, each server: those skip POST /meshes/missing. */
 const uploaded = new Map<string, Set<string>>();
 
+/** What runRemote() runs: the meshes, the weather, the flags, and the caller's hooks. */
+export interface RemoteInput {
+  /** Analysed meshes (rows in this order); they also block. */
+  sensors: RemoteMesh[];
+  /** Meshes that only block. */
+  context?: RemoteMesh[];
+  /** daylight's weather: a Blob (uploaded) or `{ url }` (the server fetches it through its allowlisted proxy cache). */
+  epw?: Blob | { url: string };
+  /** The tool's flags, raw or typed (toArgs()); no file flags. */
+  args?: RunArgs;
+  /** Aborting cancels the job on the server, also one aborted while the server was making it. */
+  signal?: AbortSignal;
+  /** Header `X-Client-Id`: identifies this client for the per-client job limit. */
+  clientId?: string;
+  /** Every queued / running state of the job. */
+  onStatus?: (job: RemoteJob) => void;
+  /** Upload progress, done of total meshes, from 0 to total. */
+  onUpload?: (done: number, total: number) => void;
+  /** Another fetch (tests, a proxy); default globalThis.fetch. */
+  fetch?: typeof globalThis.fetch;
+  /** The core tool the job runs: daylight (default) or views, which takes no epw (form field `tool`, sent for views only). */
+  tool?: 'daylight' | 'views';
+}
+
+/** What the steps of one runRemote() share: the server, its fetch, the client header, the caller's abort signal. */
+interface Remote { base: string; fetch: typeof globalThis.fetch; headers: Record<string, string>; signal?: AbortSignal }
+/** A job as POST /jobs and GET /jobs/<id> answer it: the manifest's fields once done, values_b64 only on ?inline=1. */
+type JobReply = RemoteJob & Partial<RemoteManifest> & { values_b64?: string };
+
+/** A request to the server with the client header and the abort signal. */
+const request = (r: Remote, path: string, init: RequestInit = {}) => r.fetch(`${r.base}${path}`, { ...init, headers: r.headers, signal: r.signal });
+
+/** `res` when ok, else an Error "<what> failed (<status>): <the server's text>". */
+async function ok(res: Response, what: string): Promise<Response> {
+  if (!res.ok) throw new Error(`${what} failed (${res.status}): ${(await res.text()).trim()}`);
+  return res;
+}
+
+/**
+ * Upload step: the meshes of one job, by id. `missing()` asks the server which of the ids this process has not seen
+ * there it lacks (one POST /meshes/missing; a 404 from an older server: all of them) and puts those. `put(ids)` sends
+ * them 6 at a time via PUT /mesh/<id>?name=<stem>, each body built just before its PUT, `onUpload(done, total)` from 0
+ * to total (no progress after a failure). `forget(ids)` marks ids the server lost.
+ */
+function uploader(r: Remote, meshes: readonly RemoteMesh[], ids: readonly string[], onUpload?: (done: number, total: number) => void) {
+  const first = new Map<string, number>();
+  ids.forEach((id, k) => { if (!first.has(id)) first.set(id, k); });
+  const sent = uploaded.get(r.base) ?? uploaded.set(r.base, new Set()).get(r.base)!;
+  const put = async (todo: readonly string[]) => {
+    const list = [...new Set(todo)];
+    let done = 0, failed = false;
+    if (list.length) onUpload?.(0, list.length);
+    await pool(6, list, async (id) => {
+      const k = first.get(id);
+      if (k === undefined) throw new Error(`${r.base}/jobs asked for an unknown mesh id ${id}`);
+      // its own name (the id when unnamed), never a job's _2: the server keeps it for the id, every later job included,
+      // and makes names unique per job itself (as dmeshStems)
+      const name = dmeshStems([meshes[k].name || id])[0];
+      try {
+        await ok(await request(r, `/mesh/${encodeURIComponent(id)}?name=${encodeURIComponent(name)}`, { method: 'PUT', body: bytesOf(meshes[k]) }), `PUT ${r.base}/mesh/${id}`);
+        sent.add(id);
+        if (!failed) onUpload?.(++done, list.length);
+      } catch (e) { failed = true; throw e; }
+    });
+  };
+  const missing = async () => {
+    const fresh = [...first.keys()].filter((id) => !sent.has(id)); // new to this server as far as this process knows
+    if (!fresh.length) return;
+    const res = await request(r, '/meshes/missing', { method: 'POST', body: JSON.stringify({ ids: fresh }) });
+    if (res.status !== 404) await ok(res, `${r.base}/meshes/missing`);
+    await put(res.ok ? ((await res.json()) as { missing: string[] }).missing : fresh); // 404: a server without the route
+    for (const id of fresh) sent.add(id);
+  };
+  return { put, missing, forget: (lost: readonly string[]) => { for (const id of lost) sent.delete(id); } };
+}
+
+/** The POST /jobs form: the tool (views only), the mesh ids by role, the weather, the flags. */
+function jobForm(input: RemoteInput, ids: readonly string[]): FormData {
+  const fd = new FormData();
+  if (input.tool === 'views') fd.append('tool', 'views');
+  ids.forEach((id, k) => fd.append(k < input.sensors.length ? 'sensors' : 'context', id));
+  if (input.epw instanceof Blob) fd.append('epw', input.epw, 'weather.epw');
+  else if (input.epw) fd.append('epw_url', input.epw.url);
+  for (const a of argsOf(input.args)) fd.append('args', a);
+  return fd;
+}
+
+/**
+ * Submit step: POST /jobs. A 404 `{missing}` (the server restarted or evicted meshes) puts those again before one
+ * retry. Not aborted by the signal: once the server has made the job its id is known, so poll() can still delete it.
+ */
+async function submit(r: Remote, up: ReturnType<typeof uploader>, form: () => FormData): Promise<JobReply> {
+  const post = () => r.fetch(`${r.base}/jobs`, { method: 'POST', body: form(), headers: r.headers });
+  let res = await post();
+  if (res.status === 404) {
+    const { missing } = (await res.json()) as { missing: string[] };
+    up.forget(missing);
+    await up.put(missing);
+    res = await post();
+  }
+  return (await ok(res, `${r.base}/jobs`)).json() as Promise<JobReply>;
+}
+
+/**
+ * Poll step: long-polls the job (GET /jobs/<id>?wait=25) until it leaves queued / running, `onStatus` seeing each of
+ * those states. An abort, also one while the job was being made, deletes the job (freeing the GPU for others) and
+ * rejects; so does a job that ended in any state but done, with its state, status and the server's message.
+ */
+async function poll(r: Remote, job: JobReply, onStatus?: (job: RemoteJob) => void): Promise<JobReply & RemoteManifest> {
+  try {
+    r.signal?.throwIfAborted(); // aborted while the job was being made
+    while (job.state === 'queued' || job.state === 'running') {
+      onStatus?.(job);
+      job = (await (await ok(await request(r, `/jobs/${encodeURIComponent(job.id)}?wait=25`), `${r.base}/jobs/${job.id}`)).json()) as JobReply;
+    }
+  } catch (e) {
+    if (r.signal?.aborted) r.fetch(`${r.base}/jobs/${encodeURIComponent(job.id)}`, { method: 'DELETE', headers: r.headers }).catch(() => undefined);
+    throw e;
+  }
+  if (job.state !== 'done') throw new Error(`${r.base} job ${job.id} ${job.state}${job.status ? ` (${job.status})` : ''}: ${(job.error ?? '').trim()}`);
+  return job as JobReply & RemoteManifest;
+}
+
+/**
+ * Values step: the finished job's values (manifest.values.url, else /jobs/<id>/values; 404 once the server's result cap
+ * expired them) as raw float32 LE, column-major, streamed into one buffer of the size the manifest implies: a result
+ * of up to 0.5 GB is never held twice, and each column is a view of it. The job JSON's values_b64 is never decoded:
+ * at large sizes that string passes a browser's length limit.
+ */
+async function values(r: Remote, manifest: RemoteManifest, id: string): Promise<Float32Array<ArrayBuffer>[]> {
+  const rows = manifest.meshes.reduce((n, g) => n + g.count, 0), size = 4 * rows * manifest.columns.length, buf = new Uint8Array(size);
+  const path = manifest.values?.url ?? `/jobs/${encodeURIComponent(id)}/values`;
+  const reader = (await ok(await request(r, path), `${r.base}${path}`)).body!.getReader();
+  let n = 0;
+  for (let c = await reader.read(); !c.done; c = await reader.read()) {
+    if (n + c.value.length > size) { n += c.value.length; reader.cancel().catch(() => undefined); break; } // too long: stop reading
+    buf.set(c.value, n);
+    n += c.value.length;
+  }
+  if (n !== size) throw new Error(`${r.base}${path}: ${n} of ${size} bytes`);
+  // Float32Array reads host byte order: little-endian on every target (x86, ARM).
+  return manifest.columns.map((_, c) => new Float32Array(buf.buffer, 4 * c * rows, rows));
+}
+
 /**
  * Browser or Node: runs the core on a `daylight_server` as a queued job, so several users share the GPU. Meshes travel
  * by id (`RemoteMesh.id`, else meshIds(): their bytes' SHA-256, nothing written back): `POST <url>/jobs` names them. Ids
@@ -330,101 +490,22 @@ const uploaded = new Map<string, Set<string>>();
  * `{missing}` anyway (restarted, or it evicted the mesh) those go up again before one retry. The job is then long-polled (`GET /jobs/<id>?wait=25`); `onStatus` sees every
  * queued / running state. Aborting `signal` cancels the job on the server (`DELETE /jobs/<id>`), also one aborted
  * while the server was making it (the POST itself is not aborted, so its id is always known). `epw` is a Blob
- * (uploaded) or `{ url }` (the server fetches it through its allowlisted proxy cache). `args` are CLI flags verbatim
- * (no files), of the `tool` (daylight, the default, or views: docs/views.md). `clientId` (header `X-Client-Id`) identifies this client for the per-client job limit. Rejects with the
+ * (uploaded) or `{ url }` (the server fetches it through its allowlisted proxy cache). `args` are the `tool`'s CLI
+ * flags (daylight, the default, or views: docs/views.md), raw or as DaylightOptions / ViewsOptions; no file flags. `clientId` (header `X-Client-Id`) identifies this client for the per-client job limit. Rejects with the
  * server's text on 4xx / 5xx or a failed job. Resolves with the values as columns, `data[c][row]` for `columns[c]`
  * (rows of mesh k from `manifest.meshes[k].first`): float32, read from `GET <url>/jobs/<id>/values` as one buffer that
  * every column is a view of; `manifest` is the finished job's JSON.
  */
-export async function runRemote(
-  url: string,
-  input: {
-    sensors: RemoteMesh[]; context?: RemoteMesh[]; epw?: Blob | { url: string }; args?: string[];
-    signal?: AbortSignal; clientId?: string; onStatus?: (job: RemoteJob) => void; onUpload?: (done: number, total: number) => void;
-    fetch?: typeof globalThis.fetch;
-    tool?: 'daylight' | 'views'; // the core tool the job runs: views takes no epw (form field `tool`, sent for views only)
-  },
-): Promise<{ data: Float32Array<ArrayBuffer>[]; columns: string[]; manifest: RemoteManifest; cache?: Record<string, string> }> {
-  const f = input.fetch ?? globalThis.fetch;
-  const base = url.replace(/\/$/, '');
-  const headers: Record<string, string> = input.clientId ? { 'X-Client-Id': input.clientId } : {};
-  const req = (path: string, init: RequestInit = {}) => f(`${base}${path}`, { ...init, headers, signal: input.signal });
-  const meshes = [...input.sensors, ...(input.context ?? [])], ids = await meshIds(input), first = new Map<string, number>();
-  ids.forEach((id, k) => { if (!first.has(id)) first.set(id, k); });
-  const sent = uploaded.get(base) ?? uploaded.set(base, new Set()).get(base)!;
-  const put = async (todo: readonly string[]) => {
-    const list = [...new Set(todo)];
-    let done = 0, failed = false;
-    if (list.length) input.onUpload?.(0, list.length);
-    await pool(6, list, async (id) => {
-      const k = first.get(id);
-      if (k === undefined) throw new Error(`${base}/jobs asked for an unknown mesh id ${id}`);
-      // its own name (the id when unnamed), never a job's _2: the server keeps it for the id, every later job included,
-      // and makes names unique per job itself (as dmeshStems)
-      const name = dmeshStems([meshes[k].name || id])[0];
-      try {
-        const res = await req(`/mesh/${encodeURIComponent(id)}?name=${encodeURIComponent(name)}`, { method: 'PUT', body: bytesOf(meshes[k]) });
-        if (!res.ok) throw new Error(`PUT ${base}/mesh/${id} failed (${res.status}): ${(await res.text()).trim()}`);
-        sent.add(id);
-        if (!failed) input.onUpload?.(++done, list.length); // no progress after the upload failed
-      } catch (e) { failed = true; throw e; }
-    });
+export async function runRemote(url: string, input: RemoteInput):
+  Promise<{ data: Float32Array<ArrayBuffer>[]; columns: string[]; manifest: RemoteManifest; cache?: Record<string, string> }> {
+  const r: Remote = {
+    base: url.replace(/\/$/, ''), fetch: input.fetch ?? globalThis.fetch, signal: input.signal,
+    headers: input.clientId ? { 'X-Client-Id': input.clientId } : {},
   };
-  const body = () => {
-    const fd = new FormData();
-    if (input.tool === 'views') fd.append('tool', 'views');
-    ids.forEach((id, k) => fd.append(k < input.sensors.length ? 'sensors' : 'context', id));
-    if (input.epw instanceof Blob) fd.append('epw', input.epw, 'weather.epw');
-    else if (input.epw) fd.append('epw_url', input.epw.url);
-    for (const a of input.args ?? []) fd.append('args', a);
-    return fd;
-  };
-  const fresh = [...first.keys()].filter((id) => !sent.has(id)); // new to this server as far as this process knows
-  if (fresh.length) {
-    const r = await req('/meshes/missing', { method: 'POST', body: JSON.stringify({ ids: fresh }) });
-    if (!r.ok && r.status !== 404) throw new Error(`${base}/meshes/missing failed (${r.status}): ${(await r.text()).trim()}`);
-    await put(r.ok ? ((await r.json()) as { missing: string[] }).missing : fresh); // 404: a server without the route
-    for (const id of fresh) sent.add(id);
-  }
-  // Not aborted: once the server has made the job its id is known, so an abort meanwhile still deletes it below.
-  const post = () => f(`${base}/jobs`, { method: 'POST', body: body(), headers });
-  let res = await post();
-  if (res.status === 404) { // the server lost some (restart, eviction): put them again, retry once
-    const { missing } = (await res.json()) as { missing: string[] };
-    for (const id of missing) sent.delete(id);
-    await put(missing);
-    res = await post();
-  }
-  if (!res.ok) throw new Error(`${base}/jobs failed (${res.status}): ${(await res.text()).trim()}`);
-  let job = (await res.json()) as RemoteJob & Partial<RemoteManifest> & { values_b64?: string };
-  try {
-    input.signal?.throwIfAborted(); // aborted while the job was being made
-    while (job.state === 'queued' || job.state === 'running') {
-      input.onStatus?.(job);
-      const poll = await req(`/jobs/${encodeURIComponent(job.id)}?wait=25`);
-      if (!poll.ok) throw new Error(`${base}/jobs/${job.id} failed (${poll.status}): ${(await poll.text()).trim()}`);
-      job = await poll.json();
-    }
-  } catch (e) {
-    if (input.signal?.aborted) f(`${base}/jobs/${encodeURIComponent(job.id)}`, { method: 'DELETE', headers }).catch(() => undefined); // free the GPU for others
-    throw e;
-  }
-  if (job.state !== 'done') throw new Error(`${base} job ${job.id} ${job.state}${job.status ? ` (${job.status})` : ''}: ${(job.error ?? '').trim()}`);
-  // The job JSON carries no values (values_b64 only on ?inline=1, and never decoded here: at large sizes that string
-  // passes a browser's length limit). They come as raw float32 LE, column-major, streamed into one buffer of the size
-  // the manifest implies: a result of up to 0.5 GB is never held twice, and each column is a view of it.
-  const { values_b64: _inline, ...manifest } = job as RemoteJob & RemoteManifest & { values_b64?: string };
-  const rows = manifest.meshes.reduce((n, g) => n + g.count, 0), size = 4 * rows * manifest.columns.length, buf = new Uint8Array(size);
-  const path = manifest.values?.url ?? `/jobs/${encodeURIComponent(job.id)}/values`, got = await req(path);
-  if (!got.ok) throw new Error(`${base}${path} failed (${got.status}): ${(await got.text()).trim()}`); // 404: expired (the server's result cap)
-  const reader = got.body!.getReader();
-  let n = 0;
-  for (let r = await reader.read(); !r.done; r = await reader.read()) {
-    if (n + r.value.length > size) { n += r.value.length; reader.cancel().catch(() => undefined); break; } // too long: stop reading
-    buf.set(r.value, n);
-    n += r.value.length;
-  }
-  if (n !== size) throw new Error(`${base}${path}: ${n} of ${size} bytes`);
-  // Float32Array reads host byte order: little-endian on every target (x86, ARM).
-  return { data: manifest.columns.map((_, c) => new Float32Array(buf.buffer, 4 * c * rows, rows)), columns: manifest.columns, manifest, cache: manifest.cache };
+  const ids = await meshIds(input);
+  const up = uploader(r, [...input.sensors, ...(input.context ?? [])], ids, input.onUpload);
+  await up.missing();
+  const job = await poll(r, await submit(r, up, () => jobForm(input, ids)), input.onStatus);
+  const { values_b64: _inline, ...manifest } = job;
+  return { data: await values(r, manifest, job.id), columns: manifest.columns, manifest, cache: manifest.cache };
 }

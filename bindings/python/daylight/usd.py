@@ -26,6 +26,10 @@ def _keep(m, C, t):
 
 
 def meshes(stage, time=None):
+    """A Usd.Stage or a path to one -> [(name, points [N, 3] float64 world metres Z-up, counts int32 [F], indices
+    int32)] per drawn mesh, as the module docstring says; name = prim path, `<instancer>[k]<prototype mesh path>` for a
+    point instance (the C++ read_usd's names). `time`: the USD time code (default the stage's start time). ValueError
+    naming the prim for inconsistent counts / indices; Tf.ErrorException for a file that does not open."""
     if isinstance(stage, str):
         stage = Usd.Stage.Open(stage)          # raises Tf.ErrorException on a missing/unreadable file
     t = Usd.TimeCode(stage.GetStartTimeCode() if time is None else time)

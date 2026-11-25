@@ -54,9 +54,13 @@ daylight tests/room_grid.obj --context tests/room.obj --no-occlude grid --optics
 
 ## Flags
 
-`daylight --help` prints the short form; the C++ `daylight::Options` field for each flag is given for in-process
-callers. The C ABI and the bindings take the flags verbatim, except mesh paths, `--context`, `--out`, `--bench` and
-`-h` (their meshes and results stay in memory). `views.exe` has its own flags: [views.md](views.md#flags).
+`daylight --help` prints every flag grouped by topic (meshes, site and weather, time, quantities and sky, materials,
+output, diagnostics) with its default, a few examples and the exit codes; the server serves the same text at
+`GET /usage/daylight`. The C++ `daylight::Options` field for each flag is given for in-process callers. The C ABI and
+the bindings take the flags verbatim, except mesh paths, `--context`, `--out`, `--bench` and `-h` (their meshes and
+results stay in memory); the Python, TypeScript and C# bindings also take them as typed options
+([api.md](api.md#typed-options)). A number is one whole token with `.` as the decimal point (`0,2`, `12m`, `nan` or
+`inf` are usage errors, exit 1, never read as 0). `views.exe` has its own flags: [views.md](views.md#flags).
 
 | flag | value | default | meaning | `Options` |
 |---|---|---|---|---|

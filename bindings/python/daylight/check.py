@@ -1,6 +1,7 @@
 # SPDX-License-Identifier: Apache-2.0 AND LicenseRef-Commons-Clause-1.0
 """python -m daylight.check: `to_dmesh` round trip and hole / winding / degenerate-face masking on an in-memory
-stage (no exe needed), then convert validate/_out/fixtures/usd_xform/usd_xform.usda (fixtures.py) and compare
+stage (no exe needed), bindings/cpp/instanced.usda as check_usd.cpp reads it (instances and point instancers), then
+convert validate/_out/fixtures/usd_xform/usd_xform.usda (fixtures.py) and compare
 counts, winding and world points with values derived from the fixture generator (scene_box authored on a Y-up cm
 stage: nested rotations, leftHanded sensors, mirrored box_b, guide / inactive / invisible lids), then `run_meshes`
 end to end when the exes exist (daylight: sun hours of one quad with / without a slab above it; views: named meshes
@@ -22,8 +23,9 @@ import numpy as np
 from pxr import Sdf, Usd, UsdGeom, Vt
 
 from . import _native
-from .core import REPO, VIRIDIS, colormap, run_meshes, to_dmesh
-from .native import Control, DaylightError, SimulationMesh, _run, run, usage
+from .core import REPO, VIRIDIS, _stem, colormap, run_meshes, to_dmesh
+from .native import Control, DaylightError, SimulationMesh, _run, run, usage, version
+from .options import args_of, to_args
 from .usd import meshes, to_obj, write_results
 
 FIX = REPO / 'validate' / '_out' / 'fixtures' / 'usd_xform' / 'usd_xform.usda'
@@ -77,6 +79,52 @@ def check_masking():
         assert '/m' in str(e), e
 
 
+STEMS = [('/World/lake', '_World_lake'), ('_x', '_x'), ('a b', 'a_b'), ('', 'mesh'), ('A', 'A'), ('a', 'a_2'),
+         ('/World/lake', '_World_lake_2'), ('x', 'x'), ('x', 'x_2'), ('x_2', 'x_2_2'), ('\u00e9', '_')]
+"""Mesh names -> .dmesh stems in order: bindings/ts/test/index.test.ts holds the same table for dmeshStems."""
+
+
+def check_stems():
+    used = set()
+    assert [_stem(n, used) for n, _ in STEMS] == [s for _, s in STEMS]
+
+
+def check_options():
+    """to_args on the cases bindings/ts/test/flags.test.ts gives toArgs (the same flags from the same options)."""
+    assert to_args({'epw': 'site.epw', 'quantity': ['radiation', 'sunhours'], 'sky_density': 2, 'cull_backfaces': True,
+                    'no_self_occlude': False, 'virtual_ground': False, 'fresnel': True, 'lat': 51.5, 'from_': '06-21T08:00',
+                    'verbose': True, 'offset': None}) == \
+        ['--epw', 'site.epw', '--quantity', 'radiation,sunhours', '--sky-density', '2', '--cull-backfaces',
+         '--virtual-ground', 'off', '--fresnel', 'on', '--lat', '51.5', '--from', '06-21T08:00', '-v']
+    assert to_args({'optics': [{'name': '*', 'rho': 0.5}, {'name': 'Glass', 'slot': 2, 'rho': 0, 'tau': 0.64, 'kind': 'glass'},
+                               'Tree=0.2,0.3']}) == ['--optics', '*=0.5;Glass/2=0,0.64,glass;Tree=0.2,0.3']
+    assert to_args({'optics': [{'name': 'Screen', 'rho': 0.1, 'kind': 'porous'}]}) == ['--optics', 'Screen=0.1,0,porous']
+    assert to_args({'target': {'park': 'green', 'lake': 'blue'}, 'no_occlude': ['a', 'b'], 'fov': (360, 0, 0),
+                    'reach': 'en17037', 'ground_z': -1}) == \
+        ['--target', 'park=green;lake=blue', '--no-occlude', 'a;b', '--fov', '360,0,0', '--reach', 'en17037', '--ground-z', '-1']
+    assert to_args({'quantity': [], 'no_occlude': [], 'distance': []}) == []
+    p = Path('site.epw')
+    assert to_args({'epw': p}) == ['--epw', p] and args_of(['--fov', '360']) == ['--fov', '360']
+    try:
+        to_args({'no_occlude': ['a;b']})
+        raise AssertionError("a name with ';' accepted")
+    except ValueError as e:
+        assert "--no-occlude: 'a;b' holds a ';'" in str(e), e
+
+
+def check_instancing():
+    """bindings/cpp/instanced.usda: the names, face counts and world points check_usd.cpp expects from read_usd."""
+    got = {name: (p, c) for name, p, c, _ in meshes(str(REPO / 'bindings' / 'cpp' / 'instanced.usda'))}
+    want = {'/World/TileA/Quad': [(10, 0, 0), (11, 0, 0), (11, 1, 0), (10, 1, 0)],
+            '/World/TileB/Quad': [(20, 0, 0), (21, 0, 0), (21, 1, 0), (20, 1, 0)],
+            '/World/Trees[0]/World/Trees/Protos/Box/Quad': [(0, 0, 1), (1, 0, 1), (1, 1, 1), (0, 1, 1)],
+            '/World/Trees[1]/World/Trees/Protos/Box/Quad': [(5, 0, 2), (5, 2, 2), (3, 2, 2), (3, 0, 2)]}
+    assert list(got) == list(want), list(got)
+    for name, pts in want.items():
+        p, c = got[name]
+        assert c.tolist() == [4] and np.allclose(p, pts, atol=2e-3), (name, p)
+
+
 def check_exe(name, fn, tries=5):
     """fn() runs an exe: retried while it is missing, old or rebuilding, then skipped."""
     for k in range(tries):
@@ -102,10 +150,10 @@ def check_views_run():
     """views.exe on (name, points, counts, indices) meshes as usd.meshes() gives them: their file stems in --target."""
     lake = QUAD * 20 + [-10, -21, 0.05]                              # 20 x 20 m of water in front of the facade
     v, m = run_meshes([('/site/facade', FACADE, [4], [0, 1, 2, 3])], [('/site/lake', lake, [4], [0, 1, 2, 3])],
-                      args=['--target', 'site_lake=water', '--jitter', 'off'], tool='views')
+                      args={'target': {'_site_lake': 'water'}, 'jitter': False}, tool='views')
     assert m['columns'][:5] == ['sky_front', 'ground_front', 'obstruction_front', 'obstruction_total_front', 'water_front'], m['columns']
-    assert [x['name'] for x in m['meshes']] == ['site_facade'], m['meshes']
-    assert m['targets'] == [{'mesh': 'site_lake', 'group': 'water'}], m['targets']
+    assert [x['name'] for x in m['meshes']] == ['_site_facade'], m['meshes']
+    assert m['targets'] == [{'mesh': '_site_lake', 'group': 'water'}], m['targets']
     assert v.shape == (1, 7) and v[0, 4] > 0 and v[0, 2] == 0 and abs(v[0, [0, 1, 2, 4]].sum() - 1) < 1e-9 and abs(v[0, 3] - (1 - v[0, 0])) < 1e-9, v   # column 3: all but the sky
 
 
@@ -197,6 +245,8 @@ def check_native():
     v3, m3, s3 = _run('views', ['--fov', '360', '--offset', '1.6', '--sides', 'both'], box, (), None)
     assert s3['scene_reused'], s3                                     # an opaque scene is views' too
     same_as_cli(v3, m3, 'views_smoke.npy')
+    typed = run('views', {'fov': 360, 'offset': 1.6, 'sides': 'both'}, box)   # typed options: the same flags
+    assert np.array_equal(typed.values, v3) and typed.manifest == json.loads(m3)
     box.close()
     with SimulationMesh.load(TESTS / 'box.obj') as box2:                        # a closed handle's scene is never reused
         r4 = run('daylight', SUN, [box2])
@@ -207,6 +257,9 @@ def check_native():
     assert m['columns'] == ['sky_front', 'ground_front', 'obstruction_front', 'obstruction_total_front', 'distance_front', 'distance_min_front'], m
     assert v.shape == (1, 6) and abs(v[0, 0] - 0.4490987851112869) < 1e-9 and abs(v[0, 1] - 0.5509012148887131) < 1e-9, v
     assert v[0, 2] == 0 and abs(v[0, 3] - v[0, 1]) < 1e-12, v   # obstruction_total: the ground alone here
+    v32 = run('views', OPEN, facade, dtype='float32').values         # dl_result_values_f32: the same values, rounded
+    assert v32.dtype == np.float32 and np.array_equal(v32, v.astype(np.float32)), v32
+    assert version() == 1
 
     # a Path flag goes in the narrow (ANSI) encoding the core opens files with, as the CLI's argv; echoed back decoded
     if '\u00fc'.encode(_native.NARROW, 'replace') == b'?':
@@ -279,6 +332,9 @@ def main():
     check_colormap()
     check_write_results()
     check_masking()
+    check_stems()
+    check_options()
+    check_instancing()
     if not FIX.exists():
         print(f'skip: {FIX} missing (run validate/fixtures.py)')
     else:

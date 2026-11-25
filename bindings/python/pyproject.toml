@@ -1,7 +1,7 @@
 [project]
 name = "daylight"
 version = "0.1.0"
-description = "USD -> .dmesh converter and CLI wrapper for the daylight GPU solar simulation core"
+description = "Both tools of the daylight GPU core, daylight / solar and views, from Python: in-process (daylight_c.dll) or through the CLIs; USD stages in, results out as primvars"
 requires-python = ">=3.10"
 dependencies = ["usd-core==26.8", "numpy"]
 

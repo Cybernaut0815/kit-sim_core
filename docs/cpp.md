@@ -51,7 +51,8 @@ A `daylight::SimulationMesh` holds `points` (xyz interleaved, world metres, Z up
 slot 0), `name` (what `optics`, `noOcclude` and `targets` refer to, and what `Result::ranges` reports) and `sensor`
 (true: analysed, a row per element, and blocking; false: context, blocks rays only). Conventions: [input.md](input.md).
 
-**USD.** `bindings/cpp` adds `read_usd` (LightUSD: sublayers, references, payloads, xforms, up axis, units): configure
+**USD.** `bindings/cpp` adds `read_usd` (LightUSD: sublayers, references, payloads, xforms, up axis, units; instanceable
+prims and PointInstancers expanded, each point instance named `<instancer>[k]<prototype mesh path>`): configure
 with `-DDAYLIGHT_USD=ON` (preset `vs2022-usd`) and link `daylight_usd`
 ([bindings/cpp/README.md](../bindings/cpp/README.md)).
 
@@ -270,7 +271,8 @@ bad target: --target tree=green: no mesh of that name
   `prepare`, `manifest_json`; `daylight::views::cli::parse`, `manifest_json`; `kUsage`), for front ends that take CLI
   flags verbatim (the C ABI and the web app's server do).
 - Flags with the field each sets: [daylight.md](daylight.md) (`Options`), [views.md](views.md#flags)
-  (`views::Options`). Meshes and roles: [input.md](input.md); sky models and weather: [modes.md](modes.md).
+  (`views::Options`). The bindings' typed options are the same flags under their CLI names, not these fields
+  ([api.md](api.md#typed-options)). Meshes and roles: [input.md](input.md); sky models and weather: [modes.md](modes.md).
 - USD reader: [bindings/cpp/README.md](../bindings/cpp/README.md). C and the other languages: [c-abi.md](c-abi.md).
 
 ## Examples

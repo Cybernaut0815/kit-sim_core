@@ -11,41 +11,81 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <initializer_list>
 #include <iterator>
 
 namespace daylight::cli {
 
 const char* const kUsage =
     "usage: daylight <mesh>... [flags]\n"
-    "  meshes: .obj (one o/g group per mesh), .dmesh (raw arrays, layout in daylight.h) or .usd/.usda/.usdc/.usdz\n"
-    "          (-DDAYLIGHT_USD=ON builds only); world metres, Z-up; positional = analysed (sensor) meshes\n"
-    "  --context FILE           occluder-only mesh (repeatable)\n"
-    "  --on faces|vertices      sensor placement (default faces)\n"
-    "  --mode physical|ladybug  default physical\n"
-    "  --quantity Q[,Q...]      radiation|direct|diffuse|irradiance|illuminance|sunhours (default radiation)\n"
-    "  --sides front|back|both  receiving side(s) of each element (default front)\n"
-    "  --cull-backfaces         occluders block only from their front side (default two-sided)\n"
-    "  --epw FILE               weather + location; --lat --lon override its location (or replace it: sunhours)\n"
-    "  --clear-sky              synthetic cloudless weather (Ineichen) at --lat --lon instead of --epw (upper bound)\n"
-    "  --turbidity TL           Linke turbidity for --clear-sky (default 3)   --altitude M  site altitude (default 0)\n"
-    "  --tz H                   clock of the timestamps, standard time (default: the EPW's zone, else round(lon / 15))\n"
-    "  --time [YYYY-]MM-DDTHH:MM | --from TS --to TS [--step MIN]   default: annual over the EPW rows\n"
-    "  --hours HH:MM-HH:MM      with --from/--to: only these hours of every day (analysis period)\n"
-    "  --sky-density 1|2|4  --patch-samples K  --ground RHO  --north DEG  --offset M  --no-self-occlude\n"
+    "Annual daylight and solar simulation: a row per face (or vertex) of the meshes, a column per quantity and side.\n"
+    "\n"
+    "meshes\n"
+    "  <mesh>...                analysed (sensor) meshes, which also cast shade: .obj (one o/g group per mesh), .dmesh\n"
+    "                           (raw arrays, layout in daylight.h) or .usd/.usda/.usdc/.usdz (-DDAYLIGHT_USD=ON builds;\n"
+    "                           instances and point instancers expanded); world metres, Z-up\n"
+    "  --context FILE           a mesh that only casts shade, never analysed (repeatable)\n"
+    "  --on faces|vertices      a row per face (sensor at its centroid) or per vertex (default faces)\n"
+    "  --sides front|back|both  receiving side(s) of each element; both: two columns per quantity (default front)\n"
+    "  --offset M               sensors moved M metres along their normal (default 0)\n"
+    "  --cull-backfaces         occluders block only from their front side (default both sides)\n"
+    "  --no-self-occlude        sensor meshes cast no shade (only --context meshes do)\n"
     "  --no-occlude NAME[;NAME...]  these sensor meshes are analysed but cast no shade (NAME as in --optics; repeatable)\n"
+    "\n"
+    "site and weather\n"
+    "  --epw FILE               hourly weather and location (EnergyPlus weather file)\n"
+    "  --clear-sky              synthetic cloudless year (Ineichen) at --lat --lon instead of --epw: an upper bound\n"
+    "  --turbidity TL           Linke turbidity for --clear-sky (default 3; 2 very clear .. 6-7 polluted)\n"
+    "  --altitude M             site altitude in metres for --clear-sky (default 0)\n"
+    "  --lat DEG  --lon DEG     location, N and E positive: needed without --epw, else overrides its location\n"
+    "  --tz H                   clock of the times below, standard time (default: the EPW's zone, else round(lon / 15))\n"
+    "  --north DEG              model north, degrees counterclockwise from +Y (default 0; 90 = west)\n"
+    "\n"
+    "time (default: annual, every EPW row)\n"
+    "  --time [YYYY-]MM-DDTHH:MM       one instant\n"
+    "  --from TS --to TS [--step MIN]  the range [from, to) in steps of MIN minutes (default 60)\n"
+    "  --hours HH:MM-HH:MM             with --from/--to: only these hours of every day (an analysis period)\n"
+    "\n"
+    "quantities and sky\n"
+    "  --quantity Q[,Q...]      a column each: radiation (kWh/m2), direct, diffuse, irradiance (W/m2), illuminance (lux),\n"
+    "                           sunhours (h) (default radiation; sunhours alone needs no weather)\n"
+    "  --mode physical|ladybug  sky and sun model (default physical)\n"
+    "  --sky-density 1|2|4      sky patches 145 / 577 / 2305 (default 1)\n"
+    "  --patch-samples K        physical mode: K stratified rays per sky patch, a square number (default 1)\n"
+    "  --ground RHO             ground reflectance 0..1 (default 0.2)\n"
     "  --virtual-ground on|off  ground below the horizon reflecting --ground RHO (default on; off: black, as --ground 0)\n"
-    "  --optics SPEC[;SPEC...]  NAME[/SLOT]=RHO[,TAU[,glass|porous]] per mesh / face slot, * = every mesh (repeatable;\n"
+    "\n"
+    "materials and reflected light\n"
+    "  --optics SPEC[;SPEC...]  NAME[/SLOT]=RHO[,TAU[,glass|porous]] per mesh or face slot, * = every mesh (repeatable;\n"
     "                           default rho 0.2, tau 0)\n"
-    "  --transmission off|on    light through glass / porous slots (default off: every surface opaque)\n"
+    "  --transmission off|on    light through glass and porous slots (default off: every surface opaque)\n"
     "  --fresnel on|off         glass by angle (default on; off: tau at every angle, no glass mirror in --bounces)\n"
-    "  --bounces N              reflected light: up to N = 1..20 diffuse reflections by RHO (physical; default 0: none)\n"
+    "  --bounces N              up to N = 0..20 diffuse reflections by RHO (physical mode; default 0: none)\n"
     "  --bounce-samples M       paths per sensor for --bounces, 64..65536 (default 1024; noise falls as 1 / sqrt(M))\n"
-    "  --out FILE[.npy]         values (text rows, or float64 [N x C] NumPy when .npy) + FILE.json manifest\n"
-    "  --timeseries FILE.npy  --dump-bits FILE.npy  --dump-sky FILE  --dump-sun FILE\n"
-    "  --bench [NSENS NTRIS]  -v          exit code: 1 usage, 2 runtime error\n";
+    "\n"
+    "output\n"
+    "  --out FILE[.npy]         values as text rows, or float64 [N x C] NumPy when .npy, and the FILE.json manifest\n"
+    "                           (default: text on stdout, no manifest)\n"
+    "  --timeseries F.npy       per-step values, float32 [N x T], and F.npy.hoys.txt (the steps' hours of year)\n"
+    "  -v                       timings and sizes on stderr\n"
+    "\n"
+    "diagnostics\n"
+    "  --dump-bits F.npy        visibility per sensor and direction (validation)\n"
+    "  --dump-sky F             the gendaymtx sky blocks (ladybug mode; validation)\n"
+    "  --dump-sun F             per step: date, sun positions, DNI and DHI (validation)\n"
+    "  --bench [NSENS NTRIS]    a synthetic scene (default 1000000 sensors, 10000000 triangles): timings only\n"
+    "  -h, --help               this text\n"
+    "\n"
+    "examples\n"
+    "  daylight facade.obj --context site.obj --epw site.epw --quantity radiation,sunhours --out facade.npy\n"
+    "  daylight roof.dmesh --lat 51.5 --lon -0.13 --from 06-21T08:00 --to 06-21T18:00 --quantity sunhours\n"
+    "  daylight room.obj --epw site.epw --quantity illuminance --bounces 5 --optics \"*=0.5\" --out room.txt\n"
+    "\n"
+    "exit codes: 0 ok, 1 usage error (the message and this text on stderr), 2 runtime error\n";
 
 namespace {
 
+// Q[,Q...] as kQuantityNames (no blanks), in the order given; false at the first unknown name.
 bool parse_quantities(const std::string& s, std::vector<Quantity>& out) {
   out.clear();
   for (size_t b = 0, e; b <= s.size(); b = e + 1) {
@@ -102,6 +142,56 @@ const char* value(int argc, char** argv, int& i, const char* flag, std::string& 
   return argv[++i];
 }
 
+// The value of the flag at argv[i] as one of `words` (i moves to it): the word's index, else -1 with err set
+// ("missing value for FLAG", or "FLAG w0|w1|...").
+int word(int argc, char** argv, int& i, const char* flag, std::initializer_list<const char*> words, std::string& err) {
+  const char* v = value(argc, argv, i, flag, err);
+  if (!v) return -1;
+  int k = 0;
+  for (const char* w : words) { if (!std::strcmp(v, w)) return k; ++k; }
+  err = flag;
+  k = 0;
+  for (const char* w : words) err += std::string(k++ ? "|" : " ") + w;
+  return -1;
+}
+
+// Comma-separated numbers, each a whole token and finite ('.' is the decimal point; "1,5" is two numbers).
+bool numbers(const std::string& s, std::vector<double>& out) {
+  out.clear();
+  for (size_t b = 0, e; b <= s.size(); b = e + 1) {
+    e = std::min(s.find(',', b), s.size());
+    const std::string t = s.substr(b, e - b);
+    char* end = nullptr;
+    out.push_back(std::strtod(t.c_str(), &end));
+    if (t.empty() || *end || !std::isfinite(out.back())) return false;
+  }
+  return true;
+}
+
+// The value of the flag at argv[i] as one finite number into `to` (i moves to it), else false with err set ("missing
+// value for FLAG", or "FLAG WHAT: 'v' is not a number", e.g. "--lat DEG: ...": a decimal comma or trailing text is none).
+bool real(int argc, char** argv, int& i, const char* flag, const char* what, double& to, std::string& err) {
+  const char* v = value(argc, argv, i, flag, err);
+  if (!v) return false;
+  std::vector<double> x;
+  if (!numbers(v, x) || x.size() != 1) { err = std::string(flag) + " " + what + ": '" + v + "' is not a number"; return false; }
+  to = x[0];
+  return true;
+}
+
+// The value of the flag at argv[i] as one whole number into `to` (i moves to it), else false with err set ("missing
+// value for FLAG", or "FLAG needs a whole number, not 'v'"). Ranges are checked after parsing.
+bool whole(int argc, char** argv, int& i, const char* flag, int& to, std::string& err) {
+  const char* v = value(argc, argv, i, flag, err);
+  if (!v) return false;
+  const char* e = v + std::strlen(v);
+  if (const auto r = std::from_chars(v, e, to); v == e || r.ec != std::errc() || r.ptr != e) {
+    err = std::string(flag) + " needs a whole number, not '" + v + "'";
+    return false;
+  }
+  return true;
+}
+
 // s as a JSON string: quote, backslash and control bytes escaped, other bytes as given.
 std::string json_str(const std::string& s) {
   std::string o = "\"";
@@ -131,14 +221,16 @@ std::string manifest_meshes(const Result& r) {
 int parse_common(int argc, char** argv, CommonArgs& a, RunOptions& o, std::string& err,
                  const std::function<int(int& i, const std::string& flag)>& tool) {
   const auto need = [&](int& i, const char* flag) { return value(argc, argv, i, flag, err); };
+  const auto pick = [&](int& i, const char* flag, std::initializer_list<const char*> words) { return word(argc, argv, i, flag, words, err); };
   for (int i = 1; i < argc; ++i) {
     std::string f = argv[i];
     const char* v = nullptr;
+    int k = 0;
     if (f == "-h" || f == "--help") { a.help = true; return 0; }
     else if (f == "-v") o.verbose = true;
     else if (f == "--context") { if (!(v = need(i, "--context"))) return 1; a.context.push_back(v); }
-    else if (f == "--on") { if (!(v = need(i, "--on"))) return 1; if (!std::strcmp(v, "faces")) o.onVertices = false; else if (!std::strcmp(v, "vertices")) o.onVertices = true; else { err = "--on faces|vertices"; return 1; } }
-    else if (f == "--sides") { if (!(v = need(i, "--sides"))) return 1; if (!std::strcmp(v, "front")) o.sides = Sides::Front; else if (!std::strcmp(v, "back")) o.sides = Sides::Back; else if (!std::strcmp(v, "both")) o.sides = Sides::Both; else { err = "--sides front|back|both"; return 1; } }
+    else if (f == "--on") { if ((k = pick(i, "--on", {"faces", "vertices"})) < 0) return 1; o.onVertices = k == 1; }
+    else if (f == "--sides") { if ((k = pick(i, "--sides", {"front", "back", "both"})) < 0) return 1; o.sides = static_cast<Sides>(k); }
     else if (f == "--cull-backfaces") o.cullBackfaces = true;
     else if (f == "--no-self-occlude") o.selfOcclude = false;
     else if (f == "--no-occlude") {   // NAME[;NAME...]; the names are checked by run()
@@ -150,16 +242,11 @@ int parse_common(int argc, char** argv, CommonArgs& a, RunOptions& o, std::strin
         o.noOcclude.push_back(s.substr(b, e - b));
       }
     }
-    else if (f == "--north" || f == "--offset") {   // the whole token, finite (a decimal comma is no number)
-      if (!(v = need(i, f.c_str()))) return 1;
-      char* end = nullptr;
-      const double x = std::strtod(v, &end);
-      if (!*v || *end || !std::isfinite(x)) { err = f == "--north" ? "--north DEG" : "--offset M"; return 1; }
-      (f == "--north" ? o.north : o.offset) = x;
-    }
-    else if (f == "--virtual-ground") { if (!(v = need(i, "--virtual-ground"))) return 1; if (!std::strcmp(v, "on")) o.virtualGround = true; else if (!std::strcmp(v, "off")) o.virtualGround = false; else { err = "--virtual-ground on|off"; return 1; } }
+    else if (f == "--north") { if (!real(argc, argv, i, "--north", "DEG", o.north, err)) return 1; }
+    else if (f == "--offset") { if (!real(argc, argv, i, "--offset", "M", o.offset, err)) return 1; }
+    else if (f == "--virtual-ground") { if ((k = pick(i, "--virtual-ground", {"on", "off"})) < 0) return 1; o.virtualGround = k == 0; }
     else if (f == "--optics") { if (!(v = need(i, "--optics"))) return 1; if (!parse_optics(v, o.optics, err)) return 1; }
-    else if (f == "--transmission") { if (!(v = need(i, "--transmission"))) return 1; if (!std::strcmp(v, "on")) o.transmission = true; else if (!std::strcmp(v, "off")) o.transmission = false; else { err = "--transmission off|on"; return 1; } }
+    else if (f == "--transmission") { if ((k = pick(i, "--transmission", {"off", "on"})) < 0) return 1; o.transmission = k == 1; }
     else if (f == "--out") { if (!(v = need(i, "--out"))) return 1; a.out = v; }
     else if (f == "--bench") {
       a.bench = true;
@@ -180,21 +267,27 @@ int parse_common(int argc, char** argv, CommonArgs& a, RunOptions& o, std::strin
 
 int parse(int argc, char** argv, Args& a, std::string& err) {
   const auto need = [&](int& i, const char* flag) { return value(argc, argv, i, flag, err); };
+  const auto num = [&](int& i, const char* flag, const char* what, double& to) { return real(argc, argv, i, flag, what, to, err); };
+  const auto count = [&](int& i, const char* flag, int& to) { return whole(argc, argv, i, flag, to, err); };
   const int rc = parse_common(argc, argv, a, a.opt, err, [&](int& i, const std::string& f) {
     const char* v = nullptr;
-    if (f == "--mode") { if (!(v = need(i, "--mode"))) return 1; if (!std::strcmp(v, "physical")) a.opt.mode = Mode::Physical; else if (!std::strcmp(v, "ladybug")) a.opt.mode = Mode::Ladybug; else { err = "--mode physical|ladybug"; return 1; } }
-    else if (f == "--quantity") { if (!(v = need(i, "--quantity"))) return 1; if (!parse_quantities(v, a.opt.quantities)) { err = "unknown quantity"; return 1; } }
+    int k = 0;
+    if (f == "--mode") { if ((k = word(argc, argv, i, "--mode", {"physical", "ladybug"}, err)) < 0) return 1; a.opt.mode = static_cast<Mode>(k); }
+    else if (f == "--quantity") {
+      if (!(v = need(i, "--quantity"))) return 1;
+      if (!parse_quantities(v, a.opt.quantities)) { err = "--quantity Q[,Q...]: unknown quantity (radiation|direct|diffuse|irradiance|illuminance|sunhours)"; return 1; }
+    }
     else if (f == "--epw") { if (!(v = need(i, "--epw"))) return 1; a.epw = v; }
     else if (f == "--clear-sky") a.clearSky = true;
-    else if (f == "--turbidity") { if (!(v = need(i, "--turbidity"))) return 1; a.turbidity = std::atof(v); }
-    else if (f == "--altitude") { if (!(v = need(i, "--altitude"))) return 1; a.altitude = std::atof(v); }
-    else if (f == "--lat") { if (!(v = need(i, "--lat"))) return 1; a.opt.lat = std::atof(v); }
-    else if (f == "--lon") { if (!(v = need(i, "--lon"))) return 1; a.opt.lon = std::atof(v); }
-    else if (f == "--tz") { if (!(v = need(i, "--tz"))) return 1; a.opt.tz = std::atof(v); }
+    else if (f == "--turbidity") { if (!num(i, "--turbidity", "TL", a.turbidity)) return 1; }
+    else if (f == "--altitude") { if (!num(i, "--altitude", "M", a.altitude)) return 1; }
+    else if (f == "--lat") { if (!num(i, "--lat", "DEG", a.opt.lat)) return 1; }
+    else if (f == "--lon") { if (!num(i, "--lon", "DEG", a.opt.lon)) return 1; }
+    else if (f == "--tz") { if (!num(i, "--tz", "H", a.opt.tz)) return 1; }
     else if (f == "--time") { if (!(v = need(i, "--time"))) return 1; a.timeStr = v; }
     else if (f == "--from") { if (!(v = need(i, "--from"))) return 1; a.fromStr = v; }
     else if (f == "--to") { if (!(v = need(i, "--to"))) return 1; a.toStr = v; }
-    else if (f == "--step") { if (!(v = need(i, "--step"))) return 1; a.opt.stepMin = std::atoi(v); if (a.opt.stepMin <= 0) { err = "--step must be positive minutes"; return 1; } }
+    else if (f == "--step") { if (!count(i, "--step", a.opt.stepMin)) return 1; if (a.opt.stepMin <= 0) { err = "--step must be positive minutes"; return 1; } }
     else if (f == "--hours") {
       if (!(v = need(i, "--hours"))) return 1;
       int h0, m0, h1, m1;
@@ -204,16 +297,12 @@ int parse(int argc, char** argv, Args& a, std::string& err) {
       a.opt.dayFrom = h0 * 60 + m0;
       a.opt.dayTo = h1 * 60 + m1;
     }
-    else if (f == "--sky-density") { if (!(v = need(i, "--sky-density"))) return 1; a.opt.mf = std::atoi(v); }
-    else if (f == "--patch-samples") { if (!(v = need(i, "--patch-samples"))) return 1; a.opt.patchSamples = std::atoi(v); }
-    else if (f == "--ground") { if (!(v = need(i, "--ground"))) return 1; a.opt.ground = std::atof(v); }
-    else if (f == "--fresnel") { if (!(v = need(i, "--fresnel"))) return 1; if (!std::strcmp(v, "on")) a.opt.fresnel = true; else if (!std::strcmp(v, "off")) a.opt.fresnel = false; else { err = "--fresnel on|off"; return 1; } }
-    else if (f == "--bounces" || f == "--bounce-samples") {   // ranges: optics_ok below
-      if (!(v = need(i, f.c_str()))) return 1;
-      int& n = f == "--bounces" ? a.opt.bounces : a.opt.bounceSamples;
-      const char* e = v + std::strlen(v);
-      if (const auto r = std::from_chars(v, e, n); r.ec != std::errc() || r.ptr != e) { err = f + " needs a whole number"; return 1; }
-    }
+    else if (f == "--sky-density") { if (!count(i, "--sky-density", a.opt.mf)) return 1; }   // values: run()
+    else if (f == "--patch-samples") { if (!count(i, "--patch-samples", a.opt.patchSamples)) return 1; }
+    else if (f == "--ground") { if (!num(i, "--ground", "RHO", a.opt.ground)) return 1; }
+    else if (f == "--fresnel") { if ((k = word(argc, argv, i, "--fresnel", {"on", "off"}, err)) < 0) return 1; a.opt.fresnel = k == 0; }
+    else if (f == "--bounces") { if (!count(i, "--bounces", a.opt.bounces)) return 1; }   // ranges: optics_ok below
+    else if (f == "--bounce-samples") { if (!count(i, "--bounce-samples", a.opt.bounceSamples)) return 1; }
     else if (f == "--timeseries") { if (!(v = need(i, "--timeseries"))) return 1; a.opt.seriesPath = v; }
     else if (f == "--dump-bits") { if (!(v = need(i, "--dump-bits"))) return 1; a.opt.dumpBitsPath = v; }
     else if (f == "--dump-sky") { if (!(v = need(i, "--dump-sky"))) return 1; a.opt.dumpSky = v; }
@@ -273,50 +362,65 @@ namespace daylight::views::cli {
 
 const char* const kUsage =
     "usage: views <mesh>... [flags]\n"
-    "  meshes: .obj (one o/g group per mesh), .dmesh (raw arrays, layout in daylight.h) or .usd/.usda/.usdc/.usdz\n"
-    "          (-DDAYLIGHT_USD=ON builds only); world metres, Z-up; positional = analysed (sensor) meshes\n"
-    "  --context FILE           occluder-only mesh (repeatable)\n"
-    "  --target NAME=GROUP[;NAME=GROUP...]  rays ending on mesh NAME count for GROUP (repeatable; at most 16 groups)\n"
-    "  --fov H[,LO,HI]          field in degrees: H wide about the normal (up to 180) or 360 all around, elevation LO..HI\n"
+    "View analysis: from every face (or vertex) of the meshes, rays over a field of view. Per row and side the shares\n"
+    "of the field on sky, ground, obstruction and each target group, obstruction_total (1 - sky), how far it sees.\n"
+    "\n"
+    "meshes\n"
+    "  <mesh>...                analysed (receiver) meshes, which also block rays: .obj (one o/g group per mesh), .dmesh\n"
+    "                           (raw arrays, layout in daylight.h) or .usd/.usda/.usdc/.usdz (-DDAYLIGHT_USD=ON builds;\n"
+    "                           instances and point instancers expanded); world metres, Z-up\n"
+    "  --context FILE           a mesh that only blocks rays, never analysed (repeatable)\n"
+    "  --target NAME=GROUP[;NAME=GROUP...]  rays ending on mesh NAME count for GROUP, a share column per group\n"
+    "                           (repeatable; at most 16 groups)\n"
+    "  --on faces|vertices      a row per face (eye at its centroid) or per vertex (default faces)\n"
+    "  --sides front|back|both  viewing side(s) of each element; both: two columns per value (default front)\n"
+    "  --offset M               eyes moved M metres along the normal (default 0; 1.6 above a floor: a standing eye)\n"
+    "  --cull-backfaces         occluders block only from their front side (default both sides)\n"
+    "  --no-self-occlude        receivers block no rays (only --context meshes do)\n"
+    "  --no-occlude NAME[;NAME...]  these receivers are analysed but block no rays (repeatable)\n"
+    "  --north DEG              model north, degrees counterclockwise from +Y (default 0): azimuth 0 of --fov 360\n"
+    "\n"
+    "field of view\n"
+    "  --fov H[,LO,HI]          H degrees wide about the normal (up to 180) or 360 all around, elevation LO..HI\n"
     "                           (default 120,-70,50; H alone keeps LO,HI; H,0,0: horizontal rays only, the 2D isovist)\n"
     "  --gaze normal|level      H < 360: the field about the normal, or about the normal turned level with elevation\n"
     "                           about the horizon, as a person looks (default normal; faces looking straight up or down\n"
     "                           keep their normal)\n"
-    "  --cell DEG               degrees per ray, rows and columns (default 2)\n"
+    "  --cell DEG               degrees per ray, rows and columns (default 2; at most 2^20 rays per element)\n"
     "  --jitter on|off          each ray at a random point of its cell (default on; off: the cell centres)\n"
+    "\n"
+    "distances\n"
     "  --distance STAT[,STAT...]  isovist|mean|min|group|none (default: isovist with --fov 360, else mean,min)\n"
     "                           isovist: volume (m3) of the mesh through the rays' ends, area (m2) with H,0,0;\n"
     "                           mean: log-mean distance; min: nearest; group: also per target group\n"
     "  --far M                  what open counts as, and the cap of every distance and isovist (default 1000)\n"
+    "  --reach D[,D...]|en17037 share of the field that sees at least D metres (at most 8; en17037 = 6,20,50)\n"
+    "\n"
+    "ground and glass\n"
     "  --virtual-ground on|off  a ground plane ends downward rays (default on; off: they stay open)\n"
-    "  --ground-z Z             its height (default: the lowest point of the meshes)\n"
-    "  --reach D[,D...]|en17037  share of the field that sees at least D metres (at most 8; en17037 = 6,20,50)\n"
-    "  --on faces|vertices      sensor placement (default faces)\n"
-    "  --sides front|back|both  viewing side(s) of each element (default front)\n"
-    "  --cull-backfaces         occluders block only from their front side (default two-sided)\n"
-    "  --north DEG  --offset M  --no-self-occlude\n"
-    "  --no-occlude NAME[;NAME...]  these sensor meshes are analysed but block no rays (repeatable)\n"
-    "  --optics SPEC[;SPEC...]  NAME[/SLOT]=RHO[,TAU[,glass|porous]] per mesh / face slot, as daylight's (repeatable)\n"
+    "  --ground-z Z             its height in metres (default: the lowest point of the meshes)\n"
+    "  --optics SPEC[;SPEC...]  NAME[/SLOT]=RHO[,TAU[,glass|porous]] per mesh or face slot, as daylight's (repeatable)\n"
     "  --transmission off|on    rays pass glass slots (default off: every surface blocks); adds glazing_<side>\n"
-    "  --out FILE[.npy]         values (text rows, or float64 [N x C] NumPy when .npy) + FILE.json manifest\n"
-    "  --dump-rays F.npy        classes uint8 [rows x rays] (a row per element and side; + 128: passed glass) +\n"
-    "                           F.npy.depth.npy float32 distances\n"
-    "  --bench [NSENS NTRIS]  -v          exit code: 1 usage, 2 runtime error\n";
+    "\n"
+    "output\n"
+    "  --out FILE[.npy]         values as text rows, or float64 [N x C] NumPy when .npy, and the FILE.json manifest\n"
+    "                           (default: text on stdout, no manifest)\n"
+    "  --dump-rays F.npy        classes uint8 [rows x rays] (a row per element and side; + 128: passed glass) and\n"
+    "                           F.npy.depth.npy, float32 distances\n"
+    "  -v                       sizes and timings on stderr\n"
+    "  --bench [NSENS NTRIS]    a synthetic city (default 1000000 sensors, 10000000 triangles): timings only\n"
+    "  -h, --help               this text\n"
+    "\n"
+    "examples\n"
+    "  views facades.obj --context city.obj --reach en17037 --out facades.npy\n"
+    "  views facades.obj --context city.obj --target park=green --gaze level --out facades.npy\n"
+    "  views plaza.obj --context city.obj --fov 360 --offset 1.6 --distance isovist,mean --out plaza.txt\n"
+    "\n"
+    "exit codes: 0 ok, 1 usage error (the message and this text on stderr), 2 runtime error\n";
 
 namespace {
 
-// Comma-separated numbers, each read whole.
-bool numbers(const std::string& s, std::vector<double>& out) {
-  out.clear();
-  for (size_t b = 0, e; b <= s.size(); b = e + 1) {
-    e = std::min(s.find(',', b), s.size());
-    const std::string t = s.substr(b, e - b);
-    char* end = nullptr;
-    out.push_back(std::strtod(t.c_str(), &end));
-    if (t.empty() || *end) return false;
-  }
-  return true;
-}
+using daylight::cli::numbers;
 
 // NAME=GROUP[;NAME=GROUP...], split at the last '='. The names and groups are checked by run().
 bool parse_targets(const std::string& s, std::vector<Target>& out, std::string& err) {
@@ -336,10 +440,12 @@ bool parse_targets(const std::string& s, std::vector<Target>& out, std::string& 
 int parse(int argc, char** argv, Args& a, std::string& err) {
   Options& o = a.opt;
   const auto need = [&](int& i, const char* flag) { return daylight::cli::value(argc, argv, i, flag, err); };
+  const auto num = [&](int& i, const char* flag, const char* what, double& to) { return daylight::cli::real(argc, argv, i, flag, what, to, err); };
+  const auto pick = [&](int& i, const char* flag, std::initializer_list<const char*> words) { return daylight::cli::word(argc, argv, i, flag, words, err); };
   std::vector<double> x;
-  const auto one = [&](const char* v, double& to) { if (!numbers(v, x) || x.size() != 1) return false; to = x[0]; return true; };
   const int rc = daylight::cli::parse_common(argc, argv, a, o, err, [&](int& i, const std::string& f) {
     const char* v = nullptr;
+    int k = 0;
     if (f == "--target") { if (!(v = need(i, "--target")) || !parse_targets(v, o.targets, err)) return 1; }
     else if (f == "--fov") {
       if (!(v = need(i, "--fov"))) return 1;
@@ -347,9 +453,9 @@ int parse(int argc, char** argv, Args& a, std::string& err) {
       o.fovH = x[0];
       if (x.size() == 3) { o.elevLo = x[1]; o.elevHi = x[2]; }
     }
-    else if (f == "--gaze") { if (!(v = need(i, "--gaze"))) return 1; if (!std::strcmp(v, "level")) o.level = true; else if (!std::strcmp(v, "normal")) o.level = false; else { err = "--gaze normal|level"; return 1; } }
-    else if (f == "--cell") { if (!(v = need(i, "--cell"))) return 1; if (!one(v, o.cell)) { err = "--cell DEG"; return 1; } }
-    else if (f == "--jitter") { if (!(v = need(i, "--jitter"))) return 1; if (!std::strcmp(v, "on")) o.jitter = true; else if (!std::strcmp(v, "off")) o.jitter = false; else { err = "--jitter on|off"; return 1; } }
+    else if (f == "--gaze") { if ((k = pick(i, "--gaze", {"normal", "level"})) < 0) return 1; o.level = k == 1; }
+    else if (f == "--cell") { if (!num(i, "--cell", "DEG", o.cell)) return 1; }
+    else if (f == "--jitter") { if ((k = pick(i, "--jitter", {"on", "off"})) < 0) return 1; o.jitter = k == 0; }
     else if (f == "--distance") {
       if (!(v = need(i, "--distance"))) return 1;
       const std::string s = v;
@@ -364,8 +470,8 @@ int parse(int argc, char** argv, Args& a, std::string& err) {
         else { err = "--distance isovist|mean|min|group[,...] or none"; return 1; }
       }
     }
-    else if (f == "--far") { if (!(v = need(i, "--far"))) return 1; if (!one(v, o.farDist)) { err = "--far M"; return 1; } }
-    else if (f == "--ground-z") { if (!(v = need(i, "--ground-z"))) return 1; if (!one(v, o.groundZ)) { err = "--ground-z Z"; return 1; } }
+    else if (f == "--far") { if (!num(i, "--far", "M", o.farDist)) return 1; }
+    else if (f == "--ground-z") { if (!num(i, "--ground-z", "Z", o.groundZ)) return 1; }
     else if (f == "--reach") {
       if (!(v = need(i, "--reach"))) return 1;
       if (!std::strcmp(v, "en17037")) o.reach = {6, 20, 50};   // EN 17037's view distance levels: minimum, medium, high

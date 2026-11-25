@@ -192,6 +192,10 @@ it('meshIds: the bytes\' SHA-256 (8 at a time, a name folded in), ids given kept
 it('dmeshStems', () => {
   expect(dmeshStems(['a b', 'a_b', 'A_B', '', 'x/y'])).toEqual(['a_b', 'a_b_2', 'A_B_3', 'mesh', 'x_y']); // case kept, uniqueness case-insensitive
   expect(dmeshStems([''], 'sensors')).toEqual(['sensors']);
+  // the table bindings/python/daylight/check.py STEMS holds for its _stem: one rule in both bindings
+  const table: [string, string][] = [['/World/lake', '_World_lake'], ['_x', '_x'], ['a b', 'a_b'], ['', 'mesh'], ['A', 'A'], ['a', 'a_2'],
+    ['/World/lake', '_World_lake_2'], ['x', 'x'], ['x', 'x_2'], ['x_2', 'x_2_2'], ['\u00e9', '_']];
+  expect(dmeshStems(table.map(([n]) => n))).toEqual(table.map(([, s]) => s));
 });
 
 describe('runRemote', () => {
@@ -214,7 +218,7 @@ describe('runRemote', () => {
         : json({ id: 'j1', state: 'done', ...manifest, values: { url: '/jobs/j1/values', dtype: '<f4', order: 'column-major', shape: [2, 2], bytes: 16 }, values_b64: 'not base64' });
     }) as unknown as typeof fetch;
     const seen: string[] = [];
-    const r = await runRemote('http://h/', { sensors: [m], args: ['--quantity', 'sunhours'], clientId: 'tab-1', onStatus: (j) => seen.push(`${j.state}:${j.position}`), fetch: fetchMock });
+    const r = await runRemote('http://h/', { sensors: [m], args: { quantity: ['sunhours'] }, clientId: 'tab-1', onStatus: (j) => seen.push(`${j.state}:${j.position}`), fetch: fetchMock });
     expect(calls.map((c) => `${c.method ?? 'GET'} ${c.url}`)).toEqual([
       'POST http://h/meshes/missing', 'PUT http://h/mesh/id-1?name=box', 'POST http://h/jobs', 'GET http://h/jobs/j1?wait=25', 'GET http://h/jobs/j1?wait=25', 'GET http://h/jobs/j1/values',
     ]);
@@ -428,4 +432,6 @@ it.skipIf(!exe)('run() on a box through the core via .dmesh in, .npy out (set DA
   for (const col of r.data) for (const v of col) expect(v).toBeGreaterThanOrEqual(0), expect(v).toBeLessThanOrEqual(1);
   const slotted = fromThree([box()]).map((m) => ({ ...m, slots: Uint16Array.from({ length: m.indices.length / 3 }, (_, i) => i % 3) }));
   expect((await run(exe, { sensors: slotted, args })).data).toEqual(r.data); // the core reads the slot block; same values
+  const typed = { lat: 42.35, lon: -71.07, tz: -5, quantity: ['sunhours' as const], time: '06-21T12:00' };
+  expect((await run(exe, { sensors: fromThree([box()]), args: typed })).data).toEqual(r.data); // typed options: the same flags
 });

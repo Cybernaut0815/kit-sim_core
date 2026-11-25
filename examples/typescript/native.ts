@@ -14,7 +14,7 @@
 // Run from the repo root:   node examples/typescript/native.ts
 // examples/javascript/native.mjs is the same program in plain JavaScript.
 import { fileURLToPath } from 'node:url';
-import { DaylightError, SimulationMesh, run, type NativeResult } from '../../bindings/ts/src/native.ts';
+import { DaylightError, SimulationMesh, run, type DaylightOptions, type NativeResult, type ViewsOptions } from '../../bindings/ts/src/native.ts';
 
 const tests = (file: string) => fileURLToPath(new URL(`../../tests/${file}`, import.meta.url));
 
@@ -44,13 +44,14 @@ function rows(r: NativeResult, mesh: string, column: string): Float64Array {
 const mean = (v: Float64Array) => v.reduce((a, b) => a + b, 0) / v.length;
 
 // ---- Step 2: daylight, a clear-sky year in Berlin -----------------------------------------------------------------
-// The flags are the CLI's (docs/daylight.md), one string each. run() works on a worker thread: the event loop stays
+// The options are the CLI's flags (docs/daylight.md) as typed fields (docs/api.md#typed-options); run() takes the
+// flags as strings too (['--clear-sky', '--lat', '52.52', ...]). It works on a worker thread: the event loop stays
 // free. The signal cancels it (here a 10 s timeout, in an app a Cancel button), onProgress reports the traced share.
-const clearSkyYear = [
-  '--clear-sky', // no weather file: a cloudless year for the place
-  '--lat', '52.52', '--lon', '13.41', // Berlin
-  '--quantity', 'radiation,sunhours', // the columns: kWh/m2 and sun hours
-];
+const clearSkyYear: DaylightOptions = {
+  clearSky: true, // no weather file: a cloudless year for the place
+  lat: 52.52, lon: 13.41, // Berlin
+  quantity: ['radiation', 'sunhours'], // the columns: kWh/m2 and sun hours
+};
 let t = performance.now();
 const sun = await run('daylight', clearSkyYear, { sensors },
   { signal: AbortSignal.timeout(10_000), onProgress: (p) => console.log(`  traced ${Math.round(100 * p)} %`) });
@@ -66,7 +67,7 @@ for (const { name } of (sun.manifest as Ranges).meshes) {
 // From every face a ray per 2 deg cell of a field 120 deg wide about its normal: the shares that end on the sky, the
 // ground, an obstruction or a target group, the log-mean distance (an open ray counts as 1000 m) and the nearest
 // thing in view. The same handles in the same roles as step 2: the resident scene serves it.
-const viewFlags = ['--target', 'box=cube']; // rays ending on the mesh "box" count for the group "cube"
+const viewFlags: ViewsOptions = { target: [{ name: 'box', group: 'cube' }] }; // rays ending on the mesh "box" count for "cube"
 t = performance.now();
 const view = await run('views', viewFlags, { sensors }, { signal: AbortSignal.timeout(10_000) });
 console.log(`views: ${(performance.now() - t).toFixed(0)} ms, scene reused ${view.stats.sceneReused}`);
@@ -82,13 +83,13 @@ sky.forEach((s, i) => console.log(`  facade row ${i}: sky ${s.toFixed(3)}, cube 
 // volume_front, m3), with horizontal rays only the area in view (area_front, m2).
 const grid = SimulationMesh.load(tests('room_grid.obj')); // sensor: the measuring points
 const room = SimulationMesh.load(tests('room.obj')); // context: room, window, tree
-const eye = [
-  '--offset', '0.4', // the eye 0.4 m above each grid face
-  '--no-occlude', 'grid', // the grid is measured, not seen: the rays pass it
-];
-// The isovist is the default column all around; --distance mean,min gives the distances instead, --far M caps both.
-const vol = await run('views', ['--fov', '360,-90,90', ...eye], { sensors: [grid], context: [room] }); // the whole sphere
-const area = await run('views', ['--fov', '360,0,0', ...eye], { sensors: [grid], context: [room] }); // horizontal rays only
+const eye: ViewsOptions = {
+  offset: 0.4, // the eye 0.4 m above each grid face
+  noOcclude: ['grid'], // the grid is measured, not seen: the rays pass it
+};
+// The isovist is the default column all around; distance: ['mean', 'min'] gives the distances instead, far caps both.
+const vol = await run('views', { ...eye, fov: [360, -90, 90] }, { sensors: [grid], context: [room] }); // the whole sphere
+const area = await run('views', { ...eye, fov: [360, 0, 0] }, { sensors: [grid], context: [room] }); // horizontal rays only
 console.log(`isovists in the room: volume ${mean(rows(vol, 'grid', 'volume_front')).toFixed(1)} m3 all around, ` +
   `area ${mean(rows(area, 'grid', 'area_front')).toFixed(1)} m2 at eye height`);
 grid.free();
@@ -96,7 +97,7 @@ room.free();
 
 // ---- Step 6: errors -----------------------------------------------------------------------------------------------
 // A failed run rejects with a DaylightError: status 1 usage (flags, names the meshes do not resolve) or 2 runtime
-// (files, the GPU, cancelled). Here a target name no mesh has.
+// (files, the GPU, cancelled). Here a target name no mesh has, as raw flags.
 try {
   await run('views', ['--target', 'tree=green'], { sensors });
 } catch (e) {

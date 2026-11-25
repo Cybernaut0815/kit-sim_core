@@ -33,12 +33,14 @@ print([x[0] for x in sens], m['meshes'], values.shape)                  # prim p
 
 Views (`tool='views'`, [docs/views.md](../../docs/views.md)): `run_meshes` also takes the `(name, points, counts,
 indices)` tuples of `meshes()` as they are; each name becomes the file stem `python -m daylight` gives it
-(`/World/Lake` -> `World_Lake`), the mesh name in the manifest and in flags such as `--target NAME=GROUP`:
+(`/World/Lake` -> `_World_Lake`), the mesh name in the manifest and in flags such as `--target NAME=GROUP`. `args`
+takes the flags as strings or as typed options (`DaylightOptions` / `ViewsOptions`, a key per flag:
+[docs/api.md](../../docs/api.md#typed-options)):
 
 ```python
 import daylight
 sens, ctx = daylight.split(daylight.meshes('scene.usd'), sensors=['/World/Bldg'])
-values, m = daylight.run_meshes(sens, ctx, tool='views', args=['--target', 'World_Lake=water', '--reach', 'en17037'])
+values, m = daylight.run_meshes(sens, ctx, tool='views', args={'target': {'_World_Lake': 'water'}, 'reach': 'en17037'})
 print(m['columns'], m['targets'])                  # sky_front ground_front obstruction_front water_front ...
 ```
 
@@ -61,28 +63,30 @@ One-liner (writes `out/<stem>.dmesh` per mesh + `out/meshes.json`; flags after `
 ```
 cd bindings/python && uv sync
 uv run python -m daylight scene.usd --sensors /World/Bldg -o out --write-usd out/daylight.usda -- --epw x.epw --quantity radiation
-uv run python -m daylight scene.usd --sensors /World/Bldg -o out --tool views -- --target World_Lake=water
+uv run python -m daylight scene.usd --sensors /World/Bldg -o out --tool views -- --target _World_Lake=water
 uv run python -m daylight.check          # self-checks: to_dmesh / masking / converter / colormap / write_results,
                                          # run_meshes end to end (needs the exes), native in-process (needs the DLL)
 ```
 
 `--sensors`/`--context` are prim-path prefixes (repeatable): no `--sensors` = every mesh is a sensor, no `--context`
 = every non-sensor mesh blocks only, both = the rest is dropped. `--time T` picks the USD time code (default: the
-stage start time). File stem = prim path with `[^A-Za-z0-9._-]` replaced by `_`, leading `_` stripped, made unique
-with `_2`, `_3` ... (`/World/Bldg/roof` -> `World_Bldg_roof.dmesh`); `meshes.json` is the ordered list
+stage start time). File stem = prim path with `[^A-Za-z0-9._-]` replaced by `_`, made unique ignoring case with
+`_2`, `_3` ... (`/World/Bldg/roof` -> `_World_Bldg_roof.dmesh`), the TypeScript binding's `dmeshStems` rule;
+`meshes.json` is the ordered list
 `[{"file", "prim", "role": "sensor" | "context"}]`, sensors first.
 
 ## In-process (`daylight.native`)
 
 Both tools in this process through `daylight_c.dll`: no process start, no files, the GPU context kept, and runs over
 the same `SimulationMesh` objects in the same roles and order reuse the resident GPU scene (no triangulation, upload or GAS
-build; daylight and views share it). Flags are the CLIs' own, values and manifest bit for bit what the CLI writes.
+build; daylight and views share it). Flags are the CLIs' own (strings or typed options), values and manifest bit for
+bit what the CLI writes.
 
 ```python
 from daylight import SimulationMesh, native
 with SimulationMesh.load('site.obj') as site, SimulationMesh('grid', P, C, I) as grid:             # P [N,3] float64, C counts, I indices
     r = native.run('daylight', ['--epw', 'site.epw', '--quantity', 'radiation'], grid, context=site)
-    v = native.run('views', ['--fov', '360', '--offset', '1.6', '--target', 'lake=water'], grid, context=site)
+    v = native.run('views', {'fov': 360, 'offset': 1.6, 'target': {'lake': 'water'}}, grid, context=site)
 print(r.values.shape, r.manifest['columns'], v.stats['scene_reused'])             # True: the scene of the first run
 ```
 
@@ -91,14 +95,15 @@ print(r.values.shape, r.manifest['columns'], v.stats['scene_reused'])           
   DLL; `SimulationMesh.load(path)`: the meshes of a `.obj` (one per `o`/`g` group) or `.dmesh` file as the CLI reads them.
   `.names` = what the manifest, `--target`, `--optics` and `--no-occlude` call them. `close()`, a `with` block or
   garbage collection frees the handle; never close one a run on another thread is using.
-- `native.run(tool, args, sensors, context=(), control=None)` -> `Result(values, manifest, stats)`: `tool` `'daylight'`
-  ([daylight.md](../../docs/daylight.md)) or `'views'` ([views.md](../../docs/views.md)), `args` its flags as strings
-  (mesh paths, `--context`, `--out`, `--bench` and `-h` are refused: the meshes are `sensors` / `context`, each a
-  `SimulationMesh` or an iterable of them), `values` `[N x C]` float64, `manifest` the CLI's `FILE.json` as a dict, `stats`
+- `native.run(tool, args, sensors, context=(), control=None, dtype='float64')` -> `Result(values, manifest, stats)`:
+  `tool` `'daylight'` ([daylight.md](../../docs/daylight.md)) or `'views'` ([views.md](../../docs/views.md)), `args` its
+  flags as strings or typed options (mesh paths, `--context`, `--out`, `--bench` and `-h` are refused: the meshes are
+  `sensors` / `context`, each a `SimulationMesh` or an iterable of them), `values` `[N x C]` float64 (`dtype='float32'`:
+  float32, half the memory), `manifest` the CLI's `FILE.json` as a dict, `stats`
   `{scene_reused, prep_ms, sky_ms, build_ms, trace_ms, reduce_ms, bounce_ms, rays, launches, gas_bytes}`. Files in
   flags (`--epw`, `--timeseries`, `--dump-*`) are paths of this process; a `str` goes as UTF-8 (names), a
   `pathlib.Path` in the ANSI code page the core opens files with, as the CLI's argv: give a non-ASCII path as a `Path`.
-  `native.usage(tool)`: the CLI's `-h` text.
+  `native.usage(tool)`: the CLI's `-h` text; `native.version()`: the DLL's C ABI version (1).
 - `Control()`: pass it as `control`, then from another thread `cancel()` (the run stops at its next check and raises
   `DaylightError` 2 `cancelled`) or read `progress` (0..1). One control per run; `close()` / `with` as for `SimulationMesh`.
 - Errors raise `native.DaylightError` with `.status` = the CLI's exit code (1: flags, arguments, mesh names the flags
@@ -124,8 +129,13 @@ print(r.values.shape, r.manifest['columns'], v.stats['scene_reused'])           
   or `(name, points, counts, indices)` tuples as `meshes()` gives them (a single one is accepted too); written as
   `<stem>.dmesh` (= the manifest names): the name's file stem as `python -m daylight` makes it, `sensor_<i>` /
   `context_<i>` for a triple.
-- `native`: the in-process API above (`SimulationMesh`, `Control`, `run`, `usage`, `DaylightError`); `daylight.SimulationMesh` is
-  `native.SimulationMesh`.
+- `native`: the in-process API above (`SimulationMesh`, `Control`, `run`, `usage`, `version`, `DaylightError`);
+  `daylight.SimulationMesh` is `native.SimulationMesh`.
+- `DaylightOptions`, `ViewsOptions` (`daylight.options`, TypedDicts): a key per CLI flag, snake_case (`sky_density` is
+  `--sky-density`, `from_` `--from`, `verbose` `-v`), documented with its flag and default; `target` a mapping or
+  `(name, group)` pairs, `optics` `Optics` dicts or SPEC strings. `to_args(options)` gives the flags (booleans bare or
+  on/off, lists comma-joined, optics / target / no_occlude `;`-joined, None and empty lists left out). Every `args`
+  above (`run`, `run_meshes`, `native.run`) takes them.
 - `write_results(stage, values, manifest, prims, out, on='faces', name='daylight', vmin=None, vmax=None)` -> written
   prim paths. `stage` = path or `Usd.Stage`; `values` `[N x C]` (1-D = one column) with rows per `manifest['meshes']`,
   `prims` the sensor prim paths in that order; `out` (.usda/.usdc) is created / overwritten with `subLayerPaths =
@@ -142,7 +152,7 @@ print(r.values.shape, r.manifest['columns'], v.stats['scene_reused'])           
 
 ```
 offset  0  char[4]   "DLM1"                 magic + version
-offset  4  uint32    flags                  0 here (this binding writes no slot block); bit 0 = uint16 slot[n_faces] after the indices, see docs/input.md
+offset  4  uint32    flags                  0 from to_dmesh (no slot block; in-process SimulationMesh(..., slots=) carries them); bit 0 = uint16 slot[n_faces] after the indices, see docs/input.md
 offset  8  uint64    n_points
 offset 16  uint64    n_faces
 offset 24  uint64    n_indices

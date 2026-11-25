@@ -59,7 +59,7 @@ struct Optics { std::string mesh; int slot = -1; double rho = 0.2, tau = 0; bool
 
 // What every mesh-sensor ray tool of this library takes alike: sensors, occluders, the resident scene, run control.
 struct RunOptions {
-  Sides sides = Sides::Front;
+  Sides sides = Sides::Front;         // receiving (daylight) or viewing (views) side(s) of each element; Both: two columns
   bool cullBackfaces = false;         // occluders one-sided (winding); default two-sided like Radiance
   bool onVertices = false;            // sensors on points instead of faces
   bool selfOcclude = true;            // sensor meshes also block rays
@@ -79,7 +79,7 @@ struct RunOptions {
   std::string sceneKey;
   int residentScenes = 1;              // keyed scenes kept in VRAM (most recent first); more than 1 lets users alternate cheaply
   const std::atomic<bool>* cancel = nullptr;   // set by another thread: run() stops at its next check and fails with "cancelled"
-  bool verbose = false;
+  bool verbose = false;               // sizes and timings on stderr (-v)
   // Cap on each per-chunk device buffer (visibility bits or bytes, the series tile, the reflected-light rows): sensors
   // are traced in chunks that fit it. Any value gives the same numbers (tests use a tiny one to force many chunks).
   size_t chunkBytes = size_t(256) << 20;
@@ -89,8 +89,8 @@ struct RunOptions {
 
 // A daylight run: the shared options plus quantities, sky, optics, time span and dumps.
 struct Options : RunOptions {
-  Mode mode = Mode::Physical;
-  std::vector<Quantity> quantities = {Quantity::Radiation};
+  Mode mode = Mode::Physical;         // sky and sun model (docs/modes.md)
+  std::vector<Quantity> quantities = {Quantity::Radiation};   // a column per quantity (and side), in this order
   int mf = 1;                        // sky density: 1 (145 patches), 2 (577), 4 (2305)
   int patchSamples = 1;               // physical: K = m*m stratified rays per patch
   double ground = 0.2;                // ground reflectance

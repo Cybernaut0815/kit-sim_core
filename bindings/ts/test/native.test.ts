@@ -9,7 +9,7 @@ import { fileURLToPath } from 'node:url';
 import { Worker } from 'node:worker_threads';
 import { describe, expect, it } from 'vitest';
 import { run as runExe } from '../src/index.js';
-import { DaylightError, SimulationMesh, init, run, usage, type NativeResult } from '../src/native.js';
+import { DaylightError, SimulationMesh, init, run, usage, version, type NativeResult } from '../src/native.js';
 
 const repo = (p: string) => fileURLToPath(new URL(`../../../${p}`, import.meta.url));
 const dll = process.env.DAYLIGHT_DLL || repo('build/RelWithDebInfo/daylight_c.dll');
@@ -43,6 +43,7 @@ describe.skipIf(!existsSync(dll))('native (daylight_c.dll)', { timeout: 60_000 }
     expect(() => init(join(build, 'other.dll'))).toThrow(/loaded already/);
     expect(usage('daylight')).toContain('usage: daylight');
     expect(usage('views')).toContain('usage: views');
+    expect(version()).toBe(1);
   });
 
   it('mesh errors carry the core message; names; an empty mesh holds none; free twice is fine', () => {
@@ -104,6 +105,7 @@ describe.skipIf(!existsSync(dll))('native (daylight_c.dll)', { timeout: 60_000 }
       const r = await run('views', view360, { sensors: [box()] });
       expect(r.stats.sceneReused).toBe(true);
       sameAsCli(r, 'views_smoke.npy');
+      sameAsCli(await run('views', { fov: 360, offset: 1.6, sides: 'both' }, { sensors: [box()] }), 'views_smoke.npy'); // typed options
     });
 
     it('the event loop runs while the GPU does: a timer fires before the run settles', async () => {
@@ -116,6 +118,9 @@ describe.skipIf(!existsSync(dll))('native (daylight_c.dll)', { timeout: 60_000 }
 
   it('the views facade: sky above the horizon, the virtual ground below, no obstruction', async () => {
     const r = await run('views', open, { sensors: [facade()] });
+    const r32 = await run('views', open, { sensors: [facade()] }, { float32: true }); // dl_result_values_f32: the same values, rounded
+    expect(r32.data.map((c) => Array.from(c))).toEqual(r.data.map((c) => Array.from(Float32Array.from(c))));
+    expect(r32.data[0]).toBeInstanceOf(Float32Array);
     expect(r.columns).toEqual(['sky_front', 'ground_front', 'obstruction_front', 'obstruction_total_front', 'distance_front', 'distance_min_front']);
     expect(r.data.map((c) => c.length)).toEqual([1, 1, 1, 1, 1, 1]);
     expect(r.data[0][0]).toBeCloseTo(0.4490987851112869, 9);

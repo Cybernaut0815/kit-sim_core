@@ -14,6 +14,14 @@ it('lib/ is the build of src/ (after editing src: npm run build)', { timeout: 60
   const out = cfg.options.outDir!, emitted: Record<string, string> = {}, committed: Record<string, string> = {};
   program.emit(undefined, (path, text) => (emitted[relative(out, path)] = text));
   for (const f of readdirSync(out)) committed[f] = readFileSync(join(out, f), 'utf8').replace(/\r\n/g, '\n');
-  expect(Object.keys(emitted).sort()).toEqual(['index.d.ts', 'index.js', 'native.d.ts', 'native.js']);
+  expect(Object.keys(emitted).sort()).toEqual(['index.d.ts', 'index.js', 'native.d.ts', 'native.js', 'options.d.ts', 'options.js']);
   expect(committed).toEqual(emitted);
+});
+
+it('src/ imports its siblings as .ts (Node runs src/*.ts as they are; tsc rewrites them to .js in lib/)', () => {
+  const src = fileURLToPath(new URL('../src', import.meta.url));
+  for (const f of readdirSync(src)) {
+    const specifiers = [...readFileSync(join(src, f), 'utf8').matchAll(/(?:from |import\()'(\.{1,2}\/[^']*)'/g)].map((m) => m[1]);
+    expect(specifiers.filter((s) => !s.endsWith('.ts')), f).toEqual([]);
+  }
 });

@@ -1,16 +1,30 @@
 import type { Mesh, Object3D } from 'three';
+import { type RunArgs } from './options.ts';
+export * from './options.ts';
+/** A triangle mesh in the core's frame, as fromThree() / fromGLB() give it and toObj() / toDmesh() / run() take it. */
 export interface ObjMesh {
+    /** The mesh's name: its `.dmesh` stem through dmeshStems(), its OBJ `o` group. */
     name: string;
+    /** xyz interleaved, world metres, Z-up. */
     positions: ArrayLike<number>;
+    /** Triangle indices, 0-based, right-handed winding. */
     indices: ArrayLike<number>;
+    /** Optics slot per triangle (core SimulationMesh::slot; toDmesh writes it, toObj does not); absent = all slot 0. */
     slots?: Uint16Array;
+    /** runRemote(): the server caches the mesh under it; absent: meshIds() derives it from the bytes. */
     id?: string;
 }
 /**
- * `.dmesh` file stems (= core mesh names) for `names`: sanitised to `[A-Za-z0-9._-]`, empty -> `fallback`, made unique
- * case-insensitively (`_2`, `_3`, ... suffixes; Windows/macOS file systems ignore case). Shared by run() and runRemote().
+ * `.dmesh` file stems (= core mesh names) for `names`: every character outside `[A-Za-z0-9._-]` becomes `_`
+ * (`/World/lake` -> `_World_lake`), empty -> `fallback`, made unique case-insensitively (`_2`, `_3`, ... suffixes;
+ * Windows/macOS file systems ignore case). Shared by run() and runRemote(); the Python binding's stems follow it.
  */
 export declare function dmeshStems(names: ArrayLike<string>, fallback?: string): string[];
+/**
+ * Meshes -> the core's OBJ text (interop): one `o <name>` group per mesh, `v` lines in world metres Z-up, `f` lines with
+ * 1-based global indices. Slots are not written (OBJ input is slot 0). Throws for positions that are not xyz triples,
+ * indices that are not triangle triples, or an index out of range.
+ */
 export declare function toObj(meshes: ObjMesh[]): string;
 /**
  * One mesh -> `.dmesh` bytes (little-endian): "DLM1", uint32 flags, uint64 nPoints/nFaces/nIndices,
@@ -69,12 +83,13 @@ export declare function applyToThree(mesh: Mesh, values: ArrayLike<number>, opts
  * Node only: writes the inputs into a temp dir, runs `exe <sensor files> [--context <file>]... ...args --out out.npy`,
  * returns the values as columns, `data[c][element]` for `columns[c]` (the core's doubles; runRemote has the same shape
  * in float32), and the `out.npy.json` manifest. A string input is OBJ text (one .obj); an ObjMesh[] becomes
- * one `<name>.dmesh` per mesh via toDmesh() (name sanitised to [A-Za-z0-9._-], made unique).
+ * one `<name>.dmesh` per mesh via toDmesh() (name sanitised to [A-Za-z0-9._-], made unique). `args`: raw flags, or
+ * DaylightOptions / ViewsOptions (toArgs()) for the tool `exe` is.
  */
 export declare function run(exe: string, input: {
     sensors: string | ObjMesh[];
     context?: string | ObjMesh[];
-    args?: string[];
+    args?: RunArgs;
 }): Promise<{
     data: Float64Array[];
     columns: string[];
@@ -154,6 +169,31 @@ export declare function meshIds(input: {
     context?: readonly RemoteMesh[];
     signal?: AbortSignal;
 }): Promise<string[]>;
+/** What runRemote() runs: the meshes, the weather, the flags, and the caller's hooks. */
+export interface RemoteInput {
+    /** Analysed meshes (rows in this order); they also block. */
+    sensors: RemoteMesh[];
+    /** Meshes that only block. */
+    context?: RemoteMesh[];
+    /** daylight's weather: a Blob (uploaded) or `{ url }` (the server fetches it through its allowlisted proxy cache). */
+    epw?: Blob | {
+        url: string;
+    };
+    /** The tool's flags, raw or typed (toArgs()); no file flags. */
+    args?: RunArgs;
+    /** Aborting cancels the job on the server, also one aborted while the server was making it. */
+    signal?: AbortSignal;
+    /** Header `X-Client-Id`: identifies this client for the per-client job limit. */
+    clientId?: string;
+    /** Every queued / running state of the job. */
+    onStatus?: (job: RemoteJob) => void;
+    /** Upload progress, done of total meshes, from 0 to total. */
+    onUpload?: (done: number, total: number) => void;
+    /** Another fetch (tests, a proxy); default globalThis.fetch. */
+    fetch?: typeof globalThis.fetch;
+    /** The core tool the job runs: daylight (default) or views, which takes no epw (form field `tool`, sent for views only). */
+    tool?: 'daylight' | 'views';
+}
 /**
  * Browser or Node: runs the core on a `daylight_server` as a queued job, so several users share the GPU. Meshes travel
  * by id (`RemoteMesh.id`, else meshIds(): their bytes' SHA-256, nothing written back): `POST <url>/jobs` names them. Ids
@@ -164,26 +204,13 @@ export declare function meshIds(input: {
  * `{missing}` anyway (restarted, or it evicted the mesh) those go up again before one retry. The job is then long-polled (`GET /jobs/<id>?wait=25`); `onStatus` sees every
  * queued / running state. Aborting `signal` cancels the job on the server (`DELETE /jobs/<id>`), also one aborted
  * while the server was making it (the POST itself is not aborted, so its id is always known). `epw` is a Blob
- * (uploaded) or `{ url }` (the server fetches it through its allowlisted proxy cache). `args` are CLI flags verbatim
- * (no files), of the `tool` (daylight, the default, or views: docs/views.md). `clientId` (header `X-Client-Id`) identifies this client for the per-client job limit. Rejects with the
+ * (uploaded) or `{ url }` (the server fetches it through its allowlisted proxy cache). `args` are the `tool`'s CLI
+ * flags (daylight, the default, or views: docs/views.md), raw or as DaylightOptions / ViewsOptions; no file flags. `clientId` (header `X-Client-Id`) identifies this client for the per-client job limit. Rejects with the
  * server's text on 4xx / 5xx or a failed job. Resolves with the values as columns, `data[c][row]` for `columns[c]`
  * (rows of mesh k from `manifest.meshes[k].first`): float32, read from `GET <url>/jobs/<id>/values` as one buffer that
  * every column is a view of; `manifest` is the finished job's JSON.
  */
-export declare function runRemote(url: string, input: {
-    sensors: RemoteMesh[];
-    context?: RemoteMesh[];
-    epw?: Blob | {
-        url: string;
-    };
-    args?: string[];
-    signal?: AbortSignal;
-    clientId?: string;
-    onStatus?: (job: RemoteJob) => void;
-    onUpload?: (done: number, total: number) => void;
-    fetch?: typeof globalThis.fetch;
-    tool?: 'daylight' | 'views';
-}): Promise<{
+export declare function runRemote(url: string, input: RemoteInput): Promise<{
     data: Float32Array<ArrayBuffer>[];
     columns: string[];
     manifest: RemoteManifest;

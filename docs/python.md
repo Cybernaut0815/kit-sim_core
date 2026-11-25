@@ -2,12 +2,13 @@
 
 `bindings/python` (package `daylight`, a uv project) runs both tools of the core from Python: daylight, annual
 daylight / solar simulation ([daylight.md](daylight.md)), and views, view analysis ([views.md](views.md)). Both take
-the same meshes, mesh roles and CLI flags, and both return a float64 `[N x C]` array (a row per element of the sensor
-meshes, a column per quantity or share) with its manifest.
+the same meshes, mesh roles and CLI flags (as strings, or typed: `DaylightOptions` / `ViewsOptions` dicts,
+[api.md](api.md#typed-options)), and both return a float64 `[N x C]` array (a row per element of the sensor meshes, a
+column per quantity or share) with its manifest.
 
 | way in | how | for |
 |---|---|---|
-| in-process: `daylight.native` | `daylight_c.dll` through ctypes: `SimulationMesh` handles, `native.run(tool, flags, sensors, context)` | repeated runs over one model (parameter studies, notebooks, a server): no process start, the GPU scene kept |
+| in-process: `daylight.native` | `daylight_c.dll` through ctypes: `SimulationMesh` handles, `native.run(tool, args, sensors, context)` | repeated runs over one model (parameter studies, notebooks, a server): no process start, the GPU scene kept |
 | process runner: `daylight.run_meshes`, `daylight.run` | writes `.dmesh` files, runs `daylight.exe` / `views.exe`, reads its `.npy` values and `.json` manifest | single runs, a process of its own per run |
 | USD: `meshes`, `split`, `write_results`, `python -m daylight` | a composed stage to mesh arrays; the values back as primvars on a layer over the stage | usdview, Omniverse, any USD pipeline: [the one-liner](#a-usd-stage-in-and-out), [in code](#on-a-usd-stage) |
 
@@ -45,9 +46,9 @@ facing south (-Y), 60 quads of 1 m made with numpy (its `wall` function); in fro
 the key lines:
 
 ```python
-from daylight import SimulationMesh, native
+from daylight import DaylightOptions, SimulationMesh, native
 
-DAYLIGHT = ['--clear-sky', '--lat', '52.52', '--lon', '13.41', '--quantity', 'radiation,sunhours']   # Berlin
+DAYLIGHT: DaylightOptions = {'clear_sky': True, 'lat': 52.52, 'lon': 13.41, 'quantity': ['radiation', 'sunhours']}  # Berlin
 with SimulationMesh('facade', *wall(10, 6, 4, 1)) as facade, \
         SimulationMesh.load('tests/box.obj') as box, SimulationMesh('block', *wall(30, 9, -14, 3)) as block:
     r = native.run('daylight', DAYLIGHT, [facade, box], [block])      # sensors, then context (blocks only)
@@ -59,12 +60,15 @@ The example runs it on a worker thread with a `native.Control`, so that its own 
 - `SimulationMesh(name, points, counts, indices, slots=None)`: one mesh, numpy arrays or lists, copied into the DLL once.
   `SimulationMesh.load(path)`: every `o`/`g` group of an `.obj` (here `ground` and `box`, in file order) or one `.dmesh`.
   `.names` lists what a handle holds; these are the names the manifest and flags such as `--target` use.
-- `native.run(tool, args, sensors, context=(), control=None)` -> `Result(values, manifest, stats)`. Sensors are
-  analysed (a row per face) and block, context only blocks; each a `SimulationMesh` or a list of them.
-- `args` are the CLI's flags as strings ([daylight.md](daylight.md)). `--clear-sky --lat --lon` makes a cloudless
-  year; with a weather file it is `--epw site.epw` (give a non-ASCII path as a `pathlib.Path`). Mesh paths,
-  `--context`, `--out`, `--bench` and `-h` are refused: the meshes are handles and the result comes back.
-  `native.usage('daylight')` is the CLI's `-h` text.
+- `native.run(tool, args, sensors, context=(), control=None, dtype='float64')` -> `Result(values, manifest, stats)`.
+  Sensors are analysed (a row per face) and block, context only blocks; each a `SimulationMesh` or a list of them.
+  `dtype='float32'` gives the values as float32 (half the memory).
+- `args` are the CLI's flags ([daylight.md](daylight.md)): a `DaylightOptions` dict, a key per flag in snake_case
+  (`clear_sky` is `--clear-sky`, `from_` `--from`; unset keys keep the core's defaults), or the strings
+  (`['--clear-sky', '--lat', '52.52', ...]`). `clear_sky` with `lat` / `lon` makes a cloudless year; with a weather
+  file it is `'epw': 'site.epw'` (give a non-ASCII path as a `pathlib.Path`). Mesh paths, `--context`, `--out`,
+  `--bench` and `-h` are refused: the meshes are handles and the result comes back. `native.usage('daylight')` is the
+  CLI's `-h` text, `native.version()` the DLL's C ABI version (1).
 
 ```
 daylight, clear-sky year: scene_reused False, 475 ms, progress 0% -> 100%
@@ -128,14 +132,15 @@ writes `out/daylight.usda`: a layer that sublayers the stage and gives each sens
 The same meshes in the same roles and order as the daylight run, so views reuses its GPU scene:
 
 ```python
-VIEWS = ['--fov', '120', '--target', 'ground=lawn', '--reach', 'en17037']     # mesh "ground" counts as group "lawn"
+VIEWS: ViewsOptions = {'fov': 120, 'target': {'ground': 'lawn'}, 'reach': 'en17037'}   # mesh "ground" counts as group "lawn"
 v = native.run('views', VIEWS, sensors, context)           # the same meshes in the same roles: the same scene
 ```
 
-- `--fov 120` is the default field written out: 120 deg wide about each face's normal, 70 deg down to 50 deg up,
-  a ray per 2 deg cell (3,600 per face). `--fov 360` turns all around, e.g. with `--offset 1.6` on a floor grid.
-- `--target ground=lawn`: rays that end on the mesh `ground` count for the group `lawn`, a share column of its own.
-- `--reach en17037`: the shares of the field that see at least 6, 20 and 50 m.
+- `'fov': 120` (`--fov 120`) is the default field written out: 120 deg wide about each face's normal, 70 deg down to
+  50 deg up, a ray per 2 deg cell (3,600 per face). `360` turns all around, e.g. with `'offset': 1.6` on a floor grid.
+- `'target': {'ground': 'lawn'}` (`--target ground=lawn`): rays that end on the mesh `ground` count for the group
+  `lawn`, a share column of its own. A mapping or `(name, group)` pairs, in column order.
+- `'reach': 'en17037'`: the shares of the field that see at least 6, 20 and 50 m.
 - Columns: `sky_front ground_front obstruction_front obstruction_total_front lawn_front distance_front
   distance_min_front reach_6_front reach_20_front reach_50_front`. Every flag: [views.md](views.md).
 
@@ -158,9 +163,9 @@ horizontal rays only (`--fov 360,0,0`). The example ends with both, in tests/roo
 
 ```python
 with SimulationMesh.load(TESTS / 'room_grid.obj') as grid, SimulationMesh.load(TESTS / 'room.obj') as room:   # room, window, tree
-    eye = ['--offset', '0.4', '--no-occlude', 'grid']                  # the grid is measured, not seen
-    vol = native.run('views', ['--fov', '360,-90,90', *eye], grid, context=room)
-    area = native.run('views', ['--fov', '360,0,0', *eye], grid, context=room)
+    eye: ViewsOptions = {'offset': 0.4, 'no_occlude': ['grid']}        # the grid is measured, not seen
+    vol = native.run('views', {**eye, 'fov': (360, -90, 90)}, grid, context=room)
+    area = native.run('views', {**eye, 'fov': (360, 0, 0)}, grid, context=room)
 ```
 
 ```
@@ -175,28 +180,28 @@ The room holds 93.18 m³ on a 32.13 m² floor: the polygon and mesh through the 
 `tool='views'` runs `views.exe` on the same tuples (the `v = ...` line above), with:
 
 ```python
-VIEWS = ['--fov', '120', '--target', 'lawn=green', '--reach', 'en17037']       # mesh "lawn" counts as group "green"
+VIEWS: ViewsOptions = {'fov': 120, 'target': {'lawn': 'green'}, 'reach': 'en17037'}   # mesh "lawn" counts as group "green"
 ```
 
-The tuples' names become the `.dmesh` file stems, and so the mesh names in the manifest and in flags: `--target
-lawn=green` names the `lawn` tuple. A name is made a file stem as `python -m daylight` does: `[^A-Za-z0-9._-]` -> `_`,
-leading `_` stripped, `_2`, `_3` ... for repeats (`/World/Lake` -> `World_Lake`); an unnamed triple is `sensor_<i>`
-or `context_<i>`. In the table above, sky rises from 0.30 at the foot to 0.38 at the top, the green share peaks at
+The tuples' names become the `.dmesh` file stems, and so the mesh names in the manifest and in flags: `'target':
+{'lawn': 'green'}` names the `lawn` tuple. A name is made a file stem as `python -m daylight` and the TypeScript
+binding's `dmeshStems` do: `[^A-Za-z0-9._-]` -> `_`, `_2`, `_3` ... for repeats ignoring case (`/World/Lake` ->
+`_World_Lake`); an unnamed triple is `sensor_<i>` or `context_<i>`. In the table above, sky rises from 0.30 at the foot to 0.38 at the top, the green share peaks at
 0.17 half way up, the log mean distance grows from 15 to 70 m (the near ground weighs less higher up) and the share
 seeing at least 20 m from 0.37 to 0.50.
 
 ### A USD stage in and out: `--tool views`
 
 ```
-uv run python -m daylight ../cpp/box.usda --sensors /World -o out --tool views --write-usd out/views.usda -- --target Floor=lawn
+uv run python -m daylight ../cpp/box.usda --sensors /World -o out --tool views --write-usd out/views.usda -- --target _Floor=lawn
 ```
 
 `--tool views` runs `views.exe`; the primvars are `views_<column>` (`views_sky_front`, `views_lawn_front`, ...).
-`Floor` is the file stem of the context prim `/Floor`.
+`_Floor` is the file stem of the context prim `/Floor`.
 
 ## Results
 
-- `values`: float64 `[N x C]`, a row per element of the sensor meshes (faces, or points with `--on vertices`),
+- `values`: float64 `[N x C]` (in-process `dtype='float32'`: float32), a row per element of the sensor meshes (faces, or points with `--on vertices`),
   meshes in the order given (a handle's meshes in its own order), elements in mesh order; nothing is reordered or
   dropped. In-process `Result(values, manifest, stats)`, from the process runner `(values, manifest)`: the same.
 - `manifest['columns']`: the C column names. `manifest['meshes']`: `[{name, first, count}]` per sensor mesh, so
@@ -253,7 +258,7 @@ daylight.write_results('../cpp/box.usda', v.values, v.manifest, [m[0] for m in s
   core's frame (metres, Z up, right-handed winding; instances expanded; invisible, guide, proxy and inactive prims
   dropped). `split(meshes, sensors=(), context=())` sorts them by prim path prefix.
 - In-process a mesh is named by its prim path (`--target /Floor=lawn`); `run_meshes(sens, ctx, ...)` takes the same
-  tuples and names them by file stem (`Floor`), as `python -m daylight` does.
+  tuples and names them by file stem (`_Floor`), as `python -m daylight` does.
 - `write_results(stage, values, manifest, prims, out, on='faces', name='daylight', vmin=None, vmax=None)`: `out`
   (`.usda` / `.usdc`, overwritten) sublayers the stage and overrides each prim of `prims` (the sensor prim paths in
   run order) with `primvars:<name>_<column>` (float, per face or per point) and `primvars:displayColor`
@@ -286,7 +291,7 @@ In-process:
 | `native.DaylightError`, `.status` 1 | bad flags or arguments, refused flags, names the meshes do not resolve (`--target`, `--optics`, `--no-occlude`), bad arrays in `SimulationMesh(...)` |
 | `native.DaylightError`, `.status` 2 | the run failed: a file (`--epw`, `SimulationMesh.load`), the GPU, out of memory, `cancelled` |
 | `TypeError` | sensors or context that are not `SimulationMesh` objects |
-| `ValueError` | a tool other than `'daylight'` / `'views'`; `slots` not one per face |
+| `ValueError` | a tool other than `'daylight'` / `'views'`; a `dtype` other than float64 / float32; `slots` not one per face; a name holding `;` in typed `optics`, `target` or `no_occlude` |
 | `FileNotFoundError`, `OSError` | the DLL, or one it needs, is missing; not a loadable DLL, or another C ABI version |
 
 `.status` is the CLI's exit code and the message the core's, e.g. status 1 `--target lake=water: no mesh of that
@@ -310,8 +315,9 @@ Cancel and progress in-process, through a `Control` (the daylight run [above](#d
 ## Reference
 
 - [bindings/python/README.md](../bindings/python/README.md): the whole API (`SimulationMesh`, `native.run`, `Control`,
-  `usage`, `run`, `run_meshes`, `to_dmesh`, `meshes`, `split`, `to_obj`, `write_results`, `colormap`,
-  `python -m daylight`), the `.dmesh` layout and the USD conversion rules.
+  `usage`, `version`, `run`, `run_meshes`, `to_dmesh`, `meshes`, `split`, `to_obj`, `write_results`, `colormap`,
+  `DaylightOptions`, `ViewsOptions`, `to_args`, `python -m daylight`), the `.dmesh` layout and the USD conversion rules.
+- [api.md](api.md#typed-options): the typed options' rules, shared with C# and TypeScript.
 - Flags, outputs and units: [daylight.md](daylight.md) (daylight), [views.md](views.md) (views); sky and weather:
   [modes.md](modes.md); mesh roles, culling, faces vs vertices: [input.md](input.md).
 - The DLL underneath: [c-abi.md](c-abi.md). Timings: [performance.md](performance.md#in-process-vs-cli).
@@ -324,5 +330,5 @@ Run from `bindings/python` after the build and `uv sync`; each takes 2-3 s on th
 
 | file | shows | run |
 |---|---|---|
-| [examples/python/inprocess.py](../examples/python/inprocess.py) | commented step by step: `daylight.native`, meshes from numpy and from an OBJ, daylight on a worker thread with its progress, views on the resident scene, the isovists of `tests/room.obj`, means per mesh | `uv run python ../../examples/python/inprocess.py` |
+| [examples/python/inprocess.py](../examples/python/inprocess.py) | commented step by step, on typed options: `daylight.native`, meshes from numpy and from an OBJ, daylight on a worker thread with its progress, views on the resident scene, the isovists of `tests/room.obj`, means per mesh | `uv run python ../../examples/python/inprocess.py` |
 | [examples/python/process.py](../examples/python/process.py) | commented step by step: `run_meshes` with named meshes for `daylight.exe` and `views.exe`, means per row of the facade; the USD one-liners in its docstring | `uv run python ../../examples/python/process.py` |

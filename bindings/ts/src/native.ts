@@ -6,7 +6,9 @@ import { resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { Worker, parentPort, workerData } from 'node:worker_threads';
 import koffi from 'koffi';
-import type { ObjMesh } from './index.js';
+import type { ObjMesh } from './index.ts';
+import type { RunArgs } from './options.ts';
+export type { CommonOptions, DaylightOptions, OpticsSpec, RunArgs, TargetSpec, ViewsOptions } from './options.ts';
 
 const ABI = 1; // DL_ABI_VERSION this binding was written against
 
@@ -78,6 +80,11 @@ export function usage(tool: Tool): string {
   return native().dl_usage(toolId(tool)) ?? '';
 }
 
+/** The C ABI version of the loaded daylight_c.dll (dl_version, DL_ABI_VERSION; init() checks it is this binding's). */
+export function version(): number {
+  return native().dl_version();
+}
+
 // Module state of each SimulationMesh: its handle (null once freed) and the runs using it.
 const state = new WeakMap<SimulationMesh, { handle: bigint | null; runs: number }>();
 const finalizer = new FinalizationRegistry<bigint>((handle) => native().dl_mesh_free(handle));
@@ -147,11 +154,14 @@ export interface RunStats {
   rays: number; launches: number; gasBytes: number;
 }
 
-/** A run's values as columns, data[c][row] for columns[c] (the CLI's --out FILE.npy, float64), its manifest (FILE.json)
- *  parsed and as text (LF), and its stats. */
-export interface NativeResult {
-  data: Float64Array[]; columns: string[]; manifest: unknown; manifestText: string; stats: RunStats;
+/** A run's values as columns, data[c][row] for columns[c] (the CLI's --out FILE.npy: float64, or float32 with run's
+ *  `float32`), its manifest (FILE.json) parsed and as text (LF), and its stats. */
+export interface NativeResult<Values extends Float64Array | Float32Array = Float64Array> {
+  data: Values[]; columns: string[]; manifest: unknown; manifestText: string; stats: RunStats;
 }
+
+/** run()'s hooks: an abort signal, progress, and float32 values (dl_result_values_f32: half the memory). */
+export interface RunOptions { signal?: AbortSignal; onProgress?: (p: number) => void; float32?: boolean }
 
 /** A failed run: status 1 (usage: flags, arguments, mesh names the flags do not resolve) or 2 (runtime: a file, the GPU,
  *  out of memory, cancelled), the CLI's message. */
@@ -165,9 +175,9 @@ export class DaylightError extends Error {
 }
 
 interface Job {
-  id: number; tool: number; args: string[]; sensors: (bigint | null)[]; context: (bigint | null)[]; control: bigint;
+  id: number; tool: number; args: string[]; sensors: (bigint | null)[]; context: (bigint | null)[]; control: bigint; float32: boolean;
 }
-interface Reply { id: number; status: number; error?: string; manifest: string; data: Float64Array[]; stats: Float64Array }
+interface Reply { id: number; status: number; error?: string; manifest: string; data: (Float64Array | Float32Array)[]; stats: Float64Array }
 
 // One run thread per process: dl_run blocks it, not the event loop, and a failure's message is read on the thread that
 // failed. dl_last_error is per thread, so koffi's .async (libuv's pool) would lose it.
@@ -203,16 +213,22 @@ function post(job: Omit<Job, 'id'>): Promise<Reply> {
 }
 
 /**
- * One run of `tool` with its CLI flags (`args`, without the program name; mesh paths, --context, --out, --bench and -h
- * are refused) over mesh handles: `sensors` in place of the CLI's mesh arguments, `context` of its --context meshes.
+ * One run of `tool` with its CLI flags (`args`, without the program name, raw or as DaylightOptions / ViewsOptions;
+ * mesh paths, --context, --out, --bench and -h are refused) over mesh handles: `sensors` in place of the CLI's mesh
+ * arguments, `context` of its --context meshes.
  * Flags go as UTF-8 (mesh names match SimulationMesh.names); file paths in them (--epw, ...) must be ASCII, as for SimulationMesh.load.
  * Runs go one at a time on a worker thread, so the event loop stays free. Aborting `signal` cancels: the run stops at
  * its next check, and the call rejects with DaylightError 2 "cancelled" (also when the run got past its last check).
- * `onProgress` gets the share of sensors traced, 0..1, polled every 100 ms and once at the end. The meshes stay
- * referenced (free() throws) until it settles. Rejects with a DaylightError.
+ * `onProgress` gets the share of sensors traced, 0..1, polled every 100 ms and once at the end. `float32: true` gives
+ * the values as Float32Array columns. The meshes stay referenced (free() throws) until it settles. Rejects with a
+ * DaylightError.
  */
-export async function run(tool: Tool, args: string[], input: { sensors: SimulationMesh[]; context?: SimulationMesh[] },
-  opts: { signal?: AbortSignal; onProgress?: (p: number) => void } = {}): Promise<NativeResult> {
+export async function run(tool: Tool, args: RunArgs, input: { sensors: SimulationMesh[]; context?: SimulationMesh[] },
+  opts?: RunOptions & { float32?: false }): Promise<NativeResult>;
+export async function run(tool: Tool, args: RunArgs, input: { sensors: SimulationMesh[]; context?: SimulationMesh[] },
+  opts: RunOptions & { float32: true }): Promise<NativeResult<Float32Array>>;
+export async function run(tool: Tool, args: RunArgs, input: { sensors: SimulationMesh[]; context?: SimulationMesh[] },
+  opts: RunOptions = {}): Promise<NativeResult<Float64Array> | NativeResult<Float32Array>> {
   const d = native(), meshes = [...input.sensors, ...(input.context ?? [])];
   const handles = meshes.map((m) => state.get(m)?.handle ?? null); // a freed mesh: the core's "NULL mesh handle"
   const control: bigint | null = d.dl_control_create();
@@ -228,15 +244,17 @@ export async function run(tool: Tool, args: string[], input: { sensors: Simulati
   const timer = opts.onProgress ? setInterval(progress, 100) : undefined;
   count(1);
   try {
+    // imported here, after the meshes are counted in: this file is also the run thread, which loads no sibling module
+    const { argsOf } = await import('./options.ts');
     const n = input.sensors.length;
-    const r = await post({ tool: toolId(tool), args, sensors: handles.slice(0, n), context: handles.slice(n), control });
+    const r = await post({ tool: toolId(tool), args: argsOf(args), sensors: handles.slice(0, n), context: handles.slice(n), control, float32: !!opts.float32 });
     if (r.error !== undefined) throw r.status > 0 ? new DaylightError(r.error, r.status) : new Error(r.error);
     if (opts.signal?.aborted) throw new DaylightError('cancelled', 2);
     progress();
     const manifest = JSON.parse(r.manifest) as { columns: string[] };
     const [reused, prepMs, skyMs, buildMs, traceMs, reduceMs, bounceMs, rays, launches, gasBytes] = r.stats;
     return {
-      data: r.data, columns: manifest.columns, manifest, manifestText: r.manifest,
+      data: r.data as Float64Array[], columns: manifest.columns, manifest, manifestText: r.manifest,
       stats: { sceneReused: reused === 1, prepMs, skyMs, buildMs, traceMs, reduceMs, bounceMs, rays, launches, gasBytes },
     };
   } finally {
@@ -250,7 +268,7 @@ export async function run(tool: Tool, args: string[], input: { sensors: Simulati
 // The run thread (this file again, as a worker): the run, its message or its result, all on this one thread.
 function serve(path: string): void {
   const d = bind(path);
-  parentPort!.on('message', ({ id, tool, args, sensors, context, control }: Job) => {
+  parentPort!.on('message', ({ id, tool, args, sensors, context, control, float32 }: Job) => {
     let reply: Omit<Reply, 'id'> | { status: number; error: string }, transfer: ArrayBuffer[] = [];
     try {
       const out: (bigint | null)[] = [null];
@@ -261,11 +279,12 @@ function serve(path: string): void {
         const res = out[0];
         try {
           const rows = Number(d.dl_result_rows(res)), cols = Number(d.dl_result_cols(res));
-          const values = new Float64Array(rows * cols), stats = new Float64Array(10);
-          if ((values.length && d.dl_result_values(res, values, values.length)) || d.dl_result_stats(res, stats)) {
+          const Values = float32 ? Float32Array : Float64Array, values = new Values(rows * cols), stats = new Float64Array(10);
+          const copy = float32 ? d.dl_result_values_f32 : d.dl_result_values;
+          if ((values.length && copy(res, values, values.length)) || d.dl_result_stats(res, stats)) {
             throw new Error(d.dl_last_error());
           }
-          const data = Array.from({ length: cols }, () => new Float64Array(rows)); // row-major -> columns, off the loop
+          const data = Array.from({ length: cols }, () => new Values(rows)); // row-major -> columns, off the loop
           for (let i = 0, k = 0; i < rows; i++) for (let c = 0; c < cols; c++) data[c][i] = values[k++];
           reply = { status, manifest: d.dl_result_manifest(res), data, stats };
           transfer = data.map((col) => col.buffer);

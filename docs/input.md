@@ -4,9 +4,9 @@
 
 | input | role | availability |
 |---|---|---|
-| `.dmesh` | native: raw arrays, one mesh per file, name = file stem, optional per-face slots (layout below) | always; the bindings write it |
+| `.dmesh` | native: raw arrays, one mesh per file, name = file stem, optional per-face slots (layout below) | always; the bindings write it, stems from the mesh names by one rule (`[^A-Za-z0-9._-]` -> `_`, `_2`, `_3` ... for repeats ignoring case: `/World/Lake` -> `_World_Lake`; TypeScript `dmeshStems`, Python `run_meshes` and `python -m daylight`) |
 | `.obj` | interop text: world metres, Z-up, right-handed winding, one `o`/`g` group per mesh, 1-based global `v` indices (negative = relative); `vt`/`vn` ignored | always |
-| `.usd` `.usda` `.usdc` `.usdz` | interop via LightUSD (`read_usd`), every mesh of the stage, name = prim path | `-DDAYLIGHT_USD=ON`; the Python binding converts USD without it |
+| `.usd` `.usda` `.usdc` `.usdz` | interop via LightUSD (`read_usd`), every drawn mesh of the composed stage, name = prim path; instanceable prims under their own path, point instances as `<instancer>[k]<prototype mesh path>` (the Python reader's names); inactive, class, invisible, guide and proxy prims skipped | `-DDAYLIGHT_USD=ON`; the Python binding converts USD without it |
 
 ```
 offset  0  char[4]   "DLM1"                 magic + version

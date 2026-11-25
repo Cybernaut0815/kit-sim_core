@@ -29,17 +29,21 @@ namespace tool = daylight::cli;
 
 namespace {
 
+// "error: MSG" and the usage text on stderr; the usage exit code, 1.
 int usage_error(const char* msg) {
   std::fprintf(stderr, "error: %s\n%s", msg, tool::kUsage);
   return 1;
 }
 
+// The path's extension from its last '.', lower case ("" when it has none).
 std::string lower_ext(const std::string& path) {
   std::string ext = path.substr(std::min(path.find_last_of('.'), path.size()));
   for (char& c : ext) c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
   return ext;
 }
 
+// Appends the meshes of one mesh file (by its extension) to meshes, as sensors or as context; -v prints their counts and
+// the read time. False with err on a file that cannot be read or an unknown extension.
 bool load(const std::string& path, bool sensor, bool verbose, std::vector<SimulationMesh>& meshes, std::string& err) {
   const size_t n = meshes.size();
   const std::string ext = lower_ext(path);
@@ -191,7 +195,8 @@ void bench_scene(size_t nSens, size_t nTris, std::vector<SimulationMesh>& meshes
 }
 #endif
 
-// values: one line per element, one column per name x side (or a float64 [N x C] .npy); FILE.json manifest
+// The values to `out` (empty: stdout): a line per element, a column per name x side, or a float64 [N x C] .npy; and,
+// for a file, the manifest beside it as FILE.json. 0 ok, 2 when a file cannot be written.
 int write_values(const Result& res, const std::string& out, const std::string& manifest, bool verbose) {
   const auto t1 = std::chrono::steady_clock::now();
   const bool npy = lower_ext(out) == ".npy";

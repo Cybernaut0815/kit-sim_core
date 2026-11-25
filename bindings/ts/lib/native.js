@@ -82,6 +82,10 @@ const toolId = (tool) => (tool === 'daylight' ? 0 : tool === 'views' ? 1 : -1); 
 export function usage(tool) {
     return native().dl_usage(toolId(tool)) ?? '';
 }
+/** The C ABI version of the loaded daylight_c.dll (dl_version, DL_ABI_VERSION; init() checks it is this binding's). */
+export function version() {
+    return native().dl_version();
+}
 // Module state of each SimulationMesh: its handle (null once freed) and the runs using it.
 const state = new WeakMap();
 const finalizer = new FinalizationRegistry((handle) => native().dl_mesh_free(handle));
@@ -180,15 +184,6 @@ function post(job) {
         w.postMessage({ ...job, id });
     });
 }
-/**
- * One run of `tool` with its CLI flags (`args`, without the program name; mesh paths, --context, --out, --bench and -h
- * are refused) over mesh handles: `sensors` in place of the CLI's mesh arguments, `context` of its --context meshes.
- * Flags go as UTF-8 (mesh names match SimulationMesh.names); file paths in them (--epw, ...) must be ASCII, as for SimulationMesh.load.
- * Runs go one at a time on a worker thread, so the event loop stays free. Aborting `signal` cancels: the run stops at
- * its next check, and the call rejects with DaylightError 2 "cancelled" (also when the run got past its last check).
- * `onProgress` gets the share of sensors traced, 0..1, polled every 100 ms and once at the end. The meshes stay
- * referenced (free() throws) until it settles. Rejects with a DaylightError.
- */
 export async function run(tool, args, input, opts = {}) {
     const d = native(), meshes = [...input.sensors, ...(input.context ?? [])];
     const handles = meshes.map((m) => state.get(m)?.handle ?? null); // a freed mesh: the core's "NULL mesh handle"
@@ -214,8 +209,10 @@ export async function run(tool, args, input, opts = {}) {
     const timer = opts.onProgress ? setInterval(progress, 100) : undefined;
     count(1);
     try {
+        // imported here, after the meshes are counted in: this file is also the run thread, which loads no sibling module
+        const { argsOf } = await import("./options.js");
         const n = input.sensors.length;
-        const r = await post({ tool: toolId(tool), args, sensors: handles.slice(0, n), context: handles.slice(n), control });
+        const r = await post({ tool: toolId(tool), args: argsOf(args), sensors: handles.slice(0, n), context: handles.slice(n), control, float32: !!opts.float32 });
         if (r.error !== undefined)
             throw r.status > 0 ? new DaylightError(r.error, r.status) : new Error(r.error);
         if (opts.signal?.aborted)
@@ -238,7 +235,7 @@ export async function run(tool, args, input, opts = {}) {
 // The run thread (this file again, as a worker): the run, its message or its result, all on this one thread.
 function serve(path) {
     const d = bind(path);
-    parentPort.on('message', ({ id, tool, args, sensors, context, control }) => {
+    parentPort.on('message', ({ id, tool, args, sensors, context, control, float32 }) => {
         let reply, transfer = [];
         try {
             const out = [null];
@@ -249,11 +246,12 @@ function serve(path) {
                 const res = out[0];
                 try {
                     const rows = Number(d.dl_result_rows(res)), cols = Number(d.dl_result_cols(res));
-                    const values = new Float64Array(rows * cols), stats = new Float64Array(10);
-                    if ((values.length && d.dl_result_values(res, values, values.length)) || d.dl_result_stats(res, stats)) {
+                    const Values = float32 ? Float32Array : Float64Array, values = new Values(rows * cols), stats = new Float64Array(10);
+                    const copy = float32 ? d.dl_result_values_f32 : d.dl_result_values;
+                    if ((values.length && copy(res, values, values.length)) || d.dl_result_stats(res, stats)) {
                         throw new Error(d.dl_last_error());
                     }
-                    const data = Array.from({ length: cols }, () => new Float64Array(rows)); // row-major -> columns, off the loop
+                    const data = Array.from({ length: cols }, () => new Values(rows)); // row-major -> columns, off the loop
                     for (let i = 0, k = 0; i < rows; i++)
                         for (let c = 0; c < cols; c++)
                             data[c][i] = values[k++];

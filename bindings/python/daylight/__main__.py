@@ -2,8 +2,8 @@
 """python -m daylight STAGE [--sensors PREFIX]... [--context PREFIX]... [--time T] [--tool daylight|views] -o DIR
                       [--write-usd PATH] [-- <core flags>]
 
-Writes DIR/<stem>.dmesh per mesh (stem = prim path with [^A-Za-z0-9._-] -> '_', leading '_' stripped, made unique
-with _2, _3 ...) and DIR/meshes.json = [{"file", "prim", "role": "sensor"|"context"}] in core order (sensors
+Writes DIR/<stem>.dmesh per mesh (stem = prim path with [^A-Za-z0-9._-] -> '_', '/World/lake' -> '_World_lake', made
+unique with _2, _3 ...: the TypeScript binding's dmeshStems) and DIR/meshes.json = [{"file", "prim", "role": "sensor"|"context"}] in core order (sensors
 first); with core flags after `--` also runs the core's --tool (daylight.exe or views.exe) -> DIR/values.npy(.json),
 rows in meshes.json order, and --write-usd PATH puts them back on the sensor prims as a sublayer file (primvars
 <tool>_<column> + displayColor, see usd.write_results)."""
@@ -17,6 +17,9 @@ from .usd import meshes, split, write_results
 
 
 def main(argv):
+    """The command line above on `argv` (without the program name): convert, write DIR, and run / write back when core
+    flags follow `--`. Exits with a message for no sensor mesh or --write-usd without core flags; a failed core run
+    raises subprocess.CalledProcessError."""
     core = []
     if '--' in argv:
         i = argv.index('--')

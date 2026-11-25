@@ -17,25 +17,27 @@ Needs the core's build (daylight.exe, views.exe) and uv. Run from bindings/pytho
 A USD stage in and out, either tool: python -m daylight converts the stage (meshes, split), writes one .dmesh per mesh
 prim and meshes.json to -o, runs the exe with the flags after -- (values.npy) and with --write-usd puts the values
 back as a layer over the stage (write_results: primvars <tool>_<column> and displayColor). In box.usda /World/Box and
-/World/BoxLeft are the sensors; /Floor (file stem Floor) only blocks:
+/World/BoxLeft are the sensors; /Floor (file stem _Floor) only blocks:
 
     uv run python -m daylight ../cpp/box.usda --sensors /World -o out --write-usd out/daylight.usda -- --clear-sky --lat 52.52 --lon 13.41
-    uv run python -m daylight ../cpp/box.usda --sensors /World -o out --tool views --write-usd out/views.usda -- --target Floor=lawn
+    uv run python -m daylight ../cpp/box.usda --sensors /World -o out --tool views --write-usd out/views.usda -- --target _Floor=lawn
 """
 import daylight
 import numpy as np
+from daylight import DaylightOptions, ViewsOptions
 
-# The flags are the CLIs' (docs/daylight.md, docs/views.md), one string each.
-DAYLIGHT = [
-    '--clear-sky',                         # no weather file: a cloudless year for the place
-    '--lat', '52.52', '--lon', '13.41',    # Berlin
-    '--quantity', 'radiation,sunhours',    # the columns: kWh/m2 and sun hours
-]
-VIEWS = [
-    '--fov', '120',                        # 120 deg wide about each face's normal (the default, written out)
-    '--target', 'lawn=green',              # rays ending on the mesh "lawn" (its .dmesh file stem) count for "green"
-    '--reach', 'en17037',                  # reach_6, reach_20, reach_50: the shares that see at least 6, 20, 50 m
-]
+# The CLIs' flags (docs/daylight.md, docs/views.md) as typed dicts, a key per flag (docs/api.md#typed-options);
+# run_meshes takes the flags as strings too (['--clear-sky', '--lat', '52.52', ...]).
+DAYLIGHT: DaylightOptions = {
+    'clear_sky': True,                       # no weather file: a cloudless year for the place
+    'lat': 52.52, 'lon': 13.41,              # Berlin
+    'quantity': ['radiation', 'sunhours'],   # the columns: kWh/m2 and sun hours
+}
+VIEWS: ViewsOptions = {
+    'fov': 120,                              # 120 deg wide about each face's normal (the default, written out)
+    'target': {'lawn': 'green'},             # rays ending on the mesh "lawn" (its .dmesh file stem) count for "green"
+    'reach': 'en17037',                      # reach_6, reach_20, reach_50: the shares that see at least 6, 20, 50 m
+}
 
 
 def wall(width, height, y, cell):

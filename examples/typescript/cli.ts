@@ -13,7 +13,7 @@
 // Needs the core's build (the exes), Node >= 22.18 (it runs .ts directly) and `npm install` in bindings/ts.
 // Run from the repo root:   node examples/typescript/cli.ts
 import { fileURLToPath } from 'node:url';
-import { dmeshStems, run, type ObjMesh } from '../../bindings/ts/src/index.ts';
+import { dmeshStems, run, type DaylightOptions, type ObjMesh, type ViewsOptions } from '../../bindings/ts/src/index.ts';
 
 const exe = (name: string) => fileURLToPath(new URL(`../../build/RelWithDebInfo/${name}`, import.meta.url));
 
@@ -43,11 +43,12 @@ const means = (r: Result, column: string) => (r.manifest as Ranges).meshes.map((
 const names = (r: Result) => (r.manifest as Ranges).meshes.map((m) => m.name);
 
 // ---- Step 2: daylight.exe, a clear-sky year in Berlin -------------------------------------------------------------
-const clearSkyYear = [
-  '--clear-sky', // no weather file: a cloudless year for the place
-  '--lat', '52.52', '--lon', '13.41', // Berlin
-  '--quantity', 'radiation,sunhours', // the columns: kWh/m2 and sun hours
-];
+// The CLI's flags as typed fields (docs/api.md#typed-options); args takes the strings too (['--clear-sky', ...]).
+const clearSkyYear: DaylightOptions = {
+  clearSky: true, // no weather file: a cloudless year for the place
+  lat: 52.52, lon: 13.41, // Berlin
+  quantity: ['radiation', 'sunhours'], // the columns: kWh/m2 and sun hours
+};
 let t = performance.now();
 const sun = await run(exe('daylight.exe'), { sensors, context, args: clearSkyYear });
 console.log(`daylight.exe: ${(performance.now() - t).toFixed(0)} ms, columns ${sun.columns.join(' ')}`);
@@ -61,10 +62,10 @@ names(sun).forEach((n, k) => console.log(`  ${n}: ${kwh[k].toFixed(0)} kWh/m2, $
 // ('site/lake' -> 'site_lake'). dmeshStems gives the same stems, so --target can name the lake.
 const stems = dmeshStems([...sensors, ...context].map((m) => m.name));
 console.log(`core names: ${stems.join(', ')}`);
-const viewFlags = [
-  '--target', `${stems[sensors.length]}=water`, // rays ending on the lake (the first context mesh) count for "water"
-  '--reach', 'en17037', // reach_6, reach_20, reach_50: the shares that see at least 6, 20, 50 m
-];
+const viewFlags: ViewsOptions = {
+  target: [{ name: stems[sensors.length], group: 'water' }], // rays ending on the lake (the first context mesh) count for "water"
+  reach: 'en17037', // reach_6, reach_20, reach_50: the shares that see at least 6, 20, 50 m
+};
 t = performance.now();
 const view = await run(exe('views.exe'), { sensors, context, args: viewFlags });
 console.log(`views.exe: ${(performance.now() - t).toFixed(0)} ms, columns ${view.columns.join(' ')}`);

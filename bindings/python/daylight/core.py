@@ -13,7 +13,10 @@ import numpy as np
 from .options import args_of
 
 REPO = Path(__file__).resolve().parents[3]
-TOOLS = ('daylight', 'views')                                    # index = the C ABI's tool id (DL_DAYLIGHT, DL_VIEWS)
+"""The kit-sim_core checkout this package sits in (bindings/python/daylight -> repo): where find_exe, the native DLL
+and the checks look for build/ and tests/."""
+TOOLS = ('daylight', 'views')
+"""The core's tools; the index is the C ABI's tool id (DL_DAYLIGHT 0, DL_VIEWS 1)."""
 
 
 def _tool(tool):
@@ -30,6 +33,7 @@ def find_exe(tool='daylight'):
 
 
 def _paths(p):
+    """None -> [], one path -> [str], an iterable of paths -> [str, ...]."""
     return [] if p is None else [str(p)] if isinstance(p, (str, os.PathLike)) else [str(q) for q in p]
 
 
@@ -50,6 +54,8 @@ def run(sensors, context=(), epw=None, args=(), out=None, tool='daylight'):
 VIRIDIS = np.array([[0.267004, 0.004874, 0.329415], [0.278826, 0.175490, 0.483397], [0.229739, 0.322361, 0.545706],
                     [0.172719, 0.448791, 0.557885], [0.127568, 0.566949, 0.550556], [0.157851, 0.683765, 0.501686],
                     [0.369214, 0.788888, 0.382914], [0.678489, 0.863742, 0.189503], [0.993248, 0.906157, 0.143936]])
+"""matplotlib's viridis at t = 0, 0.125, ..., 1: float64 [9, 3] RGB in 0..1, the stops colormap() blends between (the
+TypeScript binding's table)."""
 
 
 def colormap(values, vmin=None, vmax=None):
@@ -80,10 +86,11 @@ def to_dmesh(points, counts, indices, path):
             a.tofile(f)
 
 
-def _stem(name, used):
-    """File stem of a mesh name: [^A-Za-z0-9._-] -> '_', leading '_' stripped, made unique with _2, _3 ... against
-    `used` (lower-case stems, updated: NTFS file names are case-insensitive)."""
-    stem = base = re.sub('[^A-Za-z0-9._-]', '_', name).lstrip('_')
+def _stem(name, used, fallback='mesh'):
+    """File stem of a mesh name, the TypeScript binding's dmeshStems rule: [^A-Za-z0-9._-] -> '_' ('/World/lake' ->
+    '_World_lake'), empty -> `fallback`, made unique with _2, _3 ... against `used` (lower-case stems, updated: NTFS
+    file names are case-insensitive)."""
+    stem = base = re.sub('[^A-Za-z0-9._-]', '_', name) or fallback
     k = 1
     while stem.lower() in used:
         k += 1
@@ -105,8 +112,8 @@ def run_meshes(sensors, context=(), **kw):
     """Raw arrays: `sensors` / `context` are iterables of (points [N,3] world metres Z-up, counts [F], 0-based flat
     indices) triples or (name, points, counts, indices) tuples as usd.meshes() gives (a single one is accepted too).
     Written as <stem>.dmesh and passed to `run(**kw)`; the stems name the meshes in the manifest and in flags such as
-    views' --target NAME=GROUP: a name made a file stem as python -m daylight does ('/World/lake' -> 'World_lake'),
-    sensor_<i> / context_<i> for a triple."""
+    views' --target NAME=GROUP: a name made a file stem as python -m daylight and the TypeScript dmeshStems do
+    ('/World/lake' -> '_World_lake'), sensor_<i> / context_<i> for a triple."""
     with tempfile.TemporaryDirectory() as d:
         files, used = [], set()
         for kind, ms in ('sensor', _named(sensors)), ('context', _named(context)):

@@ -161,6 +161,39 @@ namespace Daylight
         [DataMember(Name = "count")] public long Count { get; private set; }
     }
 
+    /// <summary>daylight.h RunStats: whether a resident scene served the run, milliseconds per phase, rays, launches, GAS bytes.</summary>
+    public sealed class RunStats
+    {
+        /// <summary>From the C ABI's DL_STATS doubles, in their order.</summary>
+        internal RunStats(double[] s)
+        {
+            SceneReused = s[0] == 1;
+            PrepMs = s[1]; SkyMs = s[2]; BuildMs = s[3]; TraceMs = s[4]; ReduceMs = s[5]; BounceMs = s[6];
+            Rays = (long)s[7]; Launches = (long)s[8]; GasBytes = (long)s[9];
+        }
+
+        /// <summary>A resident GPU scene served the run (no triangulation, upload or build).</summary>
+        public bool SceneReused { get; }
+        /// <summary>Milliseconds preparing the meshes and sensors.</summary>
+        public double PrepMs { get; }
+        /// <summary>Milliseconds building the sky and sun (daylight).</summary>
+        public double SkyMs { get; }
+        /// <summary>Milliseconds building the acceleration structure (0 when reused).</summary>
+        public double BuildMs { get; }
+        /// <summary>Milliseconds tracing.</summary>
+        public double TraceMs { get; }
+        /// <summary>Milliseconds reducing rays to values.</summary>
+        public double ReduceMs { get; }
+        /// <summary>Milliseconds of reflected light (daylight --bounces).</summary>
+        public double BounceMs { get; }
+        /// <summary>Rays traced.</summary>
+        public long Rays { get; }
+        /// <summary>OptiX launches.</summary>
+        public long Launches { get; }
+        /// <summary>Bytes of the geometry acceleration structure.</summary>
+        public long GasBytes { get; }
+    }
+
     /// <summary>What a run gives: the values bit for bit as --out FILE.npy holds them, the manifest as FILE.json.</summary>
     public sealed class Result
     {
@@ -172,14 +205,25 @@ namespace Daylight
             [DataMember(Name = "meshes")] internal MeshRange[] Meshes { get; set; }
         }
 
-        /// <summary>Copies everything out of a dl_result (the caller frees it).</summary>
-        internal Result(IntPtr r)
+        /// <summary>Copies everything out of a dl_result (the caller frees it): the values as doubles, or as floats.</summary>
+        internal Result(IntPtr r, bool float32)
         {
             Rows = Native.dl_result_rows(r);
-            Values = new double[Rows * Native.dl_result_cols(r)];
-            Stats = new double[Native.Stats];
-            if (Native.dl_result_values(r, Values, Values.LongLength) != Native.Ok ||
-                Native.dl_result_stats(r, Stats) != Native.Ok) throw Native.Error(Native.Usage);
+            long n = Rows * Native.dl_result_cols(r);
+            var stats = new double[Native.Stats];
+            int status;
+            if (float32)
+            {
+                Values32 = new float[n];
+                status = Native.dl_result_values_f32(r, Values32, n);
+            }
+            else
+            {
+                Values = new double[n];
+                status = Native.dl_result_values(r, Values, n);
+            }
+            if (status != Native.Ok || Native.dl_result_stats(r, stats) != Native.Ok) throw Native.Error(Native.Usage);
+            Stats = new RunStats(stats);
             Manifest = Native.FromUtf8(Native.dl_result_manifest(r));
             using (var json = new MemoryStream(Encoding.UTF8.GetBytes(Manifest)))
             {
@@ -193,24 +237,26 @@ namespace Daylight
         public string[] Columns { get; }
         /// <summary>The elements of the sensor meshes in input order (faces, or points with --on vertices).</summary>
         public long Rows { get; }
-        /// <summary>Rows x Columns.Length values, row-major float64.</summary>
+        /// <summary>Rows x Columns.Length values, row-major float64; null for a float32 run (see <see cref="Values32"/>).</summary>
         public double[] Values { get; }
+        /// <summary>The values as float32 (dl_result_values_f32: half the memory) when the run asked for them, else null.</summary>
+        public float[] Values32 { get; }
         /// <summary>FILE.json as the CLI writes it, with LF line ends (columns, meshes; views: the field, targets).</summary>
         public string Manifest { get; }
         /// <summary>The rows of each sensor mesh, in order.</summary>
         public MeshRange[] Meshes { get; }
-        /// <summary>Scene reused (1/0), ms of prep, sky, build, trace, reduce, bounce, then rays, launches, GAS bytes.</summary>
-        public double[] Stats { get; }
-        /// <summary>A resident GPU scene served the run (no triangulation, upload or build).</summary>
-        public bool SceneReused { get { return Stats[0] == 1; } }
+        /// <summary>The run's stats: scene reused, milliseconds per phase, rays, launches, GAS bytes.</summary>
+        public RunStats Stats { get; }
+        /// <summary>A resident GPU scene served the run (<see cref="RunStats.SceneReused"/>).</summary>
+        public bool SceneReused { get { return Stats.SceneReused; } }
 
-        /// <summary>The values of one column, a value per row; an unknown name throws KeyNotFoundException.</summary>
+        /// <summary>The values of one column, a value per row (from either precision); an unknown name throws KeyNotFoundException.</summary>
         public double[] Column(string name)
         {
             int c = Array.IndexOf(Columns, name);
             if (c < 0) throw new KeyNotFoundException("no column '" + name + "'; columns: " + string.Join(", ", Columns));
             var column = new double[Rows];
-            for (long i = 0; i < Rows; i++) column[i] = Values[i * Columns.Length + c];
+            for (long i = 0; i < Rows; i++) column[i] = Values != null ? Values[i * Columns.Length + c] : Values32[i * Columns.Length + c];
             return column;
         }
     }
@@ -225,10 +271,11 @@ namespace Daylight
         /// One run of <paramref name="tool"/> with its CLI flags without the program name ("--epw", "site.epw", ...):
         /// <paramref name="sensors"/> take the place of the CLI's mesh arguments, <paramref name="context"/> of its
         /// --context meshes. Refused (status 1): mesh paths, --context, --out, --bench, -h. Every other flag works as in
-        /// the CLI, files included. Failures throw <see cref="DaylightException"/> with the CLI's exit code and message.
+        /// the CLI, files included. <paramref name="float32"/> fills <see cref="Result.Values32"/> instead of
+        /// <see cref="Result.Values"/>. Failures throw <see cref="DaylightException"/> with the CLI's exit code and message.
         /// </summary>
         public static Result Run(Tool tool, IReadOnlyList<string> args, IReadOnlyList<SimulationMesh> sensors,
-                                 IReadOnlyList<SimulationMesh> context = null, RunControl control = null)
+                                 IReadOnlyList<SimulationMesh> context = null, RunControl control = null, bool float32 = false)
         {
             Native.Init();
             var argv = new IntPtr[args == null ? 0 : args.Count];
@@ -241,7 +288,7 @@ namespace Daylight
                 IntPtr ctl = control == null ? IntPtr.Zero : Hold(control.Handle, held);
                 int status = Native.dl_run((int)tool, argv.Length, argv, s, s.Length, c, c.Length, ctl, out result);
                 if (status != Native.Ok) throw Native.Error(status);
-                return new Result(result);
+                return new Result(result, float32);
             }
             finally
             {
@@ -256,29 +303,29 @@ namespace Daylight
         /// flags <see cref="CommonOptions.ToArgs"/>; otherwise as the raw-flag overload.
         /// </summary>
         public static Result Run(CommonOptions options, IReadOnlyList<SimulationMesh> sensors,
-                                 IReadOnlyList<SimulationMesh> context = null, RunControl control = null)
+                                 IReadOnlyList<SimulationMesh> context = null, RunControl control = null, bool float32 = false)
         {
             if (options == null) throw new ArgumentNullException(nameof(options));
-            return Run(options.Tool, options.ToArgs(), sensors, context, control);
+            return Run(options.Tool, options.ToArgs(), sensors, context, control, float32);
         }
 
-        /// <summary><see cref="Run(CommonOptions, IReadOnlyList{SimulationMesh}, IReadOnlyList{SimulationMesh}, RunControl)"/> on the thread pool, cancelled by <paramref name="token"/>.</summary>
+        /// <summary><see cref="Run(CommonOptions, IReadOnlyList{SimulationMesh}, IReadOnlyList{SimulationMesh}, RunControl, bool)"/> on the thread pool, cancelled by <paramref name="token"/>.</summary>
         public static Task<Result> RunAsync(CommonOptions options, IReadOnlyList<SimulationMesh> sensors,
                                             IReadOnlyList<SimulationMesh> context = null, RunControl control = null,
-                                            CancellationToken token = default(CancellationToken))
+                                            bool float32 = false, CancellationToken token = default(CancellationToken))
         {
             if (options == null) throw new ArgumentNullException(nameof(options));
-            return RunAsync(options.Tool, options.ToArgs(), sensors, context, control, token);
+            return RunAsync(options.Tool, options.ToArgs(), sensors, context, control, float32, token);
         }
 
         /// <summary>
-        /// <see cref="Run(Tool, IReadOnlyList{string}, IReadOnlyList{SimulationMesh}, IReadOnlyList{SimulationMesh}, RunControl)"/>
+        /// <see cref="Run(Tool, IReadOnlyList{string}, IReadOnlyList{SimulationMesh}, IReadOnlyList{SimulationMesh}, RunControl, bool)"/>
         /// on the thread pool. A cancelled <paramref name="token"/> cancels the run (through
         /// <paramref name="control"/>, or a control of its own) and the task ends cancelled.
         /// </summary>
         public static Task<Result> RunAsync(Tool tool, IReadOnlyList<string> args, IReadOnlyList<SimulationMesh> sensors,
                                             IReadOnlyList<SimulationMesh> context = null, RunControl control = null,
-                                            CancellationToken token = default(CancellationToken))
+                                            bool float32 = false, CancellationToken token = default(CancellationToken))
         {
             return Task.Run(() =>
             {
@@ -287,7 +334,7 @@ namespace Daylight
                 {
                     try
                     {
-                        return Run(tool, args, sensors, context, control ?? own);
+                        return Run(tool, args, sensors, context, control ?? own, float32);
                     }
                     catch (DaylightException e) when (e.Status == Native.Runtime && token.IsCancellationRequested)
                     {
@@ -302,6 +349,16 @@ namespace Daylight
         {
             Native.Init();
             return Native.FromUtf8(Native.dl_usage((int)tool));
+        }
+
+        /// <summary>The C ABI version of the loaded daylight_c.dll (dl_version; loading checks it is this binding's).</summary>
+        public static int Version
+        {
+            get
+            {
+                Native.Init();
+                return Native.dl_version();
+            }
         }
 
         /// <summary>The meshes' pointers, each held (a null SimulationMesh gives NULL, which the core refuses).</summary>

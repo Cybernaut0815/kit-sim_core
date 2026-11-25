@@ -5,8 +5,9 @@ Guide: [docs/csharp.md](../../docs/csharp.md) (setup, both tools worked through,
 
 `Daylight.dll` runs both tools of the core in-process: `daylight` (annual daylight / solar,
 [daylight.md](../../docs/daylight.md)) and `views` (view analysis, [views.md](../../docs/views.md)), through the C ABI
-`daylight_c.dll` ([c-abi.md](../../docs/c-abi.md)). A run takes the CLI's own flags and meshes as handles; the result
-is a `double[]` (row-major, bit for bit what `--out FILE.npy` holds) and the manifest. Runs over the same `SimulationMesh` objects
+`daylight_c.dll` ([c-abi.md](../../docs/c-abi.md)). A run takes the CLI's own flags (typed `DaylightOptions` /
+`ViewsOptions`, or strings) and meshes as handles; the result is a `double[]` (row-major, bit for bit what
+`--out FILE.npy` holds; or a `float[]`) and the manifest. Runs over the same `SimulationMesh` objects
 keep their GPU scene resident: no triangulation, upload or build the second time. netstandard2.0, no package
 references: .NET 8/9, .NET Framework 4.8 (Rhino 6 and 7 with Grasshopper, Rhino 8 on request), Rhino 8 on .NET, Unity.
 
@@ -56,19 +57,24 @@ using Daylight;
 using (SimulationMesh model = SimulationMesh.Load("tests/box.obj"))   // OBJ groups: "ground", "box"
 using (SimulationMesh facade = SimulationMesh.Create("facade", new double[] { -1, 0, 0, 1, 0, 0, 1, 0, 2, -1, 0, 2 }, new[] { 4 }, new[] { 0, 1, 2, 3 }))
 {
-    Result noon = Core.Run(Tool.Daylight, new[] { "--lat", "41.98", "--lon", "-87.92", "--tz", "-6", "--quantity", "sunhours",
-                                                  "--time", "06-21T12:00" }, new[] { model });
+    var june = new DaylightOptions { Lat = 41.98, Lon = -87.92, Tz = -6, Quantities = new[] { Quantity.Sunhours }, Time = "06-21T12:00" };
+    Result noon = Core.Run(june, new[] { model });
     double[] hours = noon.Column("sunhours_front");   // a value per face; noon.Meshes: each mesh's rows
-    Result year = Core.Run(Tool.Daylight, new[] { "--epw", "site.epw" }, new[] { model });   // year.SceneReused: no rebuild
+    Result year = Core.Run(Tool.Daylight, new[] { "--epw", "site.epw" }, new[] { model });   // flags as strings; year.SceneReused: no rebuild
 
     var cancel = new CancellationTokenSource(TimeSpan.FromMinutes(5));
-    Result view = await Core.RunAsync(Tool.Views, new[] { "--fov", "360" }, new[] { facade }, new[] { model }, token: cancel.Token);
+    Result view = await Core.RunAsync(new ViewsOptions { Fov = new double[] { 360 } }, new[] { facade }, new[] { model }, token: cancel.Token);
     Console.WriteLine(string.Join(", ", view.Columns));   // sky_front, ground_front, obstruction_front, ...
 }
 ```
 
 A failure throws `DaylightException`: `Status` 1 for bad flags, arguments or arrays (`unknown flag --bogus`), 2 when
 the run fails (`cannot open EPW site.epw`, the GPU, `cancelled`), and the core's message.
+
+Typed options: a property per CLI flag, PascalCase (`ClearSky` is `--clear-sky`; lists in the plural: `Quantities`,
+`Targets`, `Distances`), enums for the choices (`Quantity`, `Sides`, `Elements`, `SkyMode`, `Gaze`, `DistanceStat`,
+`OpticsKind`), `OpticsSpec` and `TargetSpec` for `--optics` and `--target`. Unset properties keep the core's defaults;
+`options.ToArgs()` gives the flags ([api.md](../../docs/api.md#typed-options)).
 
 ## API
 
@@ -82,13 +88,15 @@ Namespace `Daylight`.
 | `mesh.Names` | what `--optics`, `--no-occlude`, `--target` and the manifest call the meshes, in row order |
 | `mesh.Dispose()` | frees it (else the finalizer does), deferred while a run holds it |
 | `new RunControl()`, `.Cancel()`, `.Progress` | one run's cancel (it throws status 2 `cancelled`) and progress (0..1), from any thread; one control per run |
-| `Core.Run(tool, args, sensors, context = null, control = null)` | one run: the CLI's flags without the program name; `sensors` and `context` take the place of its mesh arguments and `--context`. Refused (status 1): mesh paths, `--context`, `--out`, `--bench`, `-h` |
-| `Core.RunAsync(tool, args, sensors, context = null, control = null, token = default)` | the same on the thread pool; a cancelled token cancels the run and the task ends cancelled |
-| `Core.Usage(tool)` | the CLI's `-h` text |
-| `result.Columns`, `.Rows`, `.Values` | column names; rows (sensor faces, or points with `--on vertices`, in input order); rows x columns, row-major |
+| `new DaylightOptions { ... }`, `new ViewsOptions { ... }`, `.ToArgs()` | typed flags of one tool (they pick it); `ToArgs` gives the CLI's flags |
+| `Core.Run(options, sensors, context = null, control = null, float32 = false)` | one run with typed options |
+| `Core.Run(tool, args, sensors, context = null, control = null, float32 = false)` | one run: the CLI's flags without the program name; `sensors` and `context` take the place of its mesh arguments and `--context`. Refused (status 1): mesh paths, `--context`, `--out`, `--bench`, `-h`. `float32`: the values as `float[]` (`Values32`) |
+| `Core.RunAsync(options or tool + args, sensors, context = null, control = null, float32 = false, token = default)` | the same on the thread pool; a cancelled token cancels the run and the task ends cancelled |
+| `Core.Usage(tool)`, `Core.Version` | the CLI's `-h` text; the loaded DLL's C ABI version (1) |
+| `result.Columns`, `.Rows`, `.Values`, `.Values32` | column names; rows (sensor faces, or points with `--on vertices`, in input order); rows x columns, row-major, as doubles or (after `float32: true`) floats, the other null |
 | `result.Column(name)` | one column's values |
 | `result.Manifest`, `.Meshes` | the manifest JSON as the CLI writes it (LF line ends); each sensor mesh's `Name`, `First` row and row `Count` |
-| `result.SceneReused`, `.Stats` | a resident scene served the run; the 10 `dl_result_stats` values (reused, ms of prep, sky, build, trace, reduce, bounce; rays, launches, GAS bytes) |
+| `result.SceneReused`, `.Stats` | a resident scene served the run; `RunStats`: `SceneReused`, `PrepMs`, `SkyMs`, `BuildMs`, `TraceMs`, `ReduceMs`, `BounceMs`, `Rays`, `Launches`, `GasBytes` |
 | `DaylightException` | `Status`, the CLI's exit code, and the core's message |
 
 Runs take turns (one GPU run per process at a time): a `Run` waits for the one before it. Flags travel as UTF-8 and

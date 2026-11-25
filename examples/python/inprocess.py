@@ -16,21 +16,22 @@ from concurrent.futures import ThreadPoolExecutor, wait
 from pathlib import Path
 
 import numpy as np
-from daylight import SimulationMesh, native
+from daylight import DaylightOptions, SimulationMesh, ViewsOptions, native
 
 TESTS = Path(__file__).resolve().parents[2] / 'tests'   # box.obj, room.obj, room_grid.obj
 
-# The flags are the CLIs' (docs/daylight.md, docs/views.md), one string each.
-DAYLIGHT = [
-    '--clear-sky',                         # no weather file: a cloudless year for the place
-    '--lat', '52.52', '--lon', '13.41',    # Berlin
-    '--quantity', 'radiation,sunhours',    # the columns: kWh/m2 and sun hours
-]
-VIEWS = [
-    '--fov', '120',                        # 120 deg wide about each face's normal (the default, written out)
-    '--target', 'ground=lawn',             # rays ending on the mesh "ground" count for the group "lawn"
-    '--reach', 'en17037',                  # reach_6, reach_20, reach_50: the shares that see at least 6, 20, 50 m
-]
+# The CLIs' flags (docs/daylight.md, docs/views.md) as typed dicts, a key per flag (docs/api.md#typed-options);
+# native.run takes the flags as strings too (['--clear-sky', '--lat', '52.52', ...]).
+DAYLIGHT: DaylightOptions = {
+    'clear_sky': True,                       # no weather file: a cloudless year for the place
+    'lat': 52.52, 'lon': 13.41,              # Berlin
+    'quantity': ['radiation', 'sunhours'],   # the columns: kWh/m2 and sun hours
+}
+VIEWS: ViewsOptions = {
+    'fov': 120,                              # 120 deg wide about each face's normal (the default, written out)
+    'target': {'ground': 'lawn'},            # rays ending on the mesh "ground" count for the group "lawn"
+    'reach': 'en17037',                      # reach_6, reach_20, reach_50: the shares that see at least 6, 20, 50 m
+}
 
 
 def wall(width, height, y, cell):
@@ -105,12 +106,12 @@ with SimulationMesh('facade', *wall(10, 6, 4, 1)) as facade, \
 # at desk height. The isovist is what an eye sees around it: all around in 3D the volume in view (column volume_front,
 # m3), with horizontal rays only the area in view (area_front, m2).
 with SimulationMesh.load(TESTS / 'room_grid.obj') as grid, SimulationMesh.load(TESTS / 'room.obj') as room:
-    eye = [
-        '--offset', '0.4',          # the eye 0.4 m above each grid face
-        '--no-occlude', 'grid',     # the grid is measured, not seen: the rays pass it
-    ]
-    # The isovist is the default column all around; --distance mean,min gives the distances instead, --far M caps both.
-    vol = native.run('views', ['--fov', '360,-90,90', *eye], grid, context=room)   # the whole sphere
-    area = native.run('views', ['--fov', '360,0,0', *eye], grid, context=room)     # horizontal rays only
+    eye: ViewsOptions = {
+        'offset': 0.4,              # the eye 0.4 m above each grid face
+        'no_occlude': ['grid'],     # the grid is measured, not seen: the rays pass it
+    }
+    # The isovist is the default column all around; 'distance': ['mean', 'min'] gives the distances instead, 'far' caps both.
+    vol = native.run('views', {**eye, 'fov': (360, -90, 90)}, grid, context=room)   # the whole sphere
+    area = native.run('views', {**eye, 'fov': (360, 0, 0)}, grid, context=room)     # horizontal rays only
     print(f"isovists in the room: volume {next(per_mesh(vol))[2]['volume_front']:.1f} m3 all around, "
           f"area {next(per_mesh(area))[2]['area_front']:.1f} m2 at eye height")

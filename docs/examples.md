@@ -6,6 +6,8 @@ the manifest's ranges and, where the way in has them, the resident scene, progre
 is needed: daylight runs a clear-sky year in Berlin (`--clear-sky --lat 52.52 --lon 13.41`) or sun hours. The scenes
 build on [tests/box.obj](../tests/box.obj) (OBJ groups `ground`, four 2 m quads at z 0, and `box`, a 1 m box floating
 0.5 m above the fourth) and add a facade, a block or a lake made in code. Each is commented step by step; the guides explain the API around them.
+The C#, Python, TypeScript and JavaScript examples pass the flags as typed options ([api.md](api.md#typed-options)),
+which give the same flags as the strings the CLI script passes.
 
 | file | way in | daylight | views | guide |
 |---|---|---|---|---|
@@ -156,7 +158,7 @@ views: 1 ms, scene reused True
   ...
   facade  2 faces  sky 0.40  block 0.10  distance  28.6 m  sees 20 m 0.42
 isovists in the room: volume 92.8 m3 all around, area 32.1 m2 at eye height
-sun hours, 21 June: 4 ms, scene reused True, progress 100 %
+sun hours, 21 June: 4 ms, scene reused False, progress 100 %
   ...
   facade  2 faces   9.3 h
 ```

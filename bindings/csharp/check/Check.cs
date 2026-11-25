@@ -132,7 +132,8 @@ static class Check
         Expect(r1.Meshes.Length == 2 && r1.Meshes[0].Name == "ground" && r1.Meshes[0].First == 0 && r1.Meshes[0].Count == 4 &&
                r1.Meshes[1].Name == "box" && r1.Meshes[1].First == 4 && r1.Meshes[1].Count == 12, "Meshes");
         Expect(Thrown<KeyNotFoundException>(() => r1.Column("nosuch")) != null, "an unknown column");
-        Expect(r1.Stats.Length == 10 && r1.Stats[7] > 0, "stats: rays");
+        Expect(r1.Stats.Rays > 0 && r1.Stats.Launches > 0 && r1.Stats.TraceMs >= 0, "stats: rays, launches, trace ms");
+        Expect(Core.Version == 1, "dl_version");
 
         // the same handle again: the resident scene serves it, with the same values
         Result r2 = Core.Run(Tool.Daylight, sun, new[] { box });
@@ -160,6 +161,9 @@ static class Check
         Expect(Math.Abs(r5.Column("sky_front")[0] - 0.4490987851112869) < 1e-9 &&
                Math.Abs(r5.Column("ground_front")[0] - 0.5509012148887131) < 1e-9 && r5.Column("obstruction_front")[0] == 0,
                "the facade's sky, ground, obstruction: " + string.Join(", ", r5.Values));
+        Result r32 = Core.Run(Tool.Views, open, new[] { facade }, float32: true);
+        Expect(r32.Values == null && r32.Values32.SequenceEqual(r5.Values.Select(v => (float)v)) &&
+               r32.Column("sky_front")[0] == (float)r5.Column("sky_front")[0], "float32: the same values, rounded");
         Result rc = Core.Run(Tool.Views, open, new[] { facade }, new[] { box2 });   // box.obj's ground lies before it
         Expect(rc.Rows == 1 && rc.Column("obstruction_front")[0] > 0, "context meshes add no rows but block rays");
 

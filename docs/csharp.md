@@ -4,8 +4,8 @@
 the same meshes, GPU and resident scenes: `daylight` (annual daylight / solar: radiation, irradiance, illuminance, sun
 hours; [daylight.md](daylight.md)) and `views` (view analysis: the shares of a field of view that end on sky, ground,
 obstructions or target groups, and how far each face sees; [views.md](views.md)). It calls the C ABI `daylight_c.dll`
-([c-abi.md](c-abi.md)): a run takes the CLI's own flags and meshes as handles, and gives the values bit for bit as the
-CLI's `--out FILE.npy`, with its manifest. Hosts: .NET 8 / 9, .NET Framework 4.8 (Rhino 6 and 7 with Grasshopper),
+([c-abi.md](c-abi.md)): a run takes the CLI's own flags (typed, `DaylightOptions` / `ViewsOptions`, or as strings) and
+meshes as handles, and gives the values bit for bit as the CLI's `--out FILE.npy`, with its manifest. Hosts: .NET 8 / 9, .NET Framework 4.8 (Rhino 6 and 7 with Grasshopper),
 Rhino 8, Unity.
 
 ## Setup
@@ -94,7 +94,9 @@ year on all three meshes (its steps 1 to 3). The key calls:
 using SimulationMesh model = SimulationMesh.Load("tests/box.obj");                      // meshes "ground", "box"
 using SimulationMesh facade = SimulationMesh.Create("facade", xyz, counts, indices);    // from arrays
 SimulationMesh[] sensors = { model, facade };
-Result year = Core.Run(Tool.Daylight, new[] { "--clear-sky", "--lat", "52.52", "--lon", "13.41" }, sensors);
+Result year = Core.Run(new DaylightOptions { ClearSky = true, Lat = 52.52, Lon = 13.41 }, sensors);
+// the same with the CLI's flags as strings:
+// Core.Run(Tool.Daylight, new[] { "--clear-sky", "--lat", "52.52", "--lon", "13.41" }, sensors);
 ```
 
 ```
@@ -109,8 +111,11 @@ daylight: 421 ms, scene reused False
   `SimulationMesh.Create(name, xyz, counts, indices)` copies arrays: 3 doubles per point (metres, Z up), vertices per face
   (>= 3), 0-based indices in right-handed winding (the facade's normal points to -y, south at `--north 0`). The names
   are what the manifest, `--target`, `--optics` and `--no-occlude` use.
-- `Core.Run(tool, args, sensors, context = null, control = null)`: `args` are the CLI's flags without the program
-  name; `sensors` take the place of its mesh arguments, `context` (blocks only, never analysed) of `--context FILE`.
+- `Core.Run(options, sensors, context = null, control = null, float32 = false)`: `options` are a `DaylightOptions` or
+  `ViewsOptions`, a property per CLI flag (`ClearSky` is `--clear-sky`, `Quantities` `--quantity`; unset ones keep the
+  core's defaults; [api.md](api.md#typed-options)), and pick the tool. `Core.Run(tool, args, ...)` takes the flags as
+  strings, without the program name. `sensors` take the place of the CLI's mesh arguments, `context` (blocks only,
+  never analysed) of `--context FILE`.
   Sensor meshes block too, unless `--no-self-occlude` or `--no-occlude NAME`. On the command line this run is
   `daylight tests/box.obj facade.obj --clear-sky --lat 52.52 --lon 13.41`.
 - `--clear-sky` makes an hourly cloudless year (Ineichen-Perez) for `--lat` / `--lon`, in the clock `--tz` (default
@@ -125,10 +130,11 @@ daylight: 421 ms, scene reused False
 
 ## Views
 
-The same call with `Tool.Views` and the views CLI's flags, on the same meshes (the example's step 4):
+The same call with `ViewsOptions`, the views CLI's flags, on the same meshes (the example's step 4):
 
 ```csharp
-Result view = Core.Run(Tool.Views, new[] { "--target", "box=block", "--reach", "en17037" }, sensors);
+var viewFlags = new ViewsOptions { Targets = new[] { new TargetSpec("box", "block") }, Reach = new double[] { 6, 20, 50 } };
+Result view = Core.Run(viewFlags, sensors);   // or Core.Run(Tool.Views, new[] { "--target", "box=block", "--reach", "en17037" }, sensors)
 ```
 
 ```
@@ -143,10 +149,11 @@ views: 1 ms, scene reused True
   ([views.md](views.md#field-of-view)); all around, the default column is the isovist: `volume` (m3), or `area` (m2)
   with horizontal rays only (`--fov 360,0,0`), as the example's isovist runs in tests/room.obj show
   ([views.md](views.md#isovist)).
-- `--target box=block`: rays that end on the mesh `box` count for the group `block` (a column `block_front`) instead of
-  `obstruction`. NAME is a sensor or context mesh; several meshes may share a group (at most 16 groups).
-- `--reach en17037` adds `reach_6`, `reach_20` and `reach_50`: the shares of the field that see at least 6, 20 and
-  50 m, EN 17037's view distance levels (no level is assigned).
+- `TargetSpec("box", "block")` (`--target box=block`): rays that end on the mesh `box` count for the group `block` (a
+  column `block_front`) instead of `obstruction`. NAME is a sensor or context mesh; several meshes may share a group
+  (at most 16 groups).
+- `Reach` 6, 20, 50 (`--reach en17037`) adds `reach_6`, `reach_20` and `reach_50`: the shares of the field that see at
+  least 6, 20 and 50 m, EN 17037's view distance levels (no level is assigned).
 - The columns: `sky_front ground_front obstruction_front obstruction_total_front block_front distance_front
   distance_min_front reach_6_front reach_20_front reach_50_front`. The four shares `sky`, `ground`, `obstruction` and
   `block` sum to 1 per face; `obstruction_total` is all that is not sky (1 - `sky`). `distance` is the log (geometric) mean over the
@@ -172,11 +179,12 @@ views: 1 ms, scene reused True
 |---|---|
 | `Columns` | column names, e.g. `radiation_front`, `sky_front`, `reach_20_front` |
 | `Rows` | the elements of all sensor meshes: faces, or points with `--on vertices` |
-| `Values` | `Rows x Columns.Length` doubles, row-major: row i, column c at `Values[i * Columns.Length + c]` |
-| `Column(name)` | one column, a value per row; an unknown name throws `KeyNotFoundException` |
+| `Values` | `Rows x Columns.Length` doubles, row-major: row i, column c at `Values[i * Columns.Length + c]`; null after `float32: true` |
+| `Values32` | the same as floats (half the memory) after `Core.Run(..., float32: true)`, else null |
+| `Column(name)` | one column, a value per row (from either); an unknown name throws `KeyNotFoundException` |
 | `Meshes` | each sensor mesh's `Name`, `First` row and row `Count` (the manifest's `meshes`) |
 | `Manifest` | the manifest JSON as the CLI writes it to `FILE.json`, with LF line ends |
-| `SceneReused`, `Stats` | a resident scene served the run; 10 statistics: reused, ms of prep, sky, build, trace, reduce, bounce; rays, launches, GAS bytes |
+| `SceneReused`, `Stats` | a resident scene served the run; `RunStats`: `SceneReused`, `PrepMs`, `SkyMs`, `BuildMs`, `TraceMs`, `ReduceMs`, `BounceMs`, `Rays`, `Launches`, `GasBytes` |
 
 **Rows per mesh.** Rows follow the sensors in the order given, each handle's meshes in order (an OBJ's groups as in
 the file), each mesh's faces (or points) in its own order; nothing is reordered or dropped. Here `ground` is rows 0-3,
@@ -216,7 +224,8 @@ The first run in a process starts the GPU (CUDA context and OptiX pipeline, abou
 scene: triangulation, upload, acceleration structure. Runs over the same `SimulationMesh` objects in the same roles and order
 reuse it (`SceneReused`): no triangulation, upload or build, only the run itself. daylight and views share an opaque
 scene, and flags (quantities, times, the field, targets) leave it alone. In the example the first run, the clear-sky
-year included, took 0.4-0.9 s, the views run 1 ms and the sun hours, async, 2-5 ms; a CLI run of such a model pays
+year included, took 0.4-0.9 s, the views run 1-5 ms and the sun hours, async (a rebuild: the room's isovist runs
+replaced the scene), 4-15 ms; a CLI run of such a model pays
 0.6-0.7 s every time ([performance.md](performance.md#in-process-vs-cli)).
 
 The scene is built again for other `SimulationMesh` objects (a new handle, even from the same arrays), other roles or order,
@@ -233,7 +242,7 @@ The example's step 6 runs the sun hours of 21 June in the background:
 ```csharp
 using var cancel = new CancellationTokenSource(TimeSpan.FromSeconds(30));   // in an app: a Cancel button
 using var control = new RunControl();
-Task<Result> run = Core.RunAsync(Tool.Daylight, june21, sensors, control: control, token: cancel.Token);
+Task<Result> run = Core.RunAsync(june21, sensors, control: control, token: cancel.Token);   // june21: DaylightOptions
 while (await Task.WhenAny(run, Task.Delay(100)) != run) Console.WriteLine($"  {control.Progress:P0} traced");
 Result sun = await run;
 ```
@@ -251,7 +260,7 @@ Errors are exceptions; the example catches `DaylightException` (its `Status` is 
 
 | exception | when |
 |---|---|
-| `DaylightException`, `Status` 1 | bad flags or values (`unknown flag --bogus`), bad arrays in `SimulationMesh.Create`, names the flags do not resolve (`--target nosuch=g`), flags refused in-process: mesh paths, `--context`, `--out`, `--bench`, `-h` (`Core.Usage(tool)` gives the `-h` text) |
+| `DaylightException`, `Status` 1 | bad flags or values (`unknown flag --bogus`), bad arrays in `SimulationMesh.Create`, names the flags do not resolve (`--target nosuch=g`), a name holding `;` in `Optics`, `Targets` or `NoOcclude`, flags refused in-process: mesh paths, `--context`, `--out`, `--bench`, `-h` (`Core.Usage(tool)` gives the `-h` text) |
 | `DaylightException`, `Status` 2 | the run failed: a file (`cannot open EPW site.epw`, a `SimulationMesh.Load` path), the GPU, `out of memory: ...`, `cancelled` |
 | `OperationCanceledException` | `RunAsync`'s token was cancelled |
 | `DllNotFoundException` | `daylight_c.dll` missing or not loadable: the message says where it looked and what it needs; the next call tries again |
@@ -260,14 +269,16 @@ Errors are exceptions; the example catches `DaylightException` (its `Status` is 
 | `ArgumentException` | a `SimulationMesh.Load` path with a character outside the ANSI code page |
 
 `Message` is the core's, as the CLI prints it. Flags travel as UTF-8 and `SimulationMesh.Load` paths in the ANSI code page, so
-paths inside flags (`--epw`, `--timeseries`, `--dump-*`) must be ASCII. Numbers in flags need `.` as the decimal point:
-`--lat`, `--lon`, `--tz`, `--ground`, `--turbidity` and `--altitude` read `52,52` as 52 without an error, so format
-numbers with `CultureInfo.InvariantCulture` (the example sets it for the whole program).
+paths inside flags (`--epw`, `--timeseries`, `--dump-*`) must be ASCII. Numbers in string flags need `.` as the decimal
+point (`--lat 52,52` is a usage error, status 1): format them with `CultureInfo.InvariantCulture`. Typed options write
+their numbers so in any culture.
 
 ## Reference
 
-- [bindings/csharp/README.md](../bindings/csharp/README.md): the whole API (`SimulationMesh`, `Core`, `Result`, `MeshRange`,
-  `RunControl`, `DaylightException`), loading, hosts.
+- [bindings/csharp/README.md](../bindings/csharp/README.md): the whole API (`SimulationMesh`, `Core`, `DaylightOptions`,
+  `ViewsOptions`, `Result`, `RunStats`, `MeshRange`, `RunControl`, `DaylightException`), loading, hosts.
+- [api.md](api.md#typed-options): the typed options' rules, shared with Python and TypeScript.
+- `Core.Version`: the C ABI version of the loaded `daylight_c.dll` (1).
 - [daylight.md](daylight.md): every daylight flag, rows, columns, units, the manifest. [views.md](views.md): every
   views flag, the field, ray classes, distances, roles, outputs, worked examples.
 - [c-abi.md](c-abi.md): the C ABI under the binding: resident scenes, cancel, threads, limits.
@@ -282,7 +293,7 @@ Run from the repo root after the core's build; `dotnet run` builds `Daylight.dll
 
 | file | shows | run |
 |---|---|---|
-| [examples/csharp/Program.cs](../examples/csharp/Program.cs) | commented step by step: `tests/box.obj` and a facade from arrays, a clear-sky year (daylight), the views with the box as a target and `--reach en17037` on the resident scene, the isovists of `tests/room.obj`, sun hours on 21 June through `RunAsync` with a token and progress; means per mesh from the manifest ranges | `dotnet run --project examples/csharp` |
+| [examples/csharp/Program.cs](../examples/csharp/Program.cs) | commented step by step, on typed options: `tests/box.obj` and a facade from arrays, a clear-sky year (daylight), the views with the box as a target and EN 17037's reach levels on the resident scene, the isovists of `tests/room.obj`, sun hours on 21 June through `RunAsync` with a token and progress; means per mesh from the manifest ranges | `dotnet run --project examples/csharp` |
 | [examples/csharp/Example.csproj](../examples/csharp/Example.csproj) | net9.0 console, x64, `ProjectReference` to `bindings/csharp/Daylight.csproj` | |
 
 `DAYLIGHT_DLL` points it at another `daylight_c.dll`. Output on an RTX 2060 (times vary):
@@ -297,7 +308,7 @@ views: 1 ms, scene reused True
   box    12 faces  sky 0.44  block 0.00  distance 185.7 m  sees 20 m 0.45
   facade  2 faces  sky 0.40  block 0.10  distance  28.6 m  sees 20 m 0.42
 isovists in the room: volume 92.8 m3 all around, area 32.1 m2 at eye height
-sun hours, 21 June: 2 ms, scene reused True, progress 100 %
+sun hours, 21 June: 4 ms, scene reused False, progress 100 %
   ground  4 faces  14.1 h
   box    12 faces   8.3 h
   facade  2 faces   9.3 h

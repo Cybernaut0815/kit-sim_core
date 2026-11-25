@@ -3,11 +3,12 @@
 `bindings/ts` is one npm package, `daylight-mesh`, for TypeScript and plain JavaScript: the sources in `src/*.ts`,
 compiled to ES modules in `lib/*.js` with `lib/*.d.ts` beside them (committed; `package.json` `exports` maps
 `daylight-mesh` to `lib/index.js` and `daylight-mesh/native` to `lib/native.js`). It runs both tools of the core,
-daylight ([daylight.md](daylight.md)) and views ([views.md](views.md)), with their CLI flags, three ways:
+daylight ([daylight.md](daylight.md)) and views ([views.md](views.md)), with their CLI flags (typed, `DaylightOptions` /
+`ViewsOptions` turned into flags by `toArgs`, or as strings: [api.md](api.md#typed-options)), three ways:
 
 | way | import | runs on | how |
 |---|---|---|---|
-| in-process | `daylight-mesh/native`: `SimulationMesh`, `run(tool, args, { sensors, context }, { signal, onProgress })` | Node on the GPU host | `daylight_c.dll` ([c-abi.md](c-abi.md)) through koffi, on a worker thread; meshes copied once, their scene kept on the GPU between runs |
+| in-process | `daylight-mesh/native`: `SimulationMesh`, `run(tool, args, { sensors, context }, { signal, onProgress, float32 })` | Node on the GPU host | `daylight_c.dll` ([c-abi.md](c-abi.md)) through koffi, on a worker thread; meshes copied once, their scene kept on the GPU between runs |
 | process runner | `daylight-mesh`: `run(exe, { sensors, context, args })` | Node on the GPU host | `daylight.exe` or `views.exe` as a child process: a `.dmesh` per mesh in a temp folder, the `.npy` read back |
 | server | `daylight-mesh`: `runRemote(url, { sensors, context, epw, args, ... })` | browsers (and Node) | a daylight or views job (`tool`) on the web app's `daylight_server`, which runs the core in-process on the GPU host |
 
@@ -54,8 +55,9 @@ import { SimulationMesh, run } from '../../bindings/ts/src/native.ts';   // a pa
 const site = SimulationMesh.load('tests/box.obj');                             // meshes "ground" and "box"
 const facade = SimulationMesh.create('facade', positions, counts, indices);    // from arrays
 const sensors = [site, facade];
-const sun = await run('daylight', ['--clear-sky', '--lat', '52.52', '--lon', '13.41', '--quantity', 'radiation,sunhours'],
+const sun = await run('daylight', { clearSky: true, lat: 52.52, lon: 13.41, quantity: ['radiation', 'sunhours'] },
   { sensors }, { signal: AbortSignal.timeout(10_000), onProgress: (p) => console.log(`  traced ${Math.round(100 * p)} %`) });
+// the same flags as strings: ['--clear-sky', '--lat', '52.52', '--lon', '13.41', '--quantity', 'radiation,sunhours']
 // sun.data[c] is column sun.columns[c], a value per row; sun.manifest.meshes gives each mesh's rows { name, first, count }
 ```
 ```text
@@ -73,9 +75,11 @@ daylight: 436 ms, scene reused false
   ([input.md](input.md)): xyz in metres, Z up; vertices per face (any polygon, >= 3); 0-based indices, right-handed
   (counter-clockwise seen from the front); an optional optics slot per face. `mesh.names` is what the manifest and
   `--target`, `--optics`, `--no-occlude` call the meshes.
-- `run('daylight', args, { sensors, context })`: `args` are daylight's flags without the program name; the handles
-  take the place of the mesh files, `context` that of `--context` (blocks rays, never analysed). Mesh paths,
-  `--context`, `--out`, `--bench` and `-h` are refused. The values and the manifest are the CLI's, bit for bit.
+- `run('daylight', args, { sensors, context })`: `args` are daylight's flags, a `DaylightOptions` (a field per flag,
+  camelCase: `clearSky` is `--clear-sky`; unset fields keep the core's defaults) or the strings without the program
+  name; the handles take the place of the mesh files, `context` that of `--context` (blocks rays, never analysed).
+  Mesh paths, `--context`, `--out`, `--bench` and `-h` are refused. The values and the manifest are the CLI's, bit for
+  bit; `{ float32: true }` gives them as `Float32Array`s (half the memory).
 - Weather: `--epw FILE` (an ASCII path), `--clear-sky --lat --lon` (a cloudless year, an upper bound 20-50 % above a
   typical year: [modes.md](modes.md)), or none for `--quantity sunhours` with `--lat --lon` (`--tz` defaults to
   `round(lon / 15)`, 1 here). Time: annual by default, else `--time`, or `--from --to` with `--step` and `--hours`.
@@ -92,7 +96,7 @@ sensors, a lake 15 m out and a block's face 40 m out as context. The key call:
 import { run, type ObjMesh } from '../../bindings/ts/src/index.ts';   // a package: 'daylight-mesh'
 
 const sun = await run('build/RelWithDebInfo/daylight.exe', { sensors, context,     // ObjMesh[] each
-  args: ['--clear-sky', '--lat', '52.52', '--lon', '13.41', '--quantity', 'radiation,sunhours'] });
+  args: { clearSky: true, lat: 52.52, lon: 13.41, quantity: ['radiation', 'sunhours'] } });
 ```
 ```text
 daylight.exe: 772 ms, columns radiation_front sunhours_front
@@ -150,14 +154,15 @@ const { data, columns, manifest } = await runRemote(location.origin, {  // the p
   (`columns`, the `meshes` ranges, `cache`; daylight's `duration_h` and `dirs`, views' `view` and `targets`).
 - `tool: 'views'` runs views instead ([views.md](views.md)): the same meshes and ids, views flags in `args`, no `epw`.
   A target names a mesh by its core name (its `name`, made unique per job as `dmeshStems` does):
-  `runRemote(url, { sensors, context, tool: 'views', args: ['--target', 'lake=water', '--reach', 'en17037'] })`.
+  `runRemote(url, { sensors, context, tool: 'views', args: { target: [{ name: 'lake', group: 'water' }], reach: 'en17037' } })`
+  (`args` takes typed options or strings, as `run` does).
 
 ## Views
 
 The same meshes in `examples/typescript/native.ts`, after the daylight run (its step 4):
 
 ```ts
-const view = await run('views', ['--target', 'box=cube'], { sensors }, { signal: AbortSignal.timeout(10_000) });
+const view = await run('views', { target: [{ name: 'box', group: 'cube' }] }, { sensors }, { signal: AbortSignal.timeout(10_000) });
 ```
 ```text
 views: 2 ms, scene reused true
@@ -166,7 +171,8 @@ views: 2 ms, scene reused true
   facade row 1: sky 0.449, cube 0.067, distance 59.2 m, nearest 1.77 m
 ```
 
-- `run('views', args, { sensors, context })`: views' flags ([views.md](views.md)), under the same rules as daylight's.
+- `run('views', args, { sensors, context })`: views' flags ([views.md](views.md)), a `ViewsOptions` or strings, under
+  the same rules as daylight's.
   From every face (or point, `--on vertices`) it casts one ray per 2 deg cell of a field of view: by default 120 deg
   wide about the face's normal, from 70 deg down to 50 deg up (3,600 rays); `--fov 360` turns all around (with
   `--offset 1.6` a standing eye on a floor grid, which `--no-occlude` keeps out of the rays).
@@ -192,7 +198,7 @@ writes, so `--target` takes the lake's stem:
 ```ts
 const stems = dmeshStems([...sensors, ...context].map((m) => m.name));   // 'site/lake' -> 'site_lake'
 const view = await run('build/RelWithDebInfo/views.exe', { sensors, context,
-  args: ['--target', `${stems[sensors.length]}=water`, '--reach', 'en17037'] });
+  args: { target: [{ name: stems[sensors.length], group: 'water' }], reach: 'en17037' } });
 ```
 ```text
 core names: facade_floor_0, facade_floor_1, site_lake, site_block
@@ -214,7 +220,7 @@ views.exe: 568 ms, columns sky_front ground_front obstruction_front obstruction_
 
 | | in-process `run` | process runner `run` | `runRemote` |
 |---|---|---|---|
-| `data` | a `Float64Array` per column | a `Float64Array` per column | a `Float32Array` per column (views of one buffer) |
+| `data` | a `Float64Array` per column (`{ float32: true }`: a `Float32Array`) | a `Float64Array` per column | a `Float32Array` per column (views of one buffer) |
 | `columns` | `data[c]` holds `columns[c]` | the same | the same |
 | `manifest` | the CLI's `FILE.json`, parsed (typed `unknown`); `manifestText`: its text (LF) | the same, parsed (`unknown`) | `RemoteManifest` |
 | reuse | `stats`: `sceneReused`, `prepMs`, `skyMs`, `buildMs`, `traceMs`, `reduceMs`, `bounceMs`, `rays`, `launches`, `gasBytes` | none | `cache`: `response` (`hit`, `miss`), `scene` (`built`, `reused`), `weather` |
@@ -283,12 +289,13 @@ prints `error 1: --target tree=green: no mesh of that name`.
 
 ## Reference
 
-- [bindings/ts/README.md](../bindings/ts/README.md): the full API of both entries (`init`, `usage`, `SimulationMesh`, `run`,
-  `DaylightError`; `fromThree`, `fromGLB`, `toDmesh`, `toObj`, `dmeshStems`, `run`, `runRemote`, `meshIds`,
-  `colormap`, `applyToThree`, `parseNpy`, `parseValues`), the `.dmesh` layout, the tests and timings; `lib/*.d.ts`
-  carry the same as doc comments.
+- [bindings/ts/README.md](../bindings/ts/README.md): the full API of both entries (`init`, `usage`, `version`,
+  `SimulationMesh`, `run`, `DaylightError`; `fromThree`, `fromGLB`, `toDmesh`, `toObj`, `dmeshStems`, `run`,
+  `runRemote`, `meshIds`, `colormap`, `applyToThree`, `parseNpy`, `parseValues`, `toArgs`, `DaylightOptions`,
+  `ViewsOptions`), the `.dmesh` layout, the tests and timings; `lib/*.d.ts` carry the same as doc comments.
+- [api.md](api.md#typed-options): the typed options' rules, shared with Python and C#.
 - Flags: [daylight.md](daylight.md) and [views.md](views.md) (every flag, output rows, columns, manifest, units);
-  `usage('daylight')` and `usage('views')` return the CLIs' `-h` text.
+  `usage('daylight')` and `usage('views')` return the CLIs' `-h` text; `version()` the loaded DLL's C ABI version (1).
 - [c-abi.md](c-abi.md) (the DLL underneath: resident scenes, threads, loading), [input.md](input.md) (meshes, roles,
   culling), [results-on-meshes.md](results-on-meshes.md), [performance.md](performance.md).
 

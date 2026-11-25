@@ -23,8 +23,8 @@ import numpy as np
 from pxr import Sdf, Usd, UsdGeom, Vt
 
 from . import _native
-from .core import REPO, VIRIDIS, colormap, run_meshes, to_dmesh
-from .native import Control, DaylightError, SimulationMesh, _run, run, usage
+from .core import REPO, VIRIDIS, _stem, colormap, run_meshes, to_dmesh
+from .native import Control, DaylightError, SimulationMesh, _run, run, usage, version
 from .options import args_of, to_args
 from .usd import meshes, to_obj, write_results
 
@@ -77,6 +77,16 @@ def check_masking():
         raise AssertionError('negative count accepted')
     except ValueError as e:
         assert '/m' in str(e), e
+
+
+STEMS = [('/World/lake', '_World_lake'), ('_x', '_x'), ('a b', 'a_b'), ('', 'mesh'), ('A', 'A'), ('a', 'a_2'),
+         ('/World/lake', '_World_lake_2'), ('x', 'x'), ('x', 'x_2'), ('x_2', 'x_2_2'), ('\u00e9', '_')]
+"""Mesh names -> .dmesh stems in order: bindings/ts/test/index.test.ts holds the same table for dmeshStems."""
+
+
+def check_stems():
+    used = set()
+    assert [_stem(n, used) for n, _ in STEMS] == [s for _, s in STEMS]
 
 
 def check_options():
@@ -140,10 +150,10 @@ def check_views_run():
     """views.exe on (name, points, counts, indices) meshes as usd.meshes() gives them: their file stems in --target."""
     lake = QUAD * 20 + [-10, -21, 0.05]                              # 20 x 20 m of water in front of the facade
     v, m = run_meshes([('/site/facade', FACADE, [4], [0, 1, 2, 3])], [('/site/lake', lake, [4], [0, 1, 2, 3])],
-                      args=['--target', 'site_lake=water', '--jitter', 'off'], tool='views')
+                      args={'target': {'_site_lake': 'water'}, 'jitter': False}, tool='views')
     assert m['columns'][:5] == ['sky_front', 'ground_front', 'obstruction_front', 'obstruction_total_front', 'water_front'], m['columns']
-    assert [x['name'] for x in m['meshes']] == ['site_facade'], m['meshes']
-    assert m['targets'] == [{'mesh': 'site_lake', 'group': 'water'}], m['targets']
+    assert [x['name'] for x in m['meshes']] == ['_site_facade'], m['meshes']
+    assert m['targets'] == [{'mesh': '_site_lake', 'group': 'water'}], m['targets']
     assert v.shape == (1, 7) and v[0, 4] > 0 and v[0, 2] == 0 and abs(v[0, [0, 1, 2, 4]].sum() - 1) < 1e-9 and abs(v[0, 3] - (1 - v[0, 0])) < 1e-9, v   # column 3: all but the sky
 
 
@@ -247,6 +257,9 @@ def check_native():
     assert m['columns'] == ['sky_front', 'ground_front', 'obstruction_front', 'obstruction_total_front', 'distance_front', 'distance_min_front'], m
     assert v.shape == (1, 6) and abs(v[0, 0] - 0.4490987851112869) < 1e-9 and abs(v[0, 1] - 0.5509012148887131) < 1e-9, v
     assert v[0, 2] == 0 and abs(v[0, 3] - v[0, 1]) < 1e-12, v   # obstruction_total: the ground alone here
+    v32 = run('views', OPEN, facade, dtype='float32').values         # dl_result_values_f32: the same values, rounded
+    assert v32.dtype == np.float32 and np.array_equal(v32, v.astype(np.float32)), v32
+    assert version() == 1
 
     # a Path flag goes in the narrow (ANSI) encoding the core opens files with, as the CLI's argv; echoed back decoded
     if '\u00fc'.encode(_native.NARROW, 'replace') == b'?':
@@ -319,6 +332,7 @@ def main():
     check_colormap()
     check_write_results()
     check_masking()
+    check_stems()
     check_options()
     check_instancing()
     if not FIX.exists():

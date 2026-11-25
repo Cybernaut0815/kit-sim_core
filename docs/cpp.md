@@ -271,7 +271,8 @@ bad target: --target tree=green: no mesh of that name
   `prepare`, `manifest_json`; `daylight::views::cli::parse`, `manifest_json`; `kUsage`), for front ends that take CLI
   flags verbatim (the C ABI and the web app's server do).
 - Flags with the field each sets: [daylight.md](daylight.md) (`Options`), [views.md](views.md#flags)
-  (`views::Options`). Meshes and roles: [input.md](input.md); sky models and weather: [modes.md](modes.md).
+  (`views::Options`). The bindings' typed options are the same flags under their CLI names, not these fields
+  ([api.md](api.md#typed-options)). Meshes and roles: [input.md](input.md); sky models and weather: [modes.md](modes.md).
 - USD reader: [bindings/cpp/README.md](../bindings/cpp/README.md). C and the other languages: [c-abi.md](c-abi.md).
 
 ## Examples

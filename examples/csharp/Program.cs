@@ -22,7 +22,8 @@ using System.Threading;
 using System.Threading.Tasks;
 using Daylight;
 
-// Print 0.5, not 0,5, whatever the machine's language. Flags need a '.' too: "--lat 52,52" would read 52.
+// Print 0.5, not 0,5, whatever the machine's language. Raw flags need a '.' too ("--lat 52,52" is a usage error);
+// typed options write their numbers so in any culture.
 CultureInfo.CurrentCulture = CultureInfo.InvariantCulture;
 
 // Find the repo: go up from bin/Debug/net9.0 to the folder that holds tests/box.obj.
@@ -52,11 +53,12 @@ try
     SimulationMesh[] sensors = { model, facade };
 
     // ---- Step 2: daylight, a clear-sky year in Berlin ----------------------------------------------------------
-    // The flags are the CLI's (docs/daylight.md). No weather file: --clear-sky makes a cloudless year for the place.
-    // The default column is radiation, kWh/m2 over the year. The first run starts the GPU.
-    string[] clearSkyYear = { "--clear-sky", "--lat", "52.52", "--lon", "13.41" };   // Berlin
+    // The options are the CLI's flags (docs/daylight.md) as typed properties (docs/api.md#typed-options); Core.Run takes
+    // the flags as strings too (Tool.Daylight, { "--clear-sky", "--lat", "52.52", ... }). No weather file: ClearSky makes
+    // a cloudless year for the place. The default column is radiation, kWh/m2 over the year. The first run starts the GPU.
+    var clearSkyYear = new DaylightOptions { ClearSky = true, Lat = 52.52, Lon = 13.41 };   // Berlin
     var clock = Stopwatch.StartNew();
-    Result year = Core.Run(Tool.Daylight, clearSkyYear, sensors);
+    Result year = Core.Run(clearSkyYear, sensors);
     Console.WriteLine($"daylight: {clock.ElapsedMilliseconds} ms, scene reused {year.SceneReused}");
 
     // ---- Step 3: reading the result ----------------------------------------------------------------------------
@@ -69,13 +71,13 @@ try
     // From every face a ray per 2 deg cell of a field 120 deg wide about its normal: the shares that end on the sky,
     // the ground, an obstruction or a target group, the log-mean distance (an open ray counts as 1000 m) and the shares
     // that see at least 6, 20 and 50 m. The same meshes in the same roles as step 2: the resident scene serves it.
-    string[] viewFlags =
+    var viewFlags = new ViewsOptions
     {
-        "--target", "box=block",   // rays ending on the mesh "box" count for the group "block" (column block_front)
-        "--reach", "en17037",      // reach_6, reach_20, reach_50: the shares that see at least 6, 20, 50 m
+        Targets = new[] { new TargetSpec("box", "block") },   // rays ending on the mesh "box" count for "block" (block_front)
+        Reach = new double[] { 6, 20, 50 },   // EN 17037's levels (--reach en17037): the shares that see at least 6, 20, 50 m
     };
     clock.Restart();
-    Result view = Core.Run(Tool.Views, viewFlags, sensors);
+    Result view = Core.Run(viewFlags, sensors);
     Console.WriteLine($"views: {clock.ElapsedMilliseconds} ms, scene reused {view.SceneReused}");
     foreach (MeshRange m in view.Meshes)
         Console.WriteLine($"  {m.Name,-6} {m.Count,2} faces  sky {Mean(view, "sky_front", m):F2}  block " +
@@ -88,33 +90,33 @@ try
     // volume_front, m3), with horizontal rays only the area in view (area_front, m2).
     using SimulationMesh grid = SimulationMesh.Load(Path.Combine(repo, "tests", "room_grid.obj"));   // sensor: the points
     using SimulationMesh room = SimulationMesh.Load(Path.Combine(repo, "tests", "room.obj"));        // context: room, window, tree
-    string[] volumeFlags =
+    var volumeFlags = new ViewsOptions
     {
-        "--fov", "360,-90,90",    // all around, the whole sphere
-        "--offset", "0.4",        // the eye 0.4 m above each grid face
-        "--no-occlude", "grid",   // the grid is measured, not seen: the rays pass it
+        Fov = new double[] { 360, -90, 90 },   // all around, the whole sphere
+        Offset = 0.4,                           // the eye 0.4 m above each grid face
+        NoOcclude = new[] { "grid" },           // the grid is measured, not seen: the rays pass it
     };
-    string[] areaFlags = { "--fov", "360,0,0", "--offset", "0.4", "--no-occlude", "grid" };   // horizontal rays only
-    // The isovist is the default column all around; --distance mean,min gives the distances instead, --far M caps both.
-    Result volume = Core.Run(Tool.Views, volumeFlags, new[] { grid }, new[] { room });   // sensors, then context
-    Result area = Core.Run(Tool.Views, areaFlags, new[] { grid }, new[] { room });
+    var areaFlags = new ViewsOptions { Fov = new double[] { 360, 0, 0 }, Offset = 0.4, NoOcclude = new[] { "grid" } };   // horizontal rays only
+    // The isovist is the default column all around; Distances (mean, min) gives the distances instead, Far caps both.
+    Result volume = Core.Run(volumeFlags, new[] { grid }, new[] { room });   // sensors, then context
+    Result area = Core.Run(areaFlags, new[] { grid }, new[] { room });
     Console.WriteLine($"isovists in the room: volume {volume.Column("volume_front").Average():F1} m3 all around, " +
                       $"area {area.Column("area_front").Average():F1} m2 at eye height");
 
     // ---- Step 6: a run in the background -----------------------------------------------------------------------
     // RunAsync returns a Task: the program (a UI) stays free meanwhile. The token cancels the run (here a 30 s
     // timeout, in an app a Cancel button), the RunControl reports its progress. Sun hours need no weather, only the
-    // place and its clock (--tz), here every 10 minutes of 21 June.
-    string[] june21 =
+    // place and its clock (Tz), here every 10 minutes of 21 June.
+    var june21 = new DaylightOptions
     {
-        "--quantity", "sunhours",
-        "--lat", "52.52", "--lon", "13.41", "--tz", "1",           // Berlin, UTC+1
-        "--from", "06-21T00:00", "--to", "06-22T00:00", "--step", "10",
+        Quantities = new[] { Quantity.Sunhours },
+        Lat = 52.52, Lon = 13.41, Tz = 1,                            // Berlin, UTC+1
+        From = "06-21T00:00", To = "06-22T00:00", Step = 10,
     };
     using var cancel = new CancellationTokenSource(TimeSpan.FromSeconds(30));
     using var control = new RunControl();
     clock.Restart();
-    Task<Result> run = Core.RunAsync(Tool.Daylight, june21, sensors, control: control, token: cancel.Token);
+    Task<Result> run = Core.RunAsync(june21, sensors, control: control, token: cancel.Token);
     while (await Task.WhenAny(run, Task.Delay(100)) != run)   // every 100 ms until the run is done
         Console.WriteLine($"  {control.Progress:P0} traced");
     Result sun = await run;

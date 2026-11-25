@@ -8,6 +8,7 @@
     "noUnusedParameters": true,
     "verbatimModuleSyntax": true,
     "erasableSyntaxOnly": true,
+    "rewriteRelativeImportExtensions": true,
     "declaration": true,
     "rootDir": "src",
     "outDir": "lib",

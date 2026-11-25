@@ -192,6 +192,10 @@ it('meshIds: the bytes\' SHA-256 (8 at a time, a name folded in), ids given kept
 it('dmeshStems', () => {
   expect(dmeshStems(['a b', 'a_b', 'A_B', '', 'x/y'])).toEqual(['a_b', 'a_b_2', 'A_B_3', 'mesh', 'x_y']); // case kept, uniqueness case-insensitive
   expect(dmeshStems([''], 'sensors')).toEqual(['sensors']);
+  // the table bindings/python/daylight/check.py STEMS holds for its _stem: one rule in both bindings
+  const table: [string, string][] = [['/World/lake', '_World_lake'], ['_x', '_x'], ['a b', 'a_b'], ['', 'mesh'], ['A', 'A'], ['a', 'a_2'],
+    ['/World/lake', '_World_lake_2'], ['x', 'x'], ['x', 'x_2'], ['x_2', 'x_2_2'], ['\u00e9', '_']];
+  expect(dmeshStems(table.map(([n]) => n))).toEqual(table.map(([, s]) => s));
 });
 
 describe('runRemote', () => {

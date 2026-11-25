@@ -14,7 +14,7 @@ other threads keep running and can cancel it or read its progress through a Cont
 import json
 import os
 import weakref
-from ctypes import POINTER, byref, c_char_p, c_double, c_int32, c_uint16, c_void_p
+from ctypes import POINTER, byref, c_char_p, c_double, c_float, c_int32, c_uint16, c_void_p
 from typing import NamedTuple
 
 import numpy as np
@@ -24,13 +24,14 @@ from ._native import path as _path
 from .core import _tool
 from .options import args_of
 
-__all__ = ['Control', 'DaylightError', 'SimulationMesh', 'Result', 'run', 'usage']
+__all__ = ['Control', 'DaylightError', 'SimulationMesh', 'Result', 'run', 'usage', 'version']
 
 _STATS = (('scene_reused', bool), ('prep_ms', float), ('sky_ms', float), ('build_ms', float), ('trace_ms', float),
           ('reduce_ms', float), ('bounce_ms', float), ('rays', int), ('launches', int), ('gas_bytes', int))
 
 
 def _ptr(a, t):
+    """A contiguous numpy array's data as a ctypes pointer to t (the array must outlive the call)."""
     return a.ctypes.data_as(POINTER(t))
 
 
@@ -108,8 +109,8 @@ class Result(NamedTuple):
     """One run's output: what the CLI's --out FILE.npy and FILE.json hold."""
 
     values: np.ndarray
-    """[N x C] float64: rows = the sensor meshes' elements (faces, or points with --on vertices) in input order,
-    columns = manifest['columns']."""
+    """[N x C] float64 (float32 with run(dtype='float32')): rows = the sensor meshes' elements (faces, or points with
+    --on vertices) in input order, columns = manifest['columns']."""
     manifest: dict
     """The CLI's FILE.json (columns, meshes with their row ranges, ...)."""
     stats: dict
@@ -122,28 +123,39 @@ def usage(tool):
     return text(lib().dl_usage(_tool(tool)))
 
 
-def run(tool, args, sensors, context=(), control=None):
+def version():
+    """The C ABI version of the loaded daylight_c.dll (dl_version, DL_ABI_VERSION; loading checks it is this binding's)."""
+    return lib().dl_version()
+
+
+def run(tool, args, sensors, context=(), control=None, dtype='float64'):
     """One run of `tool`, 'daylight' (docs/daylight.md) or 'views' (docs/views.md): `args` its CLI flags (str as UTF-8, an
     os.PathLike in the narrow encoding the core opens files with; mesh files, --context, --out, --bench and -h are
     refused) or a DaylightOptions / ViewsOptions dict (options.to_args), `sensors` / `context` a SimulationMesh or an iterable of them in place of the CLI's mesh files and --context files,
     `control` None or a Control. -> Result, values and manifest bit for bit the CLI's (numbers read and written with
-    '.' whatever C locale is set). DaylightError: status 1 for bad flags or names the meshes do not resolve, 2 when the
-    run fails (a file, the GPU, 'cancelled'). Runs take turns (one GPU run per process); each releases the GIL."""
-    values, manifest, stats = _run(tool, args, sensors, context, control)
+    '.' whatever C locale is set). `dtype` 'float32' takes the values as float32 (dl_result_values_f32: half the
+    memory, the server's precision). DaylightError: status 1 for bad flags or names the meshes do not resolve, 2 when
+    the run fails (a file, the GPU, 'cancelled'). Runs take turns (one GPU run per process); each releases the GIL."""
+    values, manifest, stats = _run(tool, args, sensors, context, control, dtype)
     return Result(values, json.loads(manifest), stats)
 
 
-def _run(tool, args, sensors, context, control):
+def _run(tool, args, sensors, context, control, dtype='float64'):
     """run() with the manifest as the core's text (check.py compares it with the CLI's FILE.json byte for byte)."""
     t = _tool(tool)
+    if np.dtype(dtype) not in (np.float64, np.float32):
+        raise ValueError(f"dtype {dtype!r}: 'float64' or 'float32'")
     argv = [_path(a) if isinstance(a, os.PathLike) else str(a).encode() for a in args_of(args)]
     sens, ctx = _meshes(sensors), _meshes(context)               # referenced until dl_run returns, so never freed in it
     dll, out = lib(), c_void_p()
     check(dll.dl_run(t, len(argv), (c_char_p * len(argv))(*argv), _handles(sens), len(sens), _handles(ctx), len(ctx),
                      control._h if control else None, byref(out)))
     try:
-        values, st = np.empty((dll.dl_result_rows(out), dll.dl_result_cols(out))), np.empty(STATS)
-        check(dll.dl_result_values(out, _ptr(values, c_double), values.size))
+        values, st = np.empty((dll.dl_result_rows(out), dll.dl_result_cols(out)), dtype), np.empty(STATS)
+        if values.dtype == np.float32:
+            check(dll.dl_result_values_f32(out, _ptr(values, c_float), values.size))
+        else:
+            check(dll.dl_result_values(out, _ptr(values, c_double), values.size))
         check(dll.dl_result_stats(out, _ptr(st, c_double)))
         return values, text(dll.dl_result_manifest(out)), {k: f(x) for (k, f), x in zip(_STATS, st.tolist())}
     finally:
@@ -151,6 +163,7 @@ def _run(tool, args, sensors, context, control):
 
 
 def _meshes(ms):
+    """One SimulationMesh or an iterable of them as a list; TypeError for anything else."""
     ms = [ms] if isinstance(ms, SimulationMesh) else list(ms)
     if not all(isinstance(m, SimulationMesh) for m in ms):
         raise TypeError('sensors / context: a SimulationMesh or SimulationMesh objects (SimulationMesh(...), SimulationMesh.load(path))')
@@ -158,4 +171,5 @@ def _meshes(ms):
 
 
 def _handles(ms):
+    """The meshes' handles as a C array of dl_mesh* (None for no meshes; a closed mesh gives NULL, which the core refuses)."""
     return (c_void_p * len(ms))(*[m._h for m in ms]) if ms else None

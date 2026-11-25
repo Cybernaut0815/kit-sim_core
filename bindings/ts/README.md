@@ -6,8 +6,9 @@ examples: [examples/typescript](../../examples/typescript), [examples/javascript
 
 Turns three.js scenes or `.glb` files into the raw `.dmesh` arrays (or OBJ) the core reads, and runs both its tools,
 daylight and views: from Node through `daylight.exe` / `views.exe` (`run`) or in-process through `daylight_c.dll`
-(`daylight-mesh/native`); daylight also from a browser, through a `daylight_server` (`runRemote`; a browser cannot run
-the GPU).
+(`daylight-mesh/native`); both also from a browser, through a `daylight_server` (`runRemote`; a browser cannot run
+the GPU). Every runner takes the CLI's flags as strings or as typed `DaylightOptions` / `ViewsOptions`
+([docs/api.md](../../docs/api.md#typed-options)).
 
 One package for TypeScript and plain JavaScript: `src/*.ts` compiles (`npm run build`) to the committed `lib/*.js` with
 `lib/*.d.ts` beside them, and `package.json` `exports` points `daylight-mesh` at `lib/index.js` and `daylight-mesh/native`
@@ -40,7 +41,7 @@ import fs from 'node:fs/promises';
 
 const sensors = await fromGLB(await fs.readFile('a.glb'));            // { scale } multiplies metres
 const context = await fromGLB(await fs.readFile('city.glb'));
-const { data } = await run('daylight.exe', { sensors, context, args: ['--epw', 'x.epw', '--quantity', 'radiation'] });
+const { data } = await run('daylight.exe', { sensors, context, args: { epw: 'x.epw', quantity: ['radiation'] } });
 ```
 
 Views (`views.exe`, [docs/views.md](../../docs/views.md)): the same runner, another exe and its flags. Mesh names reach
@@ -54,7 +55,7 @@ import fs from 'node:fs/promises';
 const sensors = await fromGLB(await fs.readFile('facades.glb')), context = await fromGLB(await fs.readFile('city.glb'));
 const stems = dmeshStems([...sensors, ...context].map((m) => m.name)); // the core's names: 'park/lawn' -> 'park_lawn'
 const lawn = stems[sensors.length + context.findIndex((m) => m.name === 'park/lawn')];
-const { data, columns } = await run('views.exe', { sensors, context, args: ['--fov', '360', '--target', `${lawn}=green`] });
+const { data, columns } = await run('views.exe', { sensors, context, args: { fov: 360, target: [{ name: lawn, group: 'green' }] } });
 // columns: sky_front, ground_front, obstruction_front, obstruction_total_front, green_front, volume_front (all around:
 // the isovist; docs/views.md)
 ```
@@ -70,8 +71,8 @@ import { SimulationMesh, run } from 'daylight-mesh/native';
 
 const sensors = fromThree([scene]).map(SimulationMesh.fromObj);                // copied once; names as given (SimulationMesh.names)
 const ctrl = new AbortController();
-const r = await run('views', ['--fov', '360'], { sensors }, { signal: ctrl.signal, onProgress: (p) => bar(p) });
-const again = await run('daylight', ['--epw', 'x.epw', '--quantity', 'radiation'], { sensors }); // same scene, stats.sceneReused
+const r = await run('views', { fov: 360 }, { sensors }, { signal: ctrl.signal, onProgress: (p) => bar(p) });
+const again = await run('daylight', ['--epw', 'x.epw', '--quantity', 'radiation'], { sensors }); // flags as strings; same scene, stats.sceneReused
 for (const m of sensors) m.free();                                   // else freed when garbage collected
 ```
 
@@ -127,6 +128,10 @@ await applyToThree(mesh, data[col].subarray(first, first + count)); // one value
   SHA-256 hex of its `.dmesh` bytes (8 bodies at a time; a named mesh's name folded in, since the server keeps one name
   per id); a context id equal to a sensor's is salted (`sha256(id \0 ctx)`: the server refuses a mesh in both roles).
 - `toObj(meshes)`: one `o` group per mesh, 1-based global indices; throws on bad indices (interop with other OBJ tools).
+- `DaylightOptions`, `ViewsOptions` (with `OpticsSpec`, `TargetSpec`): a field per CLI flag, camelCase (`skyDensity` is
+  `--sky-density`, `verbose` `-v`), documented with its flag and default; `toArgs(options)` turns them into the flags
+  (booleans bare or on/off, lists comma-joined, optics / target / noOcclude `;`-joined, unset fields left out). Every
+  `args` below takes them or the strings.
 - `run(exe, { sensors, context?, args })`: `exe` is `daylight.exe` or `views.exe`; temp dir,
   `exe <sensors...> [--context <file>]... ...args --out out.npy`, returns `{ data: Float64Array[] (one per column:
   data[c][element] for columns[c]), columns, manifest }`; rejects with the core's stderr.
@@ -134,8 +139,9 @@ await applyToThree(mesh, data[col].subarray(first, first + count)); // one value
   and made unique: `dmeshStems` of the sensors' then the context's names, which `--target`, `--optics` and
   `--no-occlude` must use; the manifest's mesh names are the file stems) or OBJ text (written as one `.obj`).
   Needs Node >= 20 and the GPU build of the core.
-- `runRemote(url, { sensors, context?, epw?, args?, signal?, clientId?, onStatus?, onUpload? })`: `sensors`/`context`
-  are `ObjMesh`es or `{ id?, name?, dmesh: () => bytes }` (bodies built on demand). Submits a job (`POST url/jobs`)
+- `runRemote(url, { sensors, context?, epw?, args?, tool?, signal?, clientId?, onStatus?, onUpload?, fetch? })`:
+  `tool` is `'daylight'` (default) or `'views'` (no `epw`); `fetch` replaces `globalThis.fetch` (tests, proxies).
+  `sensors`/`context` are `ObjMesh`es or `{ id?, name?, dmesh: () => bytes }` (bodies built on demand). Submits a job (`POST url/jobs`)
   with their ids (meshIds; nothing written back): one `POST url/meshes/missing` for the ids this process has not seen
   on that server (404 there: all missing), `PUT url/mesh/<id>?name=<stem>` 6 at a time for the missing ones (each
   body built just before its PUT; `onUpload(done, total)`); an unnamed mesh's core name is its id (repeats `id_2`, ...:
@@ -168,19 +174,19 @@ Visual C++ runtime ([docs/c-abi.md](../../docs/c-abi.md#loading-the-dll)).
   `<repo>/build/RelWithDebInfo/daylight_c.dll` (found from `src/` or `lib/`); the calls below call it without a path.
   Throws when it does not load (a missing file: `no such file`), has another ABI version, or another path is loaded
   already. Kept loaded while Node runs (koffi frees it as Node exits).
-- `usage(tool)`: `'daylight' | 'views'` -> the CLI's `-h` text.
+- `usage(tool)`: `'daylight' | 'views'` -> the CLI's `-h` text. `version()`: the loaded DLL's C ABI version (1).
 - `SimulationMesh.create(name, positions, counts, indices, slots?)`: the `.dmesh` arrays (xyz, vertices per face >= 3, 0-based
   indices, a slot per face), copied; `SimulationMesh.fromObj(objMesh)`: triangles (counts all 3), its `name` and `slots` as they
   are (not through `dmeshStems`); `SimulationMesh.load(path)`: a `.obj` (a mesh per group) or `.dmesh`, as the CLI reads it
   (ASCII paths). `mesh.names`: what `--target`, `--optics`, `--no-occlude` and the manifest call its meshes.
   `mesh.free()` frees it now (throws while a run uses it); else a `FinalizationRegistry` frees it when collected.
   These throw an `Error` with the core's message (`bad: vertex index out of range`, `cannot open`, ...).
-- `run(tool, args, { sensors, context? }, { signal?, onProgress? })`: the CLI's flags without the program name (no mesh
-  paths, `--context`, `--out`, `--bench`, `-h`; paths in flags, such as `--epw`, ASCII as for `SimulationMesh.load`), handles in
-  place of its mesh arguments and `--context` files. Resolves
-  `{ data: Float64Array[] (columns, as run(exe)), columns, manifest, manifestText (FILE.json, LF), stats: { sceneReused,
-  prepMs, skyMs, buildMs, traceMs, reduceMs, bounceMs, rays, launches, gasBytes } }`, values and manifest bit for bit
-  the CLI's. Runs over the same handles in the same roles and order keep the scene on the GPU (`sceneReused`); daylight
+- `run(tool, args, { sensors, context? }, { signal?, onProgress?, float32? })`: typed options or the CLI's flags without
+  the program name (no mesh paths, `--context`, `--out`, `--bench`, `-h`; paths in flags, such as `--epw`, ASCII as for
+  `SimulationMesh.load`), handles in place of its mesh arguments and `--context` files. Resolves
+  `{ data: Float64Array[] (columns, as run(exe); `float32: true`: Float32Array[], half the memory), columns, manifest,
+  manifestText (FILE.json, LF), stats: { sceneReused, prepMs, skyMs, buildMs, traceMs, reduceMs, bounceMs, rays,
+  launches, gasBytes } }`, values and manifest bit for bit the CLI's. Runs over the same handles in the same roles and order keep the scene on the GPU (`sceneReused`); daylight
   and views share it. Rejects with a `DaylightError` (`status` 1 usage, 2 runtime, the CLI's message). Aborting
   `signal` cancels the run at its next check (rejects 2 `cancelled`); `onProgress(p)` sees the share of sensors traced,
   polled every 100 ms and at the end (1).
